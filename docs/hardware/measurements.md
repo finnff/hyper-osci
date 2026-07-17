@@ -8,6 +8,10 @@ DESIGN §12 mechanical item).
 Fill `Measured` and `Date` as you go. `Nominal` values are the datasheet/expected
 figures from [pcb.md](pcb.md) §2/§7 — flag any measured value that disagrees.
 
+**Bench meter:** ANENG A9002 handheld DMM. Good for steady-state microamp reads
+(e.g. deep-sleep current); it **cannot** capture sub-millisecond WiFi-TX current
+bursts, so TX-burst current figures stay modeled/estimated, not bench-measured.
+
 ---
 
 ## ESP32-C3 SuperMini
@@ -24,7 +28,7 @@ figures from [pcb.md](pcb.md) §2/§7 — flag any measured value that disagrees
 | Pin silk order of both rows vs pcb.md §2 table | matches §2 | | |
 | Bottom-side component height (socket clearance) | ≤ ~8.5 mm | | |
 | LDO marking (SOT-23-5, loupe) | ME6211C33 ("S2QB"); beware "LLVB" = 250 mA | | |
-| USB-C VBUS ↔ 5 V pin beep test (direct tie?) | expected tied | | |
+| USB-C VBUS ↔ 5 V pin beep test (direct tie?) — Q10 | expected tied | _PENDING — SuperMini clones not yet in hand; leave open_ | |
 
 ## GY-PCM5102A (purple)
 
@@ -68,6 +72,6 @@ figures from [pcb.md](pcb.md) §2/§7 — flag any measured value that disagrees
 
 | Measurement | Nominal | Measured | Date |
 |---|---|---|---|
-| BNC (X1/X2) actual leg pattern | draw from physical part | | |
+| RCA output pads (X = PCM5102A L, Y = PCM5102A R): signal pad ↔ reused ~50 cm RCA cable tip; ground pad ↔ RCA shell | signal via R10/R11 (100 Ω series); ground pad = board GND, shell = GND | | |
 | SW1 slide-switch pin pitch | 2× 3-pin @ 2.0 or 2.54 mm | | |
 | RV1 (RV09) pin pattern + shaft length vs knob | 2.5/5.0 mm triangle | | |

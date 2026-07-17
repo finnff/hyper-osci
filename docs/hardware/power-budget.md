@@ -48,7 +48,7 @@ All values in mA unless noted. LED math: 3 mm LED at Vf ≈ 2.0–2.1 V through 
 Notes:
 
 - **HYBRID ≈ NETWORK.** The mic ADC runs in every mode (vbat/pot share the same `adc_continuous` scan), so mixing it in costs nothing extra.
-- **Deep sleep is ~1 mA, not µA**, because the 3V3 rail stays up: the PCM5102A no-clock standby (~0.5–0.8 mA) dominates, then the pot (330 µA), LDO Iq (40 µA), mic (24 µA), divider (21 µA). That is fine — deep sleep only needs to protect the cell for days-to-weeks until recharge, not months. From `VBAT_SLEEP_MV` (3050) down to the DW01 cutoff there is roughly 30–50 mAh left in a 1000 mAh cell → **~1.5–3 weeks of margin. Charge promptly after any low-battery shutdown.** (A future carrier-PCB rev could add a peripheral-power gate FET; out of scope for v1.)
+- **Deep sleep is ~1 mA, not µA**, because the 3V3 rail stays up: the PCM5102A no-clock standby (~0.5–0.8 mA) dominates, then the pot (330 µA), LDO Iq (40 µA), mic (24 µA), divider (21 µA). That is fine — deep sleep only needs to protect the cell for days-to-weeks until recharge, not months. From `VBAT_SLEEP_MV` (3050) down to the DW01 cutoff there is roughly 60–100 mAh left in the selected 2000 mAh cell (the old 1000 mAh reference cell had half that, ~30–50 mAh) → **~3–6 weeks of margin. Charge promptly after any low-battery shutdown.** (A future carrier-PCB rev could add a peripheral-power gate FET; out of scope for v1.)
 
 ### Worst-case TX bursts
 
@@ -59,24 +59,26 @@ Notes:
 | WiFi scan/connect/DHCP | same, back-to-back frames | bursts over ~1–3 s | boot + reconnects |
 | Absolute worst case | **335 mA** chip TX (802.11b 1 Mbps @ +21 dBm, datasheet) → **~345 mA board** | sub-ms | rare (management frames at basic rate) |
 
-Typical 802.11g/n data-rate TX sits around **276–285 mA** (ESP32-C3 datasheet 802.11g 54 Mbps / 802.11n MCS7 rows). Burst duty is <2 %, so bursts barely move the *average* — their significance is entirely in the **brownout analysis** (§4).
+Typical 802.11g/n data-rate TX sits around **276–285 mA** (ESP32-C3 datasheet 802.11g 54 Mbps / 802.11n MCS7 rows). Burst duty is <2 %, so bursts barely move the *average* — their significance is entirely in the **brownout analysis** (§4). These burst currents are **modeled/estimated from the datasheet, not bench-measured**: Finn's meter is a handheld ANENG A9002 DMM, which cannot resolve sub-ms current spikes — capturing them for real needs a scope across a shunt (§8 item 3).
 
 ---
 
 ## 3. Battery life
 
-80 % usable-capacity derating covers: real capacity < label (typical for hobby LiPo), the firmware cutting to LOCAL at 3.30 V and sleeping at 3.05 V (top ~90 % of the curve only), cell aging, and cold venues. DESIGN §9's table quotes un-derated nominals ("~7.5 h / 1000 mAh"); the figures below are what to actually plan a show around.
+80 % usable-capacity derating covers: real capacity < label (typical for hobby LiPo), the firmware cutting to LOCAL at 3.30 V and sleeping at 3.05 V (top ~90 % of the curve only), cell aging, and cold venues. DESIGN §9's table quotes un-derated nominals (e.g. the ~13 h NETWORK figure on the selected 2000 mAh cell); the figures below are what to actually plan a show around.
 
 | Battery | Usable (×0.8) | NETWORK / HYBRID (120–135 mA) | LOCAL (50–60 mA) |
 |---|---:|---:|---:|
-| 1000 mAh | 800 mAh | **5.9–6.7 h** | **13.3–16 h** |
-| 1500 mAh | 1200 mAh | **8.9–10.0 h** | **20–24 h** |
-| 2000 mAh | 1600 mAh | **11.9–13.3 h** | **26.7–32 h** |
+| 1000 mAh *(ref.)* | 800 mAh | **5.9–6.7 h** | **13.3–16 h** |
+| 1500 mAh *(ref.)* | 1200 mAh | **8.9–10.0 h** | **20–24 h** |
+| **2000 mAh (selected)** | 1600 mAh | **11.9–13.3 h** | **26.7–32 h** |
+
+> **Selected cell:** EEMB LP103454 — LiPo 3.7 V **2000 mAh** (34 × 56 × 11 mm, ~40 g), with a pre-fitted JST connector (no crimping). It mounts **off the PCB**: loose in the 3D-printed enclosure (velcro/pocket), since 56 × 34 mm is large relative to the 70 × 50 mm carrier. A JST-PH pigtail runs from the cell to the carrier's battery socket. The 1000 / 1500 mAh rows are legacy / smaller-cell references only.
 
 Planning guidance:
 
-- A typical evening show (≤ 5 h incl. soundcheck) is safe on **1000 mAh** with ~25 % margin.
-- Festival day / all-day installation → **2000 mAh**, or top up over lunch (1.5–3 h full charge, see §5).
+- A typical evening show (≤ 5 h incl. soundcheck) is comfortably safe on the selected **2000 mAh** cell — **~13 h NETWORK usable**, well over 2× margin. (A legacy 1000 mAh cell would still clear it with ~25 % margin.)
+- Festival day / all-day installation: the 2000 mAh cell already covers ~13 h NETWORK / ~30 h LOCAL; for anything longer, top up over lunch (**~2.5–3 h** full charge at the TP4056's default 1 A, see §5).
 - The low-battery ladder itself buys time: at `VBAT_WIFI_OFF_MV` the unit drops to LOCAL and current falls ~60 %, so the *visuals keep running* well past the end of network life. Caveat: below ~3.3–3.4 V VBAT the PCM5102A (behind the double-LDO cascade) is under its recommended supply minimums (CPVDD/DVDD 3.1 V, AVDD 3.0 V), so through the LOCAL low-battery band (3.30–3.05 V) the visuals may lose amplitude or accuracy — watch DAC output amplitude during the battery-rundown test.
 
 ---
@@ -101,7 +103,7 @@ Series resistances upstream of the LDO (*est.*): FS8205 dual FET ~50 mΩ + slide
 
 This is exactly why the `config.h` thresholds sit where they do:
 
-- **`VBAT_WARN_MV 3450`** — the point where the LDO enters dropout under NETWORK steady load. The rail is still healthy, but the operator gets notice (~45–60 min left on 1000 mAh).
+- **`VBAT_WARN_MV 3450`** — the point where the LDO enters dropout under NETWORK steady load. The rail is still healthy, but the operator gets notice (~90–120 min left on the selected 2000 mAh cell; ~45–60 min on a legacy 1000 mAh).
 - **`VBAT_WIFI_OFF_MV 3300`** — during a 335 mA burst at VBAT = 3.3 V the rail dips toward ≈ 2.87 V, below the 3.0 V WiFi-TX minimum. The C3 IDF default brownout threshold is **2.51 V** (`ESP_BROWNOUT_DET_LVL_SEL_7`; selectable 2.51 / 2.64 / 2.76 / 2.92 / 3.10 / 3.27 V), so a 2.87 V dip does *not* trip the default detector — raising it to `SEL_4` (2.92 V) in sdkconfig is a firmware task if the "brownout catches the sag" reasoning is to hold. Killing the radio at 3.30 V removes the bursts *before* they cause spontaneous resets, and drops draw to LOCAL levels; the `VBAT_WIFI_OFF_MV = 3300` conclusion stands regardless of the brownout level.
 - Aged cells or long leads push the loop toward 0.5–1 Ω, adding 170–335 mV of burst sag — another reason the radio-off threshold is deliberately conservative.
 
@@ -121,7 +123,7 @@ The SuperMini and its LDO carry only small ceramics (~1–10 µF). A 300+ mA TX 
 
 The 03962A module combines a TP4056 linear charger with DW01 + FS8205 protection.
 
-**Charging (TP4056):** CC/CV profile, CV = **4.2 V ±1 %**, charge current set by RPROG — the module default is 1.2 kΩ → **1 A** (⚠️ VERIFY the actual RPROG on the owned modules). Termination at C/10 (~100 mA), auto-recharge when the cell relaxes ~150 mV below 4.2 V. 1 A into a 1000 mAh cell is 1C — acceptable but warm; if the small cells are used long-term, swapping RPROG to 2.4 kΩ (≈ 0.5 A, 0.5C) is kinder. Full charge takes ~1.5 h (1000 mAh) to ~2.5–3 h (2000 mAh).
+**Charging (TP4056):** CC/CV profile, CV = **4.2 V ±1 %**, charge current set by RPROG — the module default is 1.2 kΩ → **1 A** (⚠️ VERIFY the actual RPROG on the owned modules). Termination at C/10 (~100 mA), auto-recharge when the cell relaxes ~150 mV below 4.2 V. 1 A into the selected 2000 mAh cell is **~0.5C** — comfortable, so **keep the TP4056 default 1 A**; full charge takes **~2.5–3 h**. Swapping RPROG to 2.4 kΩ (≈ 0.5 A) is fiddly to solder and **optional, not mandated**. Instead, **mandate 5 V / 2 A wall chargers** so the module can pull its full 1 A charge current safely — a 1 A supply would sag under the charge load. (A legacy 1000 mAh cell at 1 A is 1C — warm but acceptable, ~1.5 h.)
 
 **Protection (DW01):** overcharge cut ~4.3 V; overcurrent ~3 A (150 mV across the FS8205's ~50 mΩ) — irrelevant at our loads; over-discharge cutoff **~2.40 V**.
 
@@ -129,9 +131,9 @@ The 03962A module combines a TP4056 linear charger with DW01 + FS8205 protection
 
 | Threshold | Value | Rationale |
 |---|---|---|
-| `VBAT_WARN_MV` | 3450 mV | ≈ 15–20 % SoC under load; coincides with LDO-dropout onset in NETWORK (§4.2); operator sees the blue-LED 3-blink pattern with ~45–60 min of NETWORK runtime left (1000 mAh) |
+| `VBAT_WARN_MV` | 3450 mV | ≈ 15–20 % SoC under load; coincides with LDO-dropout onset in NETWORK (§4.2); operator sees the blue-LED 3-blink pattern with ~90–120 min of NETWORK runtime left on the selected 2000 mAh cell (~45–60 min on a legacy 1000 mAh) |
 | `VBAT_WIFI_OFF_MV` | 3300 mV | ≈ 5–10 % SoC; eliminates TX-burst brownout risk (§4.2); current drops ~60 %, stretching what remains; show degrades gracefully to LOCAL instead of dying |
-| `VBAT_SLEEP_MV` | 3050 mV | knee of the discharge curve — below this, voltage falls off a cliff anyway; deep sleep (~1 mA, §2) lets the cell rest and recover to ~3.1 V, leaving ~1.5–3 weeks of margin above the DW01's 2.4 V |
+| `VBAT_SLEEP_MV` | 3050 mV | knee of the discharge curve — below this, voltage falls off a cliff anyway; deep sleep (~1 mA, §2) lets the cell rest and recover to ~3.1 V, leaving ~3–6 weeks of margin above the DW01's 2.4 V on the selected 2000 mAh cell (~1.5–3 weeks on a legacy 1000 mAh) |
 | `VBAT_HYSTERESIS_MV` | 50 mV | load release (e.g. WiFi turning off) lifts VBAT by I·R ≈ 30–60 mV; without hysteresis the state machine would oscillate across a threshold |
 
 ---
@@ -167,19 +169,19 @@ Hardware: LiPo+ → 100 kΩ / 100 kΩ divider (`VBAT_DIVIDER 2.0f`) → `PIN_VBA
 
 ## 8. Measurement plan (week 1)
 
-Goal: replace every *est.* in this file with a measured number and close DESIGN §12 checklist items 4 & 6. Tools: USB power meter, bench supply, DMM, scope, 0.1 Ω shunt resistor.
+Goal: replace every *est.* in this file with a measured number and close DESIGN §12 checklist items 4 & 6. Tools: USB power meter, bench supply, handheld DMM (Finn's **ANENG A9002** — good for steady-state and microamp reads, but it **cannot capture sub-ms WiFi-TX current bursts**), scope, 0.1 Ω shunt resistor.
 
 | # | Measurement | Method | Replaces |
 |---|---|---|---|
 | 1 | LDO identity on all 4 SuperMinis | loupe/photo of the SOT-23-5 marking (ME6211 = "S2QB"-style Microne code; beware "LLVB" = 250 mA part) | §4.1 ⚠️ |
 | 2 | Average current: LOCAL idle, LOCAL playing, NETWORK streaming, HYBRID | bench supply at 3.70 V into the 5V pin (battery out, switch off); read supply's mA display, cross-check with DMM. **Caveat:** DMM mA-range burden (~1–2 Ω) distorts the rail — use the 10A range or a 0.1 Ω shunt + mV reading. USB power meter only as a coarse cross-check (linear LDO ⇒ its mA ≈ rail mA, but ~10 mA resolution and it can't see bursts) | §2 table, §3 battery lives |
-| 3 | TX burst profile (peak mA, duration, repetition) | scope across 0.1 Ω shunt in the supply lead during streaming and during WiFi connect | §2 burst table |
+| 3 | TX burst profile (peak mA, duration, repetition) | scope across 0.1 Ω shunt in the supply lead during streaming and during WiFi connect. **Requires a scope: the handheld ANENG A9002 DMM cannot resolve sub-ms bursts, so without a scope on hand the §2 burst figures stay modeled/estimated, not bench-measured.** | §2 burst table |
 | 4 | Rail droop / brownout onset | supply sweep 4.2 → 2.8 V in 0.1 V steps under NETWORK load; scope 3V3 rail AC-coupled during WiFi connect at 3.5 V and 3.3 V, **with and without the 220 µF**; record the VBAT at which the unit resets | §4.2 dropout math, §4.3 cap sizing, DESIGN §12 item 4 |
 | 5 | ME6211 dropout curve | supply into 5V pin, fixed resistive load steps (50/120/300 mA), record VIN at which 3V3 sags 1 % | §4.2 extrapolation ⚠️ |
 | 6 | Real usable capacity + threshold validation | full 4.2 V charge, run NETWORK streaming, log `vbat_mv` from 1 Hz status packets until deep sleep; integrate runtime × current; **watch DAC output amplitude during the battery-rundown test** (PCM5102A drops below its recommended supply minimums through the LOCAL low-battery band — §3) | §3 table, §5 ladder |
 | 7 | Divider/ADC accuracy | DMM VBAT vs reported `vbat_mv` at ~3.0/3.3/3.7/4.2 V per unit → NVS scale factors | §7 calibration |
 | 8 | TP4056 module RPROG & charge behavior | read RPROG value; measure charge current into a half-empty cell, confirm termination and charge time | §5 ⚠️ |
-| 9 | Deep-sleep system current | µA-capable meter in supply lead after triggering `VBAT_SLEEP_MV` path (or a test command) | §2 deep-sleep column |
+| 9 | Deep-sleep system current | µA-capable meter in supply lead after triggering `VBAT_SLEEP_MV` path (or a test command) — the handheld ANENG A9002 reads this steady-state microamp draw fine | §2 deep-sleep column |
 | 10 | Per-module currents (PCM5102A playing/idle, MAX4466) | modules powered individually on breadboard through the shunt | §2 rows |
 
 ---

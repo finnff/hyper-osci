@@ -1,79 +1,74 @@
 # FURTHER CLARIFICATION NEEDED
 
-Open questions for Finn. Some of these gate ordering: questions tagged
-**[ORDER-blocking]** gate the parts order that PLAN mandates *this week* (~Jul 21);
-questions tagged **[PCB-blocking]** gate the PCB order (~Aug 1). The rest don't
-block week-1 breadboard/firmware work. Answer inline / delete as resolved.
+Open questions for Finn. Tags: **[ORDER-blocking]** gates the parts order
+(~Jul 21); **[PCB-blocking]** gates the PCB order (~Aug 1, now with ~1 week
+extra slack before the 2026-08-21 show). Most were resolved 2026-07-17; the
+short **Still open** list is what remains.
 
-## Hardware / PCB
+## Resolved (2026-07-17)
 
-1. **[ORDER-blocking, answer by ~Jul 21] Scope connectors:** BNC right-angle PCB-mount on the board
-   edge, 3.5 mm TRS jack + TRS→BNC adapter cables, or just solder pads for
-   flying leads? BNC is most roadie-proof but adds ~15 mm board depth and ~€2/board.
-   Do you already own BNC cables/connectors (v3.2 doc said "maybe")?
-2. **[PCB-blocking] Battery capacity & physical size:** which LiPo cells exactly
-   (mAh, dimensions)? Drives battery holder/velcro area on the PCB and the
-   battery-life table. Also: battery mounted on the PCB or loose in the enclosure?
-3. **[PCB-blocking] Pot style:** PCB-mount 9 mm pot with knob (RV09-style,
-   soldered to carrier) or panel-mount pot on wires? Affects footprint + enclosure.
-4. **Enclosure:** 3D-printed case, laser-cut sandwich, or bare PCB with standoffs?
-   Any constraint from how the units mount at the venue (velcro on scopes? on a
-   shelf behind them?). PCB has 4× M3 holes either way.
-5. **Mic placement:** MAX4466 soldered to the carrier (mic points up) or on a
-   short cable so it can aim at the room/PA? Cable = better audio pickup,
-   worse mechanics.
-6. **Do you want a 5th spare unit built?** PCBs come in multiples of 5–10 anyway;
-   parts cost per extra unit ≈ €12.
-7. **[PCB-blocking] Which TP4056 variant do you own — micro-USB or USB-C?**
-   Changes the board-edge cutout and charging-cable logistics (pcb.md §10 Q2).
-8. **TP4056 charge current:** willing to swap the Rprog resistor (1 A → 500 mA) on
-   each module, or should we mandate 5 V/2 A chargers instead? (pcb.md §4.3 state 2)
-9. **[ORDER-blocking] Knob & switch details:** knob style for the 10 k pot (drives
-   shaft-length variant), and is a 0.3 A-rated SS12D00 slide switch OK or order the
-   1 A variant? (WiFi TX peaks ≈ 0.35 A — recommend the 1 A variant.) **We will
-   order the 1 A variant unless you object.** (pcb.md §5)
-10. **Quick bench check when modules are in hand:** beep the SuperMini USB-C VBUS
-    pin to the 5 V header pin — do your clones really tie them directly? Note the
-    result in `docs/hardware/measurements.md`; it affects power-path margins
-    (pcb.md §10 Q3).
+1. **Q1 — Scope connectors [was ORDER-blocking]:** No BNC, no TRS. Board exposes
+   2× RCA solder pad-pairs (signal+ground): X = PCM5102A L, Y = PCM5102A R.
+   Reuse the existing ~50 cm RCA cables from the old sigma-delta units into the
+   scopes' BNC→RCA adapters. Keep the 100 Ω series resistors (R10/R11). Frees
+   ~25 mm board edge and ~€2/board.
+2. **Q2 — Battery [was PCB-blocking]:** EEMB LP103454, LiPo 3.7 V 2000 mAh
+   (34×56×11 mm, ~40 g), pre-fitted JST connector. This is the default planning
+   cell. Mounted OFF the PCB — loose in the enclosure (velcro/pocket). Carrier
+   keeps its JST-PH battery socket.
+4. **Q4 — Enclosure:** 3D-printed case. Carrier keeps 4× M3 mounting holes.
+5. **Q5 — Mic placement:** MAX4466 on a short ~10 cm jumper-wire pigtail exiting
+   the enclosure (aim at PA, reach gain trimpot). Carrier provides a 3-pin
+   pigtail header (VCC/GND/OUT), not a flat on-board footprint.
+6. **Q6 — Unit count / spares:** Build 4 now (maybe a 5th later). Order 5 boards
+   (fab min qty is 5) → one spare bare board. Finn has spare ESP32-C3s, mics,
+   and DACs.
+7. **Q7 — TP4056 variant [was PCB-blocking]:** USB-C, blue PCB 17×27 mm; USB-C
+   jack overhangs ~2 mm (~29 mm effective depth). Size the charge-port cutout
+   for USB-C.
+9. **Q9 (switch half) [was ORDER-blocking]:** Order the 1 A-rated slide switch
+   (SS12D00-class) — WiFi TX peaks ~0.35 A. Decided.
+11. **Q11 — Show date:** Hard show date is **2026-08-21** (~5 weeks out from
+    today). PCB order gate stays ~Aug 1; boards-arrive checkpoint shifts to
+    ~Aug 16.
+12. **Q12 — Controller:** Committed to the Arduino UNO-Q as on-stage controller
+    AND the 2.4 GHz AP. NO laptop on stage. The "Python streamer" is a
+    test-streamer running ON the UNO-Q, standing in for full osci-render
+    integration.
+13. **Q13 — UNO-Q status:** ARRIVED. Debian 13 (trixie) aarch64, kernel 7.0.0,
+    QRB2210 (4× 2.0 GHz), ~3.58 GB RAM. Disk: rootfs (/) is 79% full (~2 GB
+    free — TIGHT); /home/arduino has ~16 GB free → build osci-render aarch64 in
+    /home/arduino, never on rootfs. osci-render aarch64 build in progress; the
+    ARM64/JavaFX build is the main controller risk.
+15. **Q15 — WiFi credentials:** Hardcoded `HYPEROSCI_AP` / `hyperosci2026`
+    defaults are fine for v1.
+16. **Q16 — LiPo leads:** The EEMB cell ships with a pre-fitted JST connector —
+    no crimping needed.
+17. **Q17 — 2.4 GHz AP:** The UNO-Q itself is the AP for the W1–W2 network/sync
+    tests. No separate router or phone hotspot needed.
+18. **Q18 — Fab:** Default to JLCPCB (no account or strong preference).
+19. **Q19 — Measurement meter:** Finn has an ANENG A9002 handheld DMM — good for
+    steady-state microamp reads (deep sleep). It CANNOT capture sub-ms WiFi-TX
+    current bursts, so TX-burst figures stay modeled/estimated.
+20. **Q20 — Scopes:** All four (Tek 2212 + three analog-dial variants) do XY
+    mode. No per-scope sensitivity blocker.
+21. **Q21 — Old sigma-delta units:** Keep all four INTACT as reference/backup
+    A/B units. Do NOT cannibalize. Only the screwed-in RCA jacks may be reused
+    non-destructively if needed.
 
-## System / performance
+## Still open
 
-11. **What's the actual performance date?** The old docs said "end of May 2026"
-    which has passed; the current plan targets ~Aug 14 for a working system. Is
-    there a hard show date after that?
-12. **Controller audio source:** is the plan still osci-render on the UNO-Q
-    (ARM64 build risk), or is a laptop running osci-render + the Python streamer
-    acceptable for the first show, with the UNO-Q as a later upgrade? This
-    changes how much of the 4 weeks goes to the UNO-Q app.
-13. **UNO-Q status:** has the board arrived? Which Debian image/version is on it?
-    (Needed before W3 of PLAN.md.)
-14. **Mic semantics in HYBRID mode:** canon (DESIGN §7 + `config.h`
-    `HYBRID_MIC_GAIN`) already defines the default as a per-unit local mic mix at
-    50 % (each scope reacts to its own mic). Confirm the canon default (per-unit
-    local mic mix), or request central-mic mixing (one mic into the UNO-Q, mixed
-    identically to all scopes) as a v2 feature.
-15. **WiFi credentials:** hardcoded `HYPEROSCI_AP` / `hyperosci2026` defaults OK,
-    or do you want console-configurable credentials in v1?
-
-## Logistics / bench
-
-16. **Do the LiPo packs already have JST-PH leads**, or do we need to crimp/buy
-    pigtails? (Affects the buy-now list; carrier has a JST-PH socket.)
-17. **[Blocks W1–W2 network tests] What 2.4 GHz AP can you use before the UNO-Q
-    exists?** Laptop with hostapd-capable adapter, a spare router, or phone
-    hotspot? (Phone hotspots work but add jitter — fine for smoke tests, not for
-    the ±5 ms sync measurement.)
-18. **Fab preference:** PLAN assumes JLCPCB + DHL. Any existing PCBWay/JLCPCB
-    account, coupons, or preference?
-19. **Do you have a µA-capable meter or a 0.1 Ω shunt** for the deep-sleep and
-    TX-burst current measurements, or should the measurement plan assume
-    USB-power-meter accuracy only?
-
-## Nice-to-know
-
-20. **Scope models:** besides the Tektronix 2212 — what are the other three?
-    (Input impedance/sensitivity check, and whether all four do XY mode.)
-21. **Old sigma-delta units:** keep one intact as reference/backup for A/B
-    comparison during bring-up, or cannibalize all four ESP32-C3s for the new
-    carriers?
+- **Q3 — Pot style [PCB-blocking]:** PCB-mount 9 mm (RV09) is only a tentative
+  default — footprint NOT finalized. Decide before the PCB order.
+- **Q9 (knob-shaft half) [ORDER-blocking]:** Knob style + shaft length for the
+  10 k pot still undecided (tied to Q3's pot style).
+- **Q8 — TP4056 charge current:** Keep the 1 A default. Leaning toward mandating
+  5 V/2 A wall chargers instead of swapping RPROG to ~0.5 A (fiddly to solder).
+  2000 mAh at 1 A ≈ 0.5C → full charge ~2.5–3 h. **Confirm: mandate 2 A
+  chargers, RPROG swap optional?**
+- **Q10 — VBUS→5V bench check:** When modules are in hand, beep the SuperMini
+  USB-C VBUS pin to the 5 V header pin — do the clones tie them directly?
+  Pending modules; affects power-path margins.
+- **Q14 — HYBRID mic semantics:** Canon default stands (per-unit local mic mix,
+  `HYBRID_MIC_GAIN` 50%). Central-mic mixing (one mic into the UNO-Q, mixed to
+  all scopes) noted as a possible v2. Confirm canon, or request central as v2.

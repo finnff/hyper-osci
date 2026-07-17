@@ -36,7 +36,7 @@ Socket layout:
   receives audio/sync/cmd whether the controller sends unicast or multicast (transport-agnostic,
   DESIGN.md §2). STATUS is sent to **the source IP of the most recent SYNC/CMD packet**, port 5002,
   from any source port. Learning the controller address (instead of hardcoding `192.168.4.1`) is
-  deliberate: it lets the laptop Python streamer stand-in run on any AP during weeks 1–3. A slave
+  deliberate: it lets the Python test-streamer (running on the UNO-Q) work on any AP/subnet during weeks 1–3. A slave
   that has never received a SYNC/CMD sends no STATUS. The controller must identify slaves by the
   STATUS payload (`mac`, `slave_id`) and the datagram's source IP, never by source port.
 - **Controller** binds `:5002` to receive STATUS, and uses one ordinary UDP socket to fan out

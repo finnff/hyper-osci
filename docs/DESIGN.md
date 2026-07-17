@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-17
 **Status:** LOCKED for slave v1 hardware/firmware. Changes to this file require updating every doc/code file that references it.
-**Deadline context:** ~4 weeks (target: PCBs ordered, assembled, and firmware running by ~2026-08-14).
+**Deadline context:** ~5 weeks (target: PCBs ordered, assembled, and firmware running by ~2026-08-21).
 
 This file is the single source of truth. The research history lives in [docs/research/](research/). Where this file contradicts a research doc, **this file wins**.
 
@@ -10,7 +10,9 @@ This file is the single source of truth. The research history lives in [docs/res
 
 ## 1. System snapshot
 
-4 battery-powered slave units, each driving one oscilloscope in X/Y mode. Each slave = **ESP32-C3 SuperMini + PCM5102A I2S DAC module + MAX4466 mic**, on a custom through-hole carrier PCB. A central controller (Arduino UNO-Q, Debian) generates osci-render X/Y audio and streams it over its own WiFi AP. Every slave falls back to standalone mic→scope visualization when the network is absent.
+4 battery-powered slave units, each driving one oscilloscope in X/Y mode. Each slave = **ESP32-C3 SuperMini + PCM5102A I2S DAC module + MAX4466 mic**, on a custom through-hole carrier PCB. A central controller (Arduino UNO-Q) generates osci-render X/Y audio and streams it over its own WiFi AP. Every slave falls back to standalone mic→scope visualization when the network is absent.
+
+The UNO-Q controller has **arrived** (Debian 13 "trixie", aarch64) and doubles as the on-stage 2.4 GHz WiFi AP — **no laptop on stage**. Any "laptop streamer" stand-in language elsewhere refers to a Python test-streamer running on the UNO-Q itself, standing in for full osci-render integration.
 
 ```
 UNO-Q (WiFi AP, 2.4 GHz) ──UDP──▶ 4× [ESP32-C3 ──I2S──▶ PCM5102A ──▶ scope X/Y]
@@ -31,11 +33,11 @@ UNO-Q (WiFi AP, 2.4 GHz) ──UDP──▶ 4× [ESP32-C3 ──I2S──▶ PCM
 | 1 | ESP32-C3 SuperMini | MCU, WiFi, I2S master | €3 | already owned ×4 |
 | 2 | GY-PCM5102A (purple module) | 24-bit stereo DAC → scope X/Y | €2 | already ordered ×4 |
 | 3 | MAX4466 electret mic module | fallback/hybrid audio input | €1.50 | already owned ×4 |
-| 4 | TP4056 charger module (03962A, **with** DW01+FS8205 protection) | LiPo charging + protection | €0.50 | already owned ×4 |
-| 5 | LiPo 3.7 V (1000–2000 mAh) | power | — | already owned |
+| 4 | TP4056 charger module (**USB-C variant**, blue PCB 17×27 mm, **with** DW01+FS8205 protection) | LiPo charging + protection | €0.50 | 1 A default charge kept (RPROG swap to 0.5 A optional); **mandate 5 V / 2 A wall chargers** so 1 A (~0.5C, full ~2.5–3 h) is safe |
+| 5 | LiPo 3.7 V — **selected: EEMB LP103454, 2000 mAh** (34×56×11 mm, ~40 g, pre-fitted JST) | power | — | mounted off-board (loose in the enclosure, velcro/pocket); 1000 mAh is a smaller-cell reference only |
 | 6 | Carrier PCB (this project) | ties it all together | ~€1–2/board | to design, THT only |
 
-Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch, mode button (6×6 mm tactile), 10 kΩ potentiometer (panel/PCB mount, filter-cutoff knob), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, 2× BNC (or TRS — open question) for scope out, female pin-header sockets for all modules.
+Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (1 A-rated, SS12D00-class — WiFi TX peaks ~0.35 A), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff knob; footprint **still open** — 9 mm PCB-mount RV09 is only a tentative default), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
 
 ## 4. Canonical pin map (ESP32-C3 SuperMini)
 
@@ -144,12 +146,12 @@ LiPo ──▶ TP4056 module (charge via its own USB; DW01 protection) ──▶
 
 **Breadboard/bring-up rule:** never have the power switch ON while the SuperMini USB-C is plugged in (most SuperMini clones tie VBUS straight to the 5 V pin — USB would back-feed the battery). Flash/debug on USB with switch OFF. The carrier PCB adds a proper load-sharing power path (P-FET + Schottky, both VBUS sources diode-ORed into the gate) so this rule disappears on the final boards — see [hardware/pcb.md](hardware/pcb.md).
 
-**Budget (estimates, to be measured in week 1):**
+**Budget (estimates, to be measured in week 1):** the **selected cell is 2000 mAh** (EEMB LP103454) — plan around **~13 h NETWORK / ~30 h LOCAL**, comfortably clearing the ~10 h runtime target. The 1000 mAh column is retained as a smaller-cell reference only.
 
-| Mode | Current @3.7 V | 1000 mAh | 2000 mAh |
+| Mode | Current @3.7 V | 1000 mAh (ref) | **2000 mAh (selected)** |
 |------|----------------|----------|----------|
-| NETWORK (WiFi RX, sleep off) | ~120–135 mA | ~6.5 h | ~13 h |
-| LOCAL (WiFi off) | ~50–60 mA | ~15 h | ~29 h |
+| NETWORK (WiFi RX, sleep off) | ~120–135 mA | ~6.5 h | **~13 h** |
+| LOCAL (WiFi off) | ~50–60 mA | ~15 h | **~29–30 h** |
 | Low-battery policy (firmware) | warn < 3.45 V, WiFi off < 3.30 V, deep sleep < 3.05 V | protects LiPo above DW01's 2.4 V cutoff | |
 
 Details/derivation: [hardware/power-budget.md](hardware/power-budget.md).
@@ -157,7 +159,7 @@ Details/derivation: [hardware/power-budget.md](hardware/power-budget.md).
 ## 10. Firmware stack
 
 - **PlatformIO + pioarduino platform (Arduino core 3.x / ESP-IDF 5.x)**, board `esp32-c3-devkitm-1`, USB CDC console.
-- **Why not Zephyr / pure ESP-IDF:** Zephyr's ESP32-C3 port lacks mature I2S-TX and continuous-DMA-ADC drivers and its WiFi path (Espressif HAL blobs) is far less field-proven — unacceptable risk on a 4-week deadline. Pure ESP-IDF would be equally solid but adds boilerplate; since all hot-path code here already calls IDF drivers directly, migrating later is cheap. PlatformIO (not Arduino IDE) for pinned versions and reproducible builds.
+- **Why not Zephyr / pure ESP-IDF:** Zephyr's ESP32-C3 port lacks mature I2S-TX and continuous-DMA-ADC drivers and its WiFi path (Espressif HAL blobs) is far less field-proven — unacceptable risk on a ~5-week deadline. Pure ESP-IDF would be equally solid but adds boilerplate; since all hot-path code here already calls IDF drivers directly, migrating later is cheap. PlatformIO (not Arduino IDE) for pinned versions and reproducible builds.
 - Native IDF drivers used directly where the Arduino wrapper is inadequate: `i2s_std` (TX master, 48 kHz/16-bit/stereo, no MCLK) and `adc_continuous` (mic+vbat DMA). The Arduino `analogContinuous` wrapper *averages* conversions and is unusable for audio — do not use it.
 - FreeRTOS layout (single core): high-prio audio task (pulls 240-frame blocks from active source, pushes to I2S DMA — the blocking I2S write paces the loop), network task (UDP RX → jitter buffer, status TX), Arduino `loop()` for UI/console at 100 Hz.
 - Source: `src/esp32-slave/` — see [firmware/esp32-architecture.md](firmware/esp32-architecture.md).
@@ -170,10 +172,14 @@ Target carrier PCB: **~70 × 50 mm**, 2-layer, all through-hole, modules sockete
 |--------|--------------|----------|
 | ESP32-C3 SuperMini | 22.5 × 18 mm | 2× 1×8 header, 2.54 mm |
 | GY-PCM5102A | ~27 × 17 mm | 1×6 header (SCK BCK DIN LCK GND VIN) + 3-pin analog out |
-| MAX4466 | ~20 × 13 mm | 1×3 header (VCC GND OUT), mic faces outward/upward |
-| TP4056 03962A | ~26 × 17 mm | 4 pads (B+/B−/OUT+/OUT−) via header or wire, USB edge accessible |
+| MAX4466 | ~20 × 13 mm | on a ~10 cm 3-pin pigtail (VCC GND OUT), exits the enclosure aimed at the PA so its gain trimpot stays screwdriver-reachable — not flat on the carrier |
+| TP4056 (USB-C variant) | blue PCB ~17 × 27 mm (USB-C jack overhangs ~2 mm → ~29 mm effective depth) | 4 pads (B+/B−/OUT+/OUT−) via header or wire, **USB-C** charge-port cutout on the board edge |
 
-Scope connection: BNC preferred (right-angle PCB-mount on board edge) — **open question** whether to use BNC, 3.5 mm TRS + adapter cables, or flying leads.
+**Scope connection (resolved):** no BNC or TRS on the carrier. The board exposes **2× RCA flying-lead solder pad-pairs** (signal + ground): X = PCM5102A L, Y = PCM5102A R, each fed through its 100 Ω series resistor (R10/R11). Signal chain: board RCA pad → reused ~50 cm RCA cable (RCA male, salvaged from the old sigma-delta units) → BNC→RCA adapter already fitted on each scope → scope CH. This frees ~25 mm of board edge and ~€2/board vs the old BNC plan.
+
+**Enclosure:** 3D-printed case; the carrier keeps its 4× M3 mounting holes and its JST-PH battery socket. The 2000 mAh LiPo (34 × 56 × 11 mm) rides **off-board**, loose in the enclosure (velcro/pocket), since it is large relative to the 70 × 50 mm carrier.
+
+**Panel controls:** power = **1 A-rated slide switch** (SS12D00-class, for the ~0.35 A WiFi TX peak). The **pot style and knob shaft length are still open** — the 9 mm PCB-mount RV09 is only a tentative default and the footprint is not finalized.
 
 ## 12. Verification checklist (must close before PCB order)
 
@@ -195,7 +201,7 @@ docs/            all documentation (this file = canon)
   hardware/      wiring, power, PCB
   firmware/      firmware architecture
   protocol.md    normative wire protocol
-  PLAN.md        4-week execution plan
+  PLAN.md        ~5-week execution plan
 src/esp32-slave/     PlatformIO project (slave firmware)
 src/unoq-controller/ UNO-Q Debian app (TBA — stub)
 FURTHER_CLARIFICATION_NEEDED.md   open questions for Finn

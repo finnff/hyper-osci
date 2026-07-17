@@ -38,7 +38,7 @@ Sync target ±5 ms via 500 ms beacons; ~70 ms end-to-end latency (60 ms jitter b
 | Doc | What it is |
 |-----|------------|
 | [docs/DESIGN.md](docs/DESIGN.md) | Canonical decisions: pin map, modules, modes, power, network (LAW) |
-| [docs/PLAN.md](docs/PLAN.md) | 4-week execution plan (Jul 17 → Aug 14), critical path, risks, shopping list |
+| [docs/PLAN.md](docs/PLAN.md) | 5-week execution plan (Jul 17 → Aug 21), critical path, risks, shopping list |
 | [docs/protocol.md](docs/protocol.md) | Normative wire protocol (with [src/esp32-slave/include/protocol.h](src/esp32-slave/include/protocol.h)) |
 | [docs/hardware/wiring.md](docs/hardware/wiring.md) | Complete hookup guide + bring-up checklist (breadboard now, PCB later) |
 | [docs/hardware/pcb.md](docs/hardware/pcb.md) | Carrier PCB: full BOM, power path, layout notes |
@@ -56,9 +56,11 @@ Per slave (modules socketed on a custom ~70 × 50 mm through-hole carrier PCB �
 | Module | Role |
 |--------|------|
 | ESP32-C3 SuperMini | MCU, WiFi, I2S master |
-| GY-PCM5102A | 24-bit stereo I2S DAC → scope X/Y (ground-centered, DC-coupled output) |
-| MAX4466 | electret mic for fallback/hybrid mode |
-| TP4056 (03962A, with protection) + LiPo 3.7 V | power |
+| GY-PCM5102A | 24-bit stereo I2S DAC → scope X/Y via 2× RCA pads (X = L, Y = R), ground-centered DC-coupled |
+| MAX4466 | electret mic (on a ~10 cm pigtail) for fallback/hybrid mode |
+| TP4056 (USB-C, with protection) + EEMB LP103454 LiPo 3.7 V 2000 mAh | power (~13 h NETWORK / ~30 h LOCAL) |
+
+Scope output is 2× RCA flying-lead pads (X = DAC L, Y = DAC R, 100 Ω series) driving reused ~50 cm RCA cables into each scope's existing BNC→RCA adapter — no BNC/TRS on our board. Enclosure: 3D-printed case (4× M3 mounts), LiPo mounted off-PCB.
 
 Controls per unit: power switch, mode button (NETWORK / LOCAL / HYBRID), filter-cutoff pot, 2 status LEDs. Controller: 1× Arduino UNO-Q (4 GB, Debian). Pin map and all constants: [src/esp32-slave/include/config.h](src/esp32-slave/include/config.h) — **canonical, do not improvise**.
 
@@ -66,13 +68,13 @@ Controls per unit: power switch, mode button (NETWORK / LOCAL / HYBRID), filter-
 
 - [x] Research + feasibility (docs/research/)
 - [x] Design locked ([docs/DESIGN.md](docs/DESIGN.md))
-- [x] Hardware modules owned/ordered (SuperMinis, DACs, mics, chargers, UNO-Q)
+- [x] Hardware modules owned/ordered (SuperMinis, DACs, mics, chargers, UNO-Q — arrived, Debian 13 trixie aarch64)
 - [x] Firmware skeleton written (`src/esp32-slave/` — PlatformIO project, config + protocol headers)
 - [ ] Breadboard bring-up + DESIGN §12 verification checklist (week 1)
 - [ ] Carrier PCB designed & ordered (order gate ~Aug 1 — see [docs/PLAN.md](docs/PLAN.md))
 - [ ] 4-slave sync demo
-- [ ] UNO-Q controller app (TBA — [src/unoq-controller/README.md](src/unoq-controller/README.md); laptop Python streamer stand-in comes first)
-- [ ] Assembly + venue rehearsal (target Aug 14)
+- [ ] UNO-Q controller app (osci-render aarch64 build in progress — [src/unoq-controller/README.md](src/unoq-controller/README.md); Python test-streamer on the UNO-Q comes first)
+- [ ] Assembly + venue rehearsal (target Aug 21)
 
 ## Repository layout
 
@@ -82,7 +84,7 @@ docs/                 all documentation (DESIGN.md = canon)
   hardware/           wiring, power budget, PCB
   firmware/           firmware architecture
   protocol.md         normative wire protocol
-  PLAN.md             4-week execution plan
+  PLAN.md             5-week execution plan
 src/esp32-slave/      PlatformIO project — slave firmware
 src/unoq-controller/  UNO-Q Debian app (stub — streamer/renderer/web UI)
 FURTHER_CLARIFICATION_NEEDED.md

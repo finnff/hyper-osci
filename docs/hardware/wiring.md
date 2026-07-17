@@ -85,6 +85,12 @@ Set the back-side gain trimmer to mid-travel to start; fine-tune later while wat
 scope. ⚠️ VERIFY: trimmer rotation direction vs. gain varies between module clones — find it
 empirically. Point the electret capsule outward/away from the boards.
 
+**Mounting:** the MAX4466 rides on a short ~10 cm pigtail — three jumper wires (`VCC` / `GND` /
+`OUT`, nets M1–M3) — that exits the enclosure; it is **not** soldered flat to the carrier. This
+lets you aim the capsule at the PA and reach the gain trimpot with a screwdriver after assembly.
+The carrier provides a matching 3-pin pigtail landing/header (`VCC` / `GND` / `OUT`), not a flat
+on-board footprint.
+
 ### 2.5 UI: pot, button, LEDs, GPIO2 pull-up
 
 | # | From | To | Notes |
@@ -157,10 +163,10 @@ empirically. Point the electret capsule outward/away from the boards.
                                  │                                            │
                               ┌──┴───────────────────┐                       GND
        charge-only USB ───────┤ OUT+                  │
-       (rules in §6)          │      TP4056 03962A    │
+       (rules in §6)          │      TP4056 USB-C     │
                               │      (DW01 + FS8205)  │
       LiPo 3.7 V  + ──────────┤ B+                    │
-      1000–2000 mAh − ────────┤ B−              OUT− ─┼── GND
+      2000 mAh (EEMB) − ──────┤ B−              OUT− ─┼── GND
                               └───────────────────────┘
 ```
 
@@ -201,13 +207,20 @@ On the carrier PCB the SCK socket pin is tied straight to the ground plane.
 | `ROUT` — jack **ring**, or `R` pad | CH2 | Y |
 | analog GND — jack **sleeve**, or `G` pad | probe GND clips | common ground |
 
-- Easiest breadboard hookup: a 3.5 mm TRS breakout (or sacrificed stereo cable) in the
-  module's jack. Tip = L = X, ring = R = Y, sleeve = GND.
+- **Deliverable output path (carrier board):** the carrier has *no* BNC or TRS jack. It
+  exposes two RCA flying-lead solder pad-pairs (signal + ground), fed through the 100 Ω series
+  resistors (R10/R11): **X = PCM5102A L**, **Y = PCM5102A R**. Signal chain is
+  board RCA pad → reused ~50 cm RCA cable (RCA male, salvaged from the old sigma-delta units)
+  → BNC→RCA adapter already fitted on the scope → scope CH, in XY mode.
+- Breadboard bring-up only: a 3.5 mm TRS breakout (or sacrificed stereo cable) in the
+  module's jack is fine for the bench. Tip = L = X, ring = R = Y, sleeve = GND — but that jack
+  does not exist on the deliverable board (RCA pads replace it).
 - ⚠️ VERIFY: the silk order of the unpopulated 3-pin analog header (L/G/R vs R/G/L) varies
-  between batches — beep it out against the jack before soldering headers for the PCB.
+  between batches — beep it out against the jack before wiring the RCA pads for the PCB.
 - Scope setup: **XY mode**, CH1 = X, CH2 = Y, both **DC coupled**, both **1 MΩ** input
-  (never 50 Ω termination — the line-out stage can't drive it), ×1 probes or plain BNC leads,
-  1 V/div, traces centered.
+  (never 50 Ω termination — the line-out stage can't drive it); on the bench use ×1 probes,
+  on the finished unit the reused RCA cable into the scope's BNC→RCA adapter. 1 V/div, traces
+  centered.
 - Expected full-scale output: **≈2.1 V RMS ≈ ±3 V peak (~6 Vpp) per channel**, ground-centered
   and DC-coupled (the chip's internal charge pump makes a negative rail — no DC offset to
   fight, a full-scale circle sits centered on the graticule).
@@ -269,8 +282,10 @@ previous one measured clean. DMM required; scope required from Phase 4.
    - **Measure:** continuity SCK↔GND = 0 Ω; VIN↔GND = open (no short); visual: no bridge
      spans all three pads.
 2. TP4056: confirm protected variant (DW01 + FS8205 present near output pads).
-   - Note: stock PROG resistor (1.2 kΩ) ⇒ ~1 A charge current = 1C on a 1000 mAh cell —
-     acceptable but warm. For smaller cells swap R_PROG (2 kΩ ≈ 580 mA, 3 kΩ ≈ 400 mA).
+   - Note: stock PROG resistor (1.2 kΩ) ⇒ ~1 A charge = ~0.5C on the selected 2000 mAh cell
+     (EEMB LP103454) — comfortable, full charge ~2.5–3 h. Mandate 5 V/2 A wall chargers;
+     the R_PROG swap is optional (fiddly to solder). On legacy 1000 mAh cells 1 A = 1C (warm)
+     — swap R_PROG (2 kΩ ≈ 580 mA, 3 kΩ ≈ 400 mA).
 3. MAX4466: gain trimmer to mid-travel.
 4. LEDs: identify anode (long leg) before wiring; a DMM diode-test lights them.
 
