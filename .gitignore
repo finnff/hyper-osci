@@ -1,0 +1,23 @@
+# PlatformIO
+src/esp32-slave/.pio/
+.pio/
+
+# Editors / tooling
+.vscode/
+.cache/
+compile_commands.json
+
+# KiCad (future hw/ project)
+*-backups/
+*.kicad_prl
+fp-info-cache
+*.lck
+
+# Third-party binaries dropped in the repo root (keep out of git)
+arduino-flasher-cli
+*.tar.gz
+*.zip
+
+# OS noise
+.DS_Store
+Thumbs.db
