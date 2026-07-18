@@ -159,13 +159,12 @@ def render_text(text, font):
     strokes = []
     line_h = 32.0
     for row, linetext in enumerate(text.replace("|", "\n").split("\n")):
-        x = 0.0
         dy = -row * line_h
-        for ch in linetext:
-            g = glyphs.get(ord(ch)) or glyphs.get(ord("?"))
-            if g is None:
-                continue
-            left, right, gstrokes = g
+        gl = [g for g in (glyphs.get(ord(ch)) or glyphs.get(ord("?"))
+                          for ch in linetext) if g is not None]
+        # centre each line on its own width (not left-aligned in the block)
+        x = -sum(right - left for left, right, _ in gl) / 2.0
+        for left, right, gstrokes in gl:
             for st in gstrokes:
                 strokes.append([(x + sx - left, sy + dy) for sx, sy in st])
             x += right - left
