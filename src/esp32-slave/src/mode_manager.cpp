@@ -164,6 +164,17 @@ void handle_command(const char* json, size_t len) {
     float g = doc["gain"] | 1.0f;
     audio_out::set_gain(g);
     prefs.putFloat("gain", audio_out::gain());
+  } else if (strcmp(cmd, "set_pattern") == 0) {
+    // Selects the LOCAL renderer's pattern (played in LOCAL mode and as the
+    // NETWORK-mode fallback). {"cmd":"set_pattern","pattern":"mic"|...}
+    const char* p = doc["pattern"];
+    if (p == nullptr) return;
+    using renderer_local::Pattern;
+    if (strcmp(p, "mic") == 0) renderer_local::set_pattern(Pattern::MIC);
+    else if (strcmp(p, "circle") == 0) renderer_local::set_pattern(Pattern::CIRCLE);
+    else if (strcmp(p, "lissajous") == 0) renderer_local::set_pattern(Pattern::LISSAJOUS);
+    else if (strcmp(p, "ramp") == 0) renderer_local::set_pattern(Pattern::RAMP);
+    else if (strcmp(p, "square") == 0) renderer_local::set_pattern(Pattern::SQUARE);
   } else if (strcmp(cmd, "identify") == 0) {
     ui::identify();
   } else if (strcmp(cmd, "reboot") == 0) {

@@ -172,9 +172,10 @@ void print_stat() {
                 mode_manager::active_source() ? "network" : "local",
                 renderer_local::pattern_name(),
                 (double)renderer_local::current_lpf_hz());
-  Serial.printf("wifi=%s stream=%s rssi=%d ip=%s\n",
-                s.wifi_up ? "up" : "down", s.stream_up ? "up" : "down",
-                s.rssi_dbm, WiFi.localIP().toString().c_str());
+  Serial.printf("wifi=%s ps=%s stream=%s rssi=%d ip=%s\n",
+                s.wifi_up ? "up" : "down", net_rx::ps_mode(),
+                s.stream_up ? "up" : "down", s.rssi_dbm,
+                WiFi.localIP().toString().c_str());
   Serial.printf("rx=%lu drop=%lu gaps=%lu underrun=%lu depth=%u frames\n",
                 (unsigned long)s.rx_packets, (unsigned long)s.rx_dropped,
                 (unsigned long)s.seq_gaps, (unsigned long)s.underruns,

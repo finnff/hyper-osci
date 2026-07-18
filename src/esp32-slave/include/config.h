@@ -40,7 +40,11 @@
 // ---------------------------------------------------------------------------
 // Jitter buffer / sync
 // ---------------------------------------------------------------------------
-#define JB_CAPACITY_FRAMES 8192 // ~170 ms at 48 kHz (32 KiB)
+// Sized to ride through WiFi radio stalls at the controller's 300 ms deadline
+// lead. The UNO-Q's ath10k AP goes deaf ~100-300 ms every ~1.44 s (firmware
+// quirk, W1 bring-up: not BT-coex, not power save, not P2P — unfixable from
+// userspace); the buffer must absorb lead + post-stall delivery burst.
+#define JB_CAPACITY_FRAMES 24576 // ~512 ms at 48 kHz (96 KiB)
 #define JB_TARGET_DEPTH_MS 60   // startup buffering target
 #define STREAM_TIMEOUT_MS 1000  // no audio packets -> fallback (v3.1 req)
 #define SYNC_STALE_MS 5000      // no SYNC beacon -> clock considered stale

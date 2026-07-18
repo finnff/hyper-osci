@@ -27,6 +27,7 @@ void set_cmd_handler(CmdHandler h);
 void set_radio(bool on);
 bool radio_enabled();
 bool wifi_connected();
+const char* ps_mode();  // live WiFi power-save state: "none"|"min"|"max"|"?"
 bool stream_active();  // audio packets within STREAM_TIMEOUT_MS
 
 // Audio-task side: fill one block from the jitter buffer, honoring the

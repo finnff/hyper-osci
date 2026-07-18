@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "jitter_buffer.h"
 #include "mic_in.h"
 #include "mode_manager.h"
@@ -183,6 +184,12 @@ void wifi_connect() {
 }
 
 void on_wifi_up() {
+  // WiFi.setSleep(false) before begin() does not reliably stick in core 3.x —
+  // with power save active the AP buffers our unicast audio between DTIM
+  // wakeups: measured as a ~110 ms radio stall every 1.4 s (dot-on-scope
+  // dropouts). Force it here, where the STA is definitely started, and
+  // surface the live value in `stat` (ps=) so a regression is visible.
+  esp_wifi_set_ps(WIFI_PS_NONE);
   udp_audio.beginMulticast(IPAddress(MCAST_GROUP), PORT_AUDIO);
   udp_ctrl.beginMulticast(IPAddress(MCAST_GROUP), PORT_CTRL);
   udp_status.begin(0);  // TX only, ephemeral port
@@ -286,6 +293,19 @@ void set_radio(bool on) { g_radio_on = on; }
 bool radio_enabled() { return g_radio_on; }
 
 bool wifi_connected() { return g_wifi_up; }
+
+const char* ps_mode() {
+  wifi_ps_type_t ps;
+  if (esp_wifi_get_ps(&ps) != ESP_OK) return "?";
+  switch (ps) {
+    case WIFI_PS_NONE:
+      return "none";
+    case WIFI_PS_MIN_MODEM:
+      return "min";
+    default:
+      return "max";
+  }
+}
 
 bool stream_active() {
   return g_wifi_up && (millis() - g_last_audio_ms) < STREAM_TIMEOUT_MS &&
