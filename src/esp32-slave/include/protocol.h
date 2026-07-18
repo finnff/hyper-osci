@@ -72,7 +72,10 @@ typedef struct __attribute__((packed)) {
   int32_t clock_offset_us; // current smoothed sync offset (saturated)
   uint8_t local_pattern;   // renderer_local::Pattern: 0=mic 1=circle
                            // 2=lissajous 3=ramp 4=square (drawn when source=0)
-} HypeStatusPayload;     // 35 bytes
+  uint32_t lost_packets;   // cumulative missing AUDIO packets inferred from
+                           // seq gaps (catches loss below the socket layer,
+                           // which rx_dropped cannot see)
+} HypeStatusPayload;     // 39 bytes
 
 _Static_assert(sizeof(HypeHeader) == 20, "header must be 20 bytes");
-_Static_assert(sizeof(HypeStatusPayload) == 35, "status must be 35 bytes");
+_Static_assert(sizeof(HypeStatusPayload) == 39, "status must be 39 bytes");

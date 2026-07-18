@@ -11,7 +11,8 @@ struct Stats {
   uint32_t rx_packets;
   uint32_t rx_dropped;  // stale / overflow / bad packets
   uint32_t underruns;
-  uint32_t seq_gaps;
+  uint32_t seq_gaps;      // gap events (any seq discontinuity)
+  uint32_t lost_packets;  // cumulative missing packets inferred from gap sizes
   int8_t rssi_dbm;
   bool wifi_up;
   bool stream_up;

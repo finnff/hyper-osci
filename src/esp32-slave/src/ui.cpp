@@ -180,10 +180,10 @@ void print_stat() {
                 s.wifi_up ? "up" : "down", net_rx::ps_mode(),
                 s.stream_up ? "up" : "down", s.rssi_dbm,
                 WiFi.localIP().toString().c_str());
-  Serial.printf("rx=%lu drop=%lu gaps=%lu underrun=%lu depth=%u frames\n",
+  Serial.printf("rx=%lu drop=%lu gaps=%lu lost=%lu underrun=%lu depth=%u frames\n",
                 (unsigned long)s.rx_packets, (unsigned long)s.rx_dropped,
-                (unsigned long)s.seq_gaps, (unsigned long)s.underruns,
-                s.buffer_depth_frames);
+                (unsigned long)s.seq_gaps, (unsigned long)s.lost_packets,
+                (unsigned long)s.underruns, s.buffer_depth_frames);
   Serial.printf(
       "sync=%s offset=%lldus vbat=%umV pot=%.2f id=%u heap=%u astk=%u\n",
       timesync::valid() ? "ok" : "stale", (long long)timesync::offset_us(),

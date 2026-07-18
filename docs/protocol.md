@@ -75,7 +75,7 @@ UNO-Q 192.168.4.1
   ├── :5000 AUDIO ──unicast──▶ slave1:5000 … slave4:5000   (200 pps each, 988 B)
   ├── :5001 SYNC ──multicast─▶ 239.0.0.1:5001              (every 500 ms, 20 B — discovery beacon)
   ├── :5001 CMD ────unicast──▶ slaveN:5001                 (on demand, JSON)
-  └── :5002 ◀──────────────── slaveN → STATUS              (1 Hz, 54 B, starts after first SYNC)
+  └── :5002 ◀──────────────── slaveN → STATUS              (1 Hz, 59 B, starts after first SYNC)
 ```
 
 ---
@@ -105,7 +105,7 @@ Packet types (`HypePacketType`):
 | `0x01` | `HYPE_AUDIO` | 5000 | controller → slaves | 8-byte subheader + samples (§3.1) |
 | `0x02` | `HYPE_SYNC` | 5001 | controller → slaves, every 500 ms | none — header only (§3.2) |
 | `0x03` | `HYPE_CMD` | 5001 | controller → slave | UTF-8 JSON (§3.3) |
-| `0x04` | `HYPE_STATUS` | 5002 | slave → controller, every 1 s | 34 bytes (§3.4) |
+| `0x04` | `HYPE_STATUS` | 5002 | slave → controller, every 1 s | 39 bytes (§3.4) |
 
 ### 2.2 Receive validation (both sides)
 
@@ -182,7 +182,9 @@ unconfirmed (§10).
 ### 3.4 HYPE_STATUS — port 5002, slave → controller, every 1 s
 
 `timestamp_us` = slave's local µs clock (informational; the controller must not mix it with its
-own clock). Datagram length MUST equal **55** (20 + 35).
+own clock). Datagram length is **59** (20 + 39). Receivers MUST accept any length ≥ 55 and treat
+fields beyond the received length as absent (`lost_packets` was appended after the initial v1
+deployment; the trailing-bytes rule of §2.2 makes both directions compatible).
 
 | Offset | Size | Field | Type | Description |
 |--------|------|-------|------|-------------|
@@ -200,6 +202,7 @@ own clock). Datagram length MUST equal **55** (20 + 35).
 | 46 | 4 | `uptime_s` | `uint32_t` | seconds since boot |
 | 50 | 4 | `clock_offset_us` | `int32_t` | current smoothed sync offset, saturated to int32 range |
 | 54 | 1 | `local_pattern` | `uint8_t` | local-render pattern (drawn whenever `source=0`): 0 = mic, 1 = circle, 2 = lissajous, 3 = ramp, 4 = square |
+| 55 | 4 | `lost_packets` | `uint32_t` | cumulative missing AUDIO packets inferred from `seq` gaps (§2.3) — counts loss the slave never saw arrive (e.g. dropped below the socket layer), which `rx_dropped` cannot |
 
 `mode` vs `source` distinction matters for the UI: a slave in NETWORK mode with a lost stream
 reports `mode=1, source=0` (fallback active — NET LED blinking 5 Hz). `source` is smoothed on
@@ -357,7 +360,9 @@ image, so a lost 5 ms block is nearly invisible.
   in-window deadlines arrive again, the slave re-buffers (the "wait" rule §5.2 provides the ~60 ms
   refill) and switches source back to the network stream at a block boundary. No handshake.
 - **Statistics:** every discard increments `rx_dropped`; every empty-buffer playout tick increments
-  `underruns`; accepted packets increment `rx_packets`. All three are reported in STATUS (§3.4).
+  `underruns`; accepted packets increment `rx_packets`; packets that never arrived at all are
+  inferred from unflagged `seq` gaps (§5.4) into `lost_packets`. All four are reported in STATUS
+  (§3.4) — `lost_packets` exists because loss below the socket layer is invisible to `rx_dropped`.
   Since the controller knows how many packets it sent, per-slave delivery rate ≈
   `Δrx_packets / Δsent` — the §12 WiFi-robustness checklist item reads exactly these counters.
 
@@ -510,7 +515,8 @@ tick. The roster comes from STATUS receive (below). Optional multicast mode: sin
 write `timestamp_us = now_us()` immediately before `sendto()` (minimize stamp-to-air bias, §4.3),
 own `seq` counter.
 
-**STATUS RX / discovery.** Bind `:5002`, `recvfrom()` loop. Validate per §2.2 + length == 54. Key
+**STATUS RX / discovery.** Bind `:5002`, `recvfrom()` loop. Validate per §2.2 + length ≥ 55
+(59 with `lost_packets`; parse trailing fields only when present, §3.4). Key
 the roster by `mac`; store `slave_id`, the source **IP** (unicast destination for this slave), all
 telemetry, and last-seen time. Mark offline after ~3 s silence. Watch `rx_dropped`/`underruns`
 deltas per interval — nonzero deltas during a show mean RF trouble (§8) or pacing bugs.

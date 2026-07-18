@@ -1,6 +1,7 @@
 #include "net_rx.h"
 
 #include <Arduino.h>
+#include <AsyncUDP.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <string.h>
@@ -18,7 +19,13 @@
 namespace {
 
 JitterBuffer jb;
-WiFiUDP udp_audio;
+// Audio RX is AsyncUDP: a raw lwIP udp_recv callback feeding a 32-deep queue
+// drained by the "async_udp" task. WiFiUDP's BSD-socket path sits behind a
+// 6-slot per-socket mailbox (CONFIG_LWIP_UDP_RECVMBOX_SIZE, prebuilt libs) —
+// post-stall AP bursts of ~60 packets overflowed it and lwIP dropped the
+// excess below the socket layer, uncounted. Ctrl (2 Hz SYNC + rare CMD) and
+// status (TX-only) fit the mailbox fine and stay on WiFiUDP in net_task.
+AsyncUDP udp_audio;
 WiFiUDP udp_ctrl;
 WiFiUDP udp_status;
 
@@ -29,10 +36,14 @@ volatile bool g_wifi_up = false;
 volatile uint32_t g_last_audio_ms = 0;
 volatile int8_t g_rssi = 0;
 
-uint32_t st_rx_packets = 0;
-uint32_t st_rx_dropped = 0;
-uint32_t st_underruns = 0;
-uint32_t st_seq_gaps = 0;
+// Written by the async_udp task (audio) / audio task (underruns), read by
+// net_task (send_status) and loopTask (stat) — volatile is enough: 32-bit
+// aligned loads/stores are single instructions on RV32.
+volatile uint32_t st_rx_packets = 0;
+volatile uint32_t st_rx_dropped = 0;
+volatile uint32_t st_underruns = 0;
+volatile uint32_t st_seq_gaps = 0;    // gap EVENTS (any seq discontinuity)
+volatile uint32_t st_lost_packets = 0;  // cumulative missing packets (gap sizes)
 uint32_t last_seq = 0;
 bool have_seq = false;
 
@@ -44,55 +55,75 @@ uint8_t pkt_buf[1500];
 constexpr uint16_t JB_TARGET_FRAMES =
     (uint16_t)((uint32_t)JB_TARGET_DEPTH_MS * SAMPLE_RATE / 1000);
 
-void handle_audio_packet(size_t len) {
+// Runs in the "async_udp" task via on_audio_packet(); buf points into the
+// lwIP pbuf and is only valid for the duration of the call — everything is
+// copied out (header into locals, samples into the jitter buffer) before
+// returning. Must never block: the JB/timesync critical sections are
+// spinlocks, and blocking here would stall AsyncUDP's 32-deep queue.
+void handle_audio_packet(const uint8_t* buf, size_t len) {
   if (len < sizeof(HypeHeader) + sizeof(HypeAudioPayload)) return;
-  const HypeHeader* h = (const HypeHeader*)pkt_buf;
-  if (h->magic != HYPE_MAGIC || h->version != HYPE_PROTO_VERSION) return;
-  if (h->type != HYPE_AUDIO) return;
-  const HypeAudioPayload* ap =
-      (const HypeAudioPayload*)(pkt_buf + sizeof(HypeHeader));
-  if (ap->sample_rate != SAMPLE_RATE) {
+  // Copy into aligned locals: the pbuf payload is only guaranteed 2-byte
+  // aligned, and the header holds a uint64 at offset 12.
+  HypeHeader h;
+  HypeAudioPayload ap;
+  memcpy(&h, buf, sizeof(h));
+  memcpy(&ap, buf + sizeof(h), sizeof(ap));
+  if (h.magic != HYPE_MAGIC || h.version != HYPE_PROTO_VERSION) return;
+  if (h.type != HYPE_AUDIO) return;
+  if (ap.sample_rate != SAMPLE_RATE) {
     st_rx_dropped++;
     return;
   }
   const size_t need = sizeof(HypeHeader) + sizeof(HypeAudioPayload) +
-                      (size_t)ap->frame_count * 2 * sizeof(int16_t);
-  if (len < need || ap->frame_count == 0 ||
-      ap->frame_count > 4 * HYPE_AUDIO_FRAMES) {
+                      (size_t)ap.frame_count * 2 * sizeof(int16_t);
+  if (len < need || ap.frame_count == 0 ||
+      ap.frame_count > 4 * HYPE_AUDIO_FRAMES) {
     st_rx_dropped++;
     return;
   }
 
-  if (have_seq && h->seq != last_seq + 1) st_seq_gaps++;  // stats only
-  last_seq = h->seq;
+  // SYNC_PULSE marks the seq/timestamp discontinuity as intentional — it must
+  // not count in loss statistics (protocol.md §5.4).
+  if (have_seq && !(h.flags & HYPE_FLAG_SYNC_PULSE)) {
+    const uint32_t delta = h.seq - last_seq;  // unsigned: wrap-safe
+    if (delta != 1) {
+      st_seq_gaps++;  // gap events (stats only)
+      // Cumulative loss inferred from gap sizes — this is the only place
+      // lwIP-level (pre-socket) drops become visible. Cap per-event so an
+      // unflagged controller restart / seq re-anchor doesn't poison the
+      // counter; delta==0 is a duplicate, not loss.
+      if (delta > 1 && delta - 1 <= 1000) st_lost_packets += delta - 1;
+    }
+  }
+  last_seq = h.seq;
   have_seq = true;
 
   // Stale on arrival? (Only judged when the clock is synced.)
   if (timesync::valid() &&
-      h->timestamp_us + (uint64_t)DEADLINE_SLACK_US < timesync::master_now_us()) {
+      h.timestamp_us + (uint64_t)DEADLINE_SLACK_US < timesync::master_now_us()) {
     st_rx_dropped++;
     return;
   }
 
   // Controller marks intentional discontinuities (seek, preset change).
-  if (h->flags & HYPE_FLAG_SYNC_PULSE) jb.reset();
+  if (h.flags & HYPE_FLAG_SYNC_PULSE) jb.reset();
 
   // Continuity is judged by deadlines, not sequence numbers: a lost packet is
   // a small hole we conceal with last-value hold; only large discontinuities
   // rebuffer (docs/protocol.md §6). ±1 ms tolerance absorbs timestamp rounding.
   const int16_t* samples =
-      (const int16_t*)(pkt_buf + sizeof(HypeHeader) + sizeof(HypeAudioPayload));
+      (const int16_t*)(buf + sizeof(HypeHeader) + sizeof(HypeAudioPayload));
   bool ok;
   if (jb.depth_frames() == 0) {
-    ok = jb.push(samples, ap->frame_count, h->timestamp_us);
+    ok = jb.push(samples, ap.frame_count, h.timestamp_us);
   } else {
     const int64_t delta =
-        (int64_t)(h->timestamp_us - jb.tail_deadline_us());
+        (int64_t)(h.timestamp_us - jb.tail_deadline_us());
     if (delta > 1000 && delta <= 20000) {
       // Small gap (lost packet(s), ≤20 ms): fill with last-value hold so the
       // buffer stays deadline-contiguous, then append the new packet.
       jb.push_hold((uint16_t)((delta * SAMPLE_RATE) / 1000000));
-      ok = jb.push(samples, ap->frame_count, h->timestamp_us);
+      ok = jb.push(samples, ap.frame_count, h.timestamp_us);
     } else if (delta < -1000) {
       // Duplicate / reordered / overlapping packet: already have that time.
       st_rx_dropped++;
@@ -100,9 +131,9 @@ void handle_audio_packet(size_t len) {
     } else if (delta > 20000) {
       // Large discontinuity (epoch jump, long outage): rebuffer from here.
       jb.reset();
-      ok = jb.push(samples, ap->frame_count, h->timestamp_us);
+      ok = jb.push(samples, ap.frame_count, h.timestamp_us);
     } else {
-      ok = jb.push(samples, ap->frame_count, h->timestamp_us);  // contiguous
+      ok = jb.push(samples, ap.frame_count, h.timestamp_us);  // contiguous
     }
   }
   if (!ok) {
@@ -118,6 +149,10 @@ void handle_audio_packet(size_t len) {
   if (!jb.started() && jb.depth_frames() >= JB_TARGET_FRAMES) {
     jb.set_started(true);
   }
+}
+
+void on_audio_packet(AsyncUDPPacket& packet) {
+  handle_audio_packet(packet.data(), packet.length());
 }
 
 void handle_ctrl_packet(size_t len, IPAddress src) {
@@ -173,6 +208,7 @@ void send_status() {
   if (off < INT32_MIN) off = INT32_MIN;
   s->clock_offset_us = (int32_t)off;
   s->local_pattern = (uint8_t)renderer_local::pattern();
+  s->lost_packets = st_lost_packets;
 
   udp_status.beginPacket(controller_ip, PORT_STATUS);
   udp_status.write(out, sizeof(out));
@@ -192,16 +228,34 @@ void on_wifi_up() {
   // dropouts). Force it here, where the STA is definitely started, and
   // surface the live value in `stat` (ps=) so a regression is visible.
   esp_wifi_set_ps(WIFI_PS_NONE);
-  udp_audio.beginMulticast(IPAddress(MCAST_GROUP), PORT_AUDIO);
+  // listenMulticast = IGMP join + bind ANY:5000, mirroring the old
+  // beginMulticast (audio is unicast on the wire; the join is belt-and-
+  // braces). Called on every down->up transition, so bind and group
+  // membership are re-established after a WiFi drop (re-listen on the same
+  // pcb is safe; joins are ref-counted).
+  udp_audio.listenMulticast(IPAddress(MCAST_GROUP), PORT_AUDIO);
+  // The async_udp task defaults to priority 3 — below net_task (5). Bump it
+  // so JB pushes don't queue behind WiFi housekeeping, but keep it below the
+  // audio task (10) so a packet burst can never delay an I2S deadline.
+  static bool prio_bumped = false;
+  if (!prio_bumped) {
+    TaskHandle_t t = xTaskGetHandle("async_udp");
+    if (t != nullptr) {
+      vTaskPrioritySet(t, 8);
+      prio_bumped = true;
+    }
+  }
   udp_ctrl.beginMulticast(IPAddress(MCAST_GROUP), PORT_CTRL);
   udp_status.begin(0);  // TX only, ephemeral port
 }
 
 void on_wifi_down() {
-  udp_audio.stop();
+  udp_audio.close();  // pcb stays bound; on_wifi_up() re-listens
   udp_ctrl.stop();
   udp_status.stop();
   jb.reset();
+  // Cross-task write (net_task) vs the async_udp handler: benign — worst
+  // case is one spurious gap count on the first packet after reconnect.
   have_seq = false;
 }
 
@@ -247,17 +301,9 @@ void net_task(void*) {
       continue;
     }
 
-    // Connected: drain both sockets, then a short sleep.
+    // Connected: audio arrives via the AsyncUDP callback; only the ctrl
+    // socket is drained here.
     int len;
-    while ((len = udp_audio.parsePacket()) > 0) {
-      if (len > (int)sizeof(pkt_buf)) {
-        udp_audio.clear();
-        st_rx_dropped++;
-        continue;
-      }
-      int r = udp_audio.read(pkt_buf, len);
-      if (r > 0) handle_audio_packet((size_t)r);
-    }
     while ((len = udp_ctrl.parsePacket()) > 0) {
       if (len > (int)sizeof(pkt_buf)) {
         udp_ctrl.clear();
@@ -275,7 +321,9 @@ void net_task(void*) {
       send_status();
     }
 
-    vTaskDelay(pdMS_TO_TICKS(1));
+    // 5 ms is fine now that audio is callback-driven: this loop only
+    // services 2 Hz SYNC beacons, rare CMDs, and the 1 Hz status TX.
+    vTaskDelay(pdMS_TO_TICKS(5));
   }
 }
 
@@ -285,6 +333,9 @@ namespace net_rx {
 
 void init(bool radio_on) {
   g_radio_on = radio_on;
+  // Register before the task exists so there is no window where a bound
+  // socket could deliver to a null handler.
+  udp_audio.onPacket(on_audio_packet);
   xTaskCreate(net_task, "net_rx", 6144, nullptr, 5, nullptr);
 }
 
@@ -347,6 +398,7 @@ Stats stats() {
   s.rx_dropped = st_rx_dropped;
   s.underruns = st_underruns;
   s.seq_gaps = st_seq_gaps;
+  s.lost_packets = st_lost_packets;
   s.rssi_dbm = g_rssi;
   s.wifi_up = g_wifi_up;
   s.stream_up = stream_active();
