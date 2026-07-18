@@ -2,8 +2,10 @@
 
 Open questions for Finn. Tags: **[ORDER-blocking]** gates the parts order
 (~Jul 21); **[PCB-blocking]** gates the PCB order (~Aug 1, now with ~1 week
-extra slack before the 2026-08-21 show). Most were resolved 2026-07-17; the
-short **Still open** list is what remains.
+extra slack before the 2026-08-21 show). Resolved 2026-07-17, then the last
+PCB/ORDER blockers (pot style Q3, knob Q9, VBUS check Q10) resolved 2026-07-18.
+**No PCB-blocking or ORDER-blocking question remains** — only Q8 (charge-current
+mandate) and Q14 (HYBRID semantics) are open, and neither gates layout or order.
 
 ## Resolved (2026-07-17)
 
@@ -56,19 +58,29 @@ short **Still open** list is what remains.
     A/B units. Do NOT cannibalize. Only the screwed-in RCA jacks may be reused
     non-destructively if needed.
 
+## Resolved (2026-07-18 — bench/caliper session, see docs/hardware/measurements.md)
+
+3. **Q3 — Pot style [was PCB-blocking]:** **RV097NS**, 9 mm PCB-mount, B10K,
+   **5-pin**, body 27.3 × 9.5 × 11.3 mm. Footprint finalized (`RV097NS` 5-pin).
+9. **Q9 — Knob/shaft [was ORDER-blocking]:** **No knob.** The pot's bare metal
+   shaft is turned directly by hand, so nothing to order and the enclosure needs
+   only a shaft hole.
+10. **Q10 — VBUS→5V bench check:** **CONFIRMED tied** — SuperMini USB-C `VBUS`
+    beeps continuous to the `5V` header pin (USB-C→A cable + meter). So the
+    load-share power path / "no USB while the battery switch is ON" rule stands
+    as designed, and the D3 "naive OR" diode stays DNP. Q10 closed.
+
+**Also captured this session (not blocking):** the GY-PCM5102A analog end is a
+**1×9** header (`… A3V3 AGND ROUT AGND LROUT`), not a 3-pin `L G R`; the module is
+**~31.8 mm** long (not ~27); it carries a ~470 Ω "471" output filter but is
+ground-centered (DC-coupled OK). All propagated to DESIGN/pcb/wiring.
+
 ## Still open
 
-- **Q3 — Pot style [PCB-blocking]:** PCB-mount 9 mm (RV09) is only a tentative
-  default — footprint NOT finalized. Decide before the PCB order.
-- **Q9 (knob-shaft half) [ORDER-blocking]:** Knob style + shaft length for the
-  10 k pot still undecided (tied to Q3's pot style).
-- **Q8 — TP4056 charge current:** Keep the 1 A default. Leaning toward mandating
-  5 V/2 A wall chargers instead of swapping RPROG to ~0.5 A (fiddly to solder).
-  2000 mAh at 1 A ≈ 0.5C → full charge ~2.5–3 h. **Confirm: mandate 2 A
-  chargers, RPROG swap optional?**
-- **Q10 — VBUS→5V bench check:** When modules are in hand, beep the SuperMini
-  USB-C VBUS pin to the 5 V header pin — do the clones tie them directly?
-  Pending modules; affects power-path margins.
+- **Q8 — TP4056 charge current:** Keep the 1 A default (measured RPROG = 1.19 kΩ).
+  Leaning toward mandating 5 V/2 A wall chargers instead of swapping RPROG to
+  ~0.5 A (fiddly to solder). 2000 mAh at 1 A ≈ 0.5C → full charge ~2.5–3 h.
+  **Confirm: mandate 2 A chargers, RPROG swap optional?**
 - **Q14 — HYBRID mic semantics:** Canon default stands (per-unit local mic mix,
   `HYBRID_MIC_GAIN` 50%). Central-mic mixing (one mic into the UNO-Q, mixed to
   all scopes) noted as a possible v2. Confirm canon, or request central as v2.

@@ -96,4 +96,4 @@ The repo root also carries two gitignored third-party binaries: `arduino-flasher
 
 Slave firmware build/flash instructions: **[src/esp32-slave/README.md](src/esp32-slave/README.md)** (PlatformIO + pioarduino platform, USB-C CDC console).
 
-One rule worth repeating from DESIGN.md §9: **during breadboard bring-up, never plug in USB-C while the battery power switch is ON** — SuperMini clones tie VBUS to the 5 V pin and would back-feed the battery. Flash with the switch OFF. The carrier PCB's load-sharing power path removes this rule on final boards.
+One rule worth repeating from DESIGN.md §9: **during breadboard bring-up, never plug in USB-C while the battery power switch is ON** — SuperMini clones tie VBUS to the 5 V pin (meter-confirmed 2026-07-18) and would back-feed the battery. Flash with the switch OFF. The carrier PCB's load-sharing power path removes this rule on final boards.

@@ -67,9 +67,9 @@ The 100 kΩ source impedance limits back-injection into the unpowered chip (swit
 | D4 | `3V3` rail | PCM5102A `VIN` | feeds the module's onboard XC6206 LDO (fine, see DESIGN §5) |
 | D5 | `GND` rail | PCM5102A `GND` | |
 | D6 | PCM5102A `SCK` | `GND` | **required** — internal PLL clock from BCK; see §4 |
-| D7 | PCM5102A `LOUT` (jack **tip**) | Scope CH1 (X) | see §5 |
-| D8 | PCM5102A `ROUT` (jack **ring**) | Scope CH2 (Y) | see §5 |
-| D9 | PCM5102A analog `GND` (jack **sleeve**) | Scope GND clips | common with system `GND` |
+| D7 | PCM5102A `LROUT` (1×9 hdr) — or jack **tip** | Scope CH1 (X) | see §5 |
+| D8 | PCM5102A `ROUT` (1×9 hdr) — or jack **ring** | Scope CH2 (Y) | see §5 |
+| D9 | PCM5102A `AGND` (1×9 hdr) — or jack **sleeve** | Scope GND clips | common with system `GND` |
 
 Keep the three I2S wires short (<10 cm) and away from the mic — BCK is a 1.5 MHz square wave.
 
@@ -95,7 +95,7 @@ on-board footprint.
 
 | # | From | To | Notes |
 |---|------|----|-------|
-| U1 | Pot pin 3 (CW end) | `3V3` rail | 10 kΩ pot |
+| U1 | Pot pin 3 (CW end) | `3V3` rail | 10 kΩ pot = **RV097NS-B10K** (5-pin, metal shaft turned by hand — no knob) |
 | U2 | Pot pin 1 (CCW end) | `GND` rail | this orientation ⇒ clockwise = higher voltage = higher Y-filter cutoff |
 | U3 | Pot pin 2 (wiper) | SM `GPIO3` | `PIN_POT_ADC`, ADC1_CH3 |
 | U4 | Mode button, leg A | SM `GPIO7` | `PIN_BTN_MODE`; internal pull-up in firmware — **no external resistor** |
@@ -130,7 +130,7 @@ on-board footprint.
                                  │  CH1 = X     CH2 = Y    GND  │
                                  └────▲───────────▲─────────▲───┘
                                       │           │         │  1 MΩ inputs, DC coupled
-                                 LOUT/tip     ROUT/ring   sleeve
+                                LROUT/tip     ROUT/ring   sleeve
                               ┌───────┴───────────┴─────────┴───────┐
                               │        GY-PCM5102A (purple)         │
                               │  back bridges: 1=L 2=L 3=H 4=L (§4) │
@@ -203,20 +203,26 @@ On the carrier PCB the SCK socket pin is tied straight to the ground plane.
 
 | PCM5102A | Scope | Signal |
 |----------|-------|--------|
-| `LOUT` — 3.5 mm jack **tip**, or `L` pad of the unpopulated 3-pin header | CH1 | X |
-| `ROUT` — jack **ring**, or `R` pad | CH2 | Y |
-| analog GND — jack **sleeve**, or `G` pad | probe GND clips | common ground |
+| `LROUT` — 1×9 header pin, or 3.5 mm jack **tip** | CH1 | X |
+| `ROUT` — 1×9 header pin, or jack **ring** | CH2 | Y |
+| `AGND` — 1×9 header pin, or jack **sleeve** | probe GND clips | common ground |
 
+- **Analog header (measured 2026-07-18):** the purple module's analog end is a **1×9** header
+  on the long edge (⊥ to the 6-pin I2S row), silk (jack→digital):
+  `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Tap **X = LROUT, Y = ROUT, gnd = AGND**. It is
+  **not** a 3-pin `L G R` header — the old docs assumed wrong.
 - **Deliverable output path (carrier board):** the carrier has *no* BNC or TRS jack. It
   exposes two RCA flying-lead solder pad-pairs (signal + ground), fed through the 100 Ω series
-  resistors (R10/R11): **X = PCM5102A L**, **Y = PCM5102A R**. Signal chain is
+  resistors (R10/R11): **X = PCM5102A LROUT**, **Y = PCM5102A ROUT**. Signal chain is
   board RCA pad → reused ~50 cm RCA cable (RCA male, salvaged from the old sigma-delta units)
   → BNC→RCA adapter already fitted on the scope → scope CH, in XY mode.
-- Breadboard bring-up only: a 3.5 mm TRS breakout (or sacrificed stereo cable) in the
-  module's jack is fine for the bench. Tip = L = X, ring = R = Y, sleeve = GND — but that jack
-  does not exist on the deliverable board (RCA pads replace it).
-- ⚠️ VERIFY: the silk order of the unpopulated 3-pin analog header (L/G/R vs R/G/L) varies
-  between batches — beep it out against the jack before wiring the RCA pads for the PCB.
+- **Bench bring-up shortcut (recommended for W1–W2):** you can skip the carrier RCA pads
+  entirely and drive the scopes straight from the module's on-board **3.5 mm LINE OUT jack** —
+  tip = X (LROUT), ring = Y (ROUT), sleeve = GND — via a 3.5 mm→2×RCA (or →2×BNC) cable. This
+  needs no carrier at all, so early testing isn't gated on the PCB. Final units use the RCA pads.
+- Note: the module carries a ~470 Ω "471" output filter before these pins/jack (measured) —
+  the output is still ground-centered, so on the bench ramp decide whether R10/R11 want to be
+  0 Ω (module R already isolates) or 100 Ω.
 - Scope setup: **XY mode**, CH1 = X, CH2 = Y, both **DC coupled**, both **1 MΩ** input
   (never 50 Ω termination — the line-out stage can't drive it); on the bench use ×1 probes,
   on the finished unit the reused RCA cable into the scope's BNC→RCA adapter. 1 V/div, traces
@@ -320,7 +326,7 @@ previous one measured clean. DMM required; scope required from Phase 4.
    | GPIO2 | 3.3 V | pull-up missing (boot will be unreliable) |
    | Pot wiper (GPIO3) | 0 → 3.3 V smoothly over full rotation | dirty/miswired pot |
    | GPIO7 | 3.3 V idle, 0 V pressed (after firmware enables pull-up) | button wiring |
-   | PCM5102A `LOUT`/`ROUT` | ≈ 0 V DC | (no I2S clocks yet — anything near 0 V is fine here) |
+   | PCM5102A `LROUT`/`ROUT` | ≈ 0 V DC | (no I2S clocks yet — anything near 0 V is fine here) |
 
 ### Phase 4 — flash + DAC test (circle pattern)
 

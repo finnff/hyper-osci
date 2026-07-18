@@ -20,7 +20,7 @@ DNP (do-not-populate) footprint so the decision moves to assembly time, not layo
 | Module | Socket | Notes |
 |---|---|---|
 | ESP32-C3 SuperMini | 2× 1×8 female (J1A/J1B) | antenna end overhangs board edge (§6) |
-| GY-PCM5102A (purple) | 1×6 female (J2) + 1×3 female (J3) | I2S end + analog-out end |
+| GY-PCM5102A (purple) | 1×6 female (J2) + 1×9 female (J3) | I2S end (short edge) + 9-pin analog/config end on the long edge (⊥ to J2). Module measures **~31.8 × 17 mm** — see §7/measurements.md |
 | MAX4466 mic | 1×3 header (J4) | off-board on a ~10 cm pigtail (`VCC/GND/OUT`); aimed at the PA |
 | TP4056 USB-C (blue, 17×27 mm, with DW01+FS8205) | 2× 1×2 female (J5 batt end, J6 out end) + 1 pad for IN+ | USB-C end at board edge (jack overhangs ~2 mm) |
 
@@ -45,7 +45,7 @@ Reference designators used throughout this doc and to be used in KiCad:
 |---|---|---|
 | J1A, J1B | 1×8 female header, 2.54 mm | SuperMini socket rows (row spacing expected 15.24 mm ⚠️ VERIFY §7) |
 | J2 | 1×6 female header | PCM5102A I2S end: `SCK BCK DIN LCK GND VIN` (order per module silk ⚠️ VERIFY) |
-| J3 | 1×3 female header | PCM5102A analog end: `L G R` (order ⚠️ VERIFY on real module) |
+| J3 | 1×9 female header | PCM5102A analog/config end (long edge). Silk (jack→digital): `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Carrier nets only the analog pins: **LROUT (=X), ROUT (=Y), AGND**; FLT/DEMP/XSMT/FMT are set by the module's own H1L–H4L back-side bridges (DESIGN §5), so they are **NC** on the carrier — the rest of the 1×9 is mechanical support. |
 | J4 | 1×3 header (pigtail landing) | MAX4466 on a ~10 cm 3-wire pigtail: `VCC GND OUT` (order ⚠️ VERIFY — clones differ). Mic exits the enclosure, aimed at the PA. |
 | J5 | 1×2 female header | TP4056 battery end: `B+ B−` |
 | J6 | 1×2 female header | TP4056 output end: `OUT+ OUT−` |
@@ -55,7 +55,7 @@ Reference designators used throughout this doc and to be used in KiCad:
 | X, Y | 2× RCA flying-lead solder pad-pair (signal + AGND) | Scope X (=DAC L), Scope Y (=DAC R). Finn solders the reused ~50 cm RCA cables here — no connector part on the board. Silk `X` / `Y`. |
 | SW1 | 1 A-rated SS12D00-class SPDT slide switch (e.g. SK12D07) | Power switch (in VSW→VLOAD path, §4); 1 A rating chosen because WiFi TX peaks ≈ 0.35 A |
 | SW2 | 6×6 mm THT tactile | MODE button → GPIO7 |
-| RV1 | RV09 9 mm 10 kΩ linear pot (⚠️ tentative — pot style + knob not finalized, §10) | Filter-cutoff knob → GPIO3 |
+| RV1 | **RV097NS** 9 mm 10 kΩ linear pot (B10K), 5-pin, body 27.3 × 9.5 × 11.3 mm. **Metal shaft turned directly — no knob.** | Filter-cutoff → GPIO3 |
 
 **SuperMini socket pin functions** (net names; physical position per module silk —
 ⚠️ VERIFY silk against your actual modules before finalizing the footprint, clone revisions
@@ -91,7 +91,7 @@ Every net on the board. Pin numbers match `config.h` exactly.
 | **3V3** | SuperMini `3V3` pin → J2 `VIN` (PCM5102A), J4 `VCC` (mic, with C4 100 nF at the socket), R3 (GPIO2 pull-up), RV1 CW end, C5 (100 nF near J2). Per DESIGN §5 the DAC's VIN runs from 3V3 (double-LDO cascade is fine). |
 | **VBUS_CHG** | J6b (TP4056 `IN+`) → D1 anode, D2 anode, testpoint TP1. |
 | **GATE** | Q1 gate + R6 (100 k → GND) + D1 cathode + D3 cathode (DNP) + Q2 collector + TP3. |
-| **AGND** | Analog ground island: J3 `G`, the X and Y RCA ground pads, C4 GND side, J4 `GND` (mic). Joined to GND at **one neck** near the J2 GND pin (§6.3). Electrically the same net as GND — draw as GND in the schematic, enforce the single-neck join in layout. |
+| **AGND** | Analog ground island: J3 `AGND` (the two AGND pins of the 1×9), the X and Y RCA ground pads, C4 GND side, J4 `GND` (mic). Joined to GND at **one neck** near the J2 GND pin (§6.3). Electrically the same net as GND — draw as GND in the schematic, enforce the single-neck join in layout. |
 
 ### 3.2 Signal nets
 
@@ -108,14 +108,17 @@ Every net on the board. Pin numbers match `config.h` exactly.
 | **LED_NET_A** | GPIO10 (`PIN_LED_NET`) | GPIO10 → R4 2.2 k → D4 green 3 mm anode; cathode → GND (active high) |
 | **LED_MODE_A** | GPIO20 (`PIN_LED_MODE`) | GPIO20 → R5 2.2 k → D5 amber 3 mm anode; cathode → GND (active high) |
 | **DBG_TX** | GPIO21 | → J7.1 (J7.2 = GND). Log-only header, no RX (GPIO20 is repurposed as LED) |
-| **DAC_L / SCOPE_X** | — | J3 `L` → R10 100 Ω → X RCA signal pad |
-| **DAC_R / SCOPE_Y** | — | J3 `R` → R11 100 Ω → Y RCA signal pad |
+| **DAC_L / SCOPE_X** | — | J3 `LROUT` → R10 100 Ω → X RCA signal pad |
+| **DAC_R / SCOPE_Y** | — | J3 `ROUT` → R11 100 Ω → Y RCA signal pad |
 | **J2 `SCK`** | — | **Tie to GND on the carrier.** This implements DESIGN §5's "SCK tied to GND" (DAC generates its clock via PLL from BCK) without a solder mod on each module. |
 
 R10/R11 (100 Ω series) protect the DAC from shorted/hot-plugged scope cables and isolate it
 from cable capacitance; into a 1 MΩ scope input the attenuation is 0.01 % — invisible.
-⚠️ VERIFY: check whether the purple module already has series resistors/filters on L/R
-(trace it or measure resistance from PCM5102A pin to header). If it does, fit 0 Ω here.
+**Measured 2026-07-18:** the purple module already carries an output reconstruction filter
+(~470 Ω "471" series parts + caps) between the DAC and the `LROUT`/`ROUT` pins, and the
+output is **ground-centered** (no DC-blocking cap in the path). With ~470 Ω already in
+series, keep the R10/R11 footprints but **fit 0 Ω** if the Phase-4 bench ramp (wiring.md)
+confirms the module R is genuinely in-line — only populate 100 Ω if you want extra isolation.
 
 GPIO8 and GPIO9 socket positions are **not connected** on the carrier (onboard LED / BOOT
 button, both strapping pins — DESIGN §4).
@@ -136,7 +139,8 @@ CC/CV + termination) and USB can never back-feed the cell; (c) load runs from US
 
 DESIGN §9 sketches "P-FET + Schottky, both VBUS sources diode-ORed into the gate". The
 TP4056's VBUS is directly accessible (`IN+` pad). **The SuperMini's VBUS is not**: on these
-clone modules USB VBUS is tied straight to the `5V` pin (DESIGN §9 says so itself) — i.e.
+clone modules USB VBUS is tied straight to the `5V` pin (**meter-confirmed 2026-07-18**,
+measurements.md — VBUS↔5V continuous) — i.e.
 the SuperMini's "VBUS" *is the load node*. A plain OR-diode from the load node to the gate
 self-biases the gate to (VLOAD − Vf) in battery mode, holding Vgs at ≈ −0.2…−0.5 V forever,
 so the FET never fully turns on and you eat the body-diode drop (~0.7 V) — which browns out
@@ -258,19 +262,20 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 | C3 | 1 | 100 nF X7R | generic | 2.54 mm radial | across R2 (ADC filter) |
 | SW1 | 1 | SPDT slide, **1 A-rated** | **SK12D07**-class (1 A); the base SS12D00G4 is only 0.3 A and WiFi TX peaks ≈ 0.35 A, so the 1 A part is required | THT | power |
 | SW2 | 1 | Tactile 6×6 mm | **TS-1102** / Omron B3F-1000 style | THT 6×6, 4-pin | MODE |
-| RV1 | 1 | 10 k linear pot, 9 mm vertical | **RV09AF-40-15K-B10K** (⚠️ tentative — pot style + knob/shaft length NOT finalized, §10) | RV09 THT | knob to taste |
+| RV1 | 1 | 10 k linear pot, 9 mm (B10K) | **RV097NS-B10K** (5-pin, metal shaft, body 27.3 × 9.5 × 11.3 mm) | RV097NS THT (5-pin) | shaft turned directly — **no knob** (enclosure needs only a shaft hole) |
 | X, Y | — | RCA output landings (signal + AGND solder pads) | no connector part — reuse the ~50 cm RCA cables from the old sigma-delta units | 2× pad-pair | Finn solders the RCA cable leads directly; scope side uses a BNC→RCA adapter |
 | J8 | 1 | JST-PH 2-pin side entry | **S2B-PH-K-S** (JST) | THT | battery socket; cell = EEMB LP103454 2000 mAh (off-board, pre-fitted JST-PH lead) |
 | J1A/J1B | 2 | Female header 1×8 | generic 2.54 female | THT | SuperMini |
 | J2 | 1 | Female header 1×6 | generic | THT | DAC I2S |
-| J3, J4 | 2 | Female header 1×3 | generic | THT | DAC analog / mic |
+| J3 | 1 | Female header 1×9 | generic | THT | DAC analog/config end (only LROUT/ROUT/AGND netted; rest mechanical/NC) |
+| J4 | 1 | Female header 1×3 | generic | THT | mic pigtail (`VCC GND OUT`) |
 | J5, J6 | 2 | Female header 1×2 | generic | THT | TP4056 |
 | J7 | 1 | Male header 1×2 | generic | THT | debug TX |
 | JP1 | 1 | 0 Ω / solder jumper | — | 2.54 mm | power-path escape hatch (open by default) |
 | TP1–TP5 | 5 | testpoint pad | — | 1.5 mm pad | no part |
 | — | 4 | M3 screw + standoff | — | — | mounting (§6) |
 
-Order **fixed-size** female headers (1×8, 1×6, 1×3, 1×2) — female strips do not snap cleanly;
+Order **fixed-size** female headers (1×8, 1×6, 1×9, 1×3, 1×2) — female strips do not snap cleanly;
 each cut destroys one position. Male pin headers for the TP4056 pads: solder standard 2.54 mm
 male pins into the module's drilled B+/B−/OUT+/OUT− pads so it plugs into J5/J6.
 ⚠️ VERIFY: pad spacing on this USB-C TP4056 module is close to but not guaranteed 2.54 mm-grid — measure
@@ -289,8 +294,8 @@ D1/D2 sense/feed current (≤ 200 mA), a 5 cm wire is fine.
   ┌─(M3)────────────────────────────────────────────────────(M3)─┐   ▲
   │            X RCA pad ▲            Y RCA pad ▲               │   │
   │            └─R10─┐                └─R11─┐  ┌──────────────┐  │   │
- ~~~ antenna   ┌─────┴──[J3 L G R]──────────┴─┐│  J4 mic hdr  │  │   │
- ~~~ overhang  │   GY-PCM5102A (on J2 + J3)   ││ → MAX4466 on │  │   │
+ ~~~ antenna   ┌─────┴──[J3 9pin ]──────────┴─┐│  J4 mic hdr  │  │   │
+ ~~~ overhang  │  GY-PCM5102A ~32mm (J2⊥J3)   ││ → MAX4466 on │  │   │
  ~~~ (keep-out)│  ┌───────────────────────────┘│ ~10cm pigtail│  │  50mm
   │  ┌─────────┴──┐│      ANALOG ZONE          └──────────────┘  │   │
   │  │ ESP32-C3   ││  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐  ┌──────────────┐ │   │
@@ -303,6 +308,12 @@ D1/D2 sense/feed current (≤ 200 mA), a 5 cm wire is fine.
   └─(M3)────────────────────────────────────────────────────(M3)─┘   ▼
         CONTROL EDGE: LEDs, button, pot, power switch
 ```
+
+> **⚠️ DAC module footprint (measured 2026-07-18):** the purple GY-PCM5102A is **~31.8 mm**
+> long (not the old ~27 mm nominal) with two **perpendicular** sockets — J2 (1×6 I2S) on a
+> short edge, J3 (1×9 analog/config) on the long edge. Draw the footprint `GY-PCM5102A_6+9`
+> from measured header spacing and re-confirm the 70 × 50 mm fit with the 1:1 paper-doll
+> check (§9) before routing — this is the tightest module on the board.
 
 Hard placement rules:
 
@@ -383,12 +394,14 @@ dimensions.** Capture, per module:
 - [ ] Confirm pin silk order of both rows against §2 table
 - [ ] Bottom-side component height (socket clearance check)
 
-**GY-PCM5102A (purple)**
-- [ ] Outline (nominal ~27 × 17 mm)
-- [ ] 6-pin header: pitch, offset, exact pin order silk (`SCK BCK DIN LCK GND VIN`?)
-- [ ] 3-pin analog header: position, pin order (`L G R`?), distance from 6-pin row
-- [ ] 3.5 mm jack overhang (it may hang off the carrier edge — fine)
-- [ ] Confirm solder-bridge state per DESIGN §5 (1=L, 2=L, 3=H, 4=L) while you have it out
+**GY-PCM5102A (purple)** — done 2026-07-18, see measurements.md
+- [x] Outline — **measured ~31.8 × 17 mm** (~5 mm longer than the old ~27 nominal ⚠️)
+- [x] 6-pin header order silk **`SCK BCK DIN LCK GND VIN`** ✓ (short edge)
+- [x] Analog end is a **1×9** header (not 1×3), ⊥ to the 6-pin on the long edge. Silk
+  (jack→digital): `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Taps: X=LROUT, Y=ROUT, gnd=AGND
+- [x] 3.5 mm jack overhang ~1.6 mm (hangs off edge — fine)
+- [ ] Output filter present (~470 Ω "471") but ground-centered — confirm DC pass on the ramp test
+- [ ] Confirm solder-bridge state per DESIGN §5 (1=L, 2=L, 3=H, 4=L) — H1L–H4L pads, verify by continuity
 
 **MAX4466 (off-board on a ~10 cm pigtail — carrier only needs the J4 3-pin header)**
 - [ ] Confirm module pin order silk (`VCC GND OUT`?) so the J4 3-pin header wiring matches
@@ -406,8 +419,8 @@ dimensions.** Capture, per module:
 - [ ] RCA output pads (X/Y): nothing to verify — they are simple signal+AGND solder pad-pairs
   (~2 mm pads) for the reused ~50 cm RCA cable leads; confirm the pad comfortably takes the
   stripped signal + shield wires
-- [ ] SW1 slide switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) 
-- [ ] RV1 RV09 pin pattern (2.5/5.0 mm triangle) + shaft length vs knob
+- [ ] SW1 slide switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — module not in hand yet
+- [x] RV1 = **RV097NS-B10K**, 5-pin, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — draw the 5-pin RV097NS footprint
 
 ---
 
@@ -476,9 +489,10 @@ green mask, white silk · no castellations, no impedance control, no stencil ·
 
 - [ ] New project `hw/carrier/` in repo; grid mm; KiCad 9 defaults
 - [ ] Make footprints from §7 caliper data: `SuperMini_Socket_2x1x8`,
-      `GY-PCM5102A_6+3`, `Mic_Pigtail_1x3`, `TP4056_USBC_pads`, `RCA_FlyingLead_Pads`
-      (measured), reuse stock: `TO-92`, `SOT-23_HandSolder`, `SMA+DO-41` dual, axial R,
-      radial C, `SW_SS12D00`, tactile 6×6, RV09, JST-PH S2B, pin sockets
+      `GY-PCM5102A_6+9` (1×6 ⊥ 1×9, module ~31.8 mm), `Mic_Pigtail_1x3`, `TP4056_USBC_pads`,
+      `RCA_FlyingLead_Pads` (measured), reuse stock: `TO-92`, `SOT-23_HandSolder`,
+      `SMA+DO-41` dual, axial R, radial C, `SW_SS12D00`, tactile 6×6, `RV097NS` (5-pin),
+      JST-PH S2B, pin sockets
 - [ ] Draw schematic exactly per §3 netlist + §4.2 power path; net names as given here
 - [ ] Add JP1, D3 with **DNP flag set** (KiCad "Do not populate" attribute)
 - [ ] ERC clean (power flags on VLOAD/3V3/GND; no-connect flags on GPIO8/9 socket pins)
@@ -503,14 +517,14 @@ green mask, white silk · no castellations, no impedance control, no stencil ·
 *(Resolved 2026-07-17 and folded into the spec above: scope outputs = RCA flying-lead pads,
 no BNC and no TRS; TP4056 = USB-C variant; SW1 = 1 A-rated slide switch; mic = off-board on a
 ~10 cm pigtail; battery = EEMB LP103454 2000 mAh, off-board.)*
+*(Resolved 2026-07-18 from the bench session, see measurements.md: **RV1 = RV097NS-B10K**,
+5-pin, metal shaft turned directly, **no knob** — pot footprint finalized; SuperMini
+**VBUS is directly tied to the 5 V pin — CONFIRMED** with a meter, so the load-share path /
+"no USB while switch ON" rule stands as designed, and D3 stays DNP; DAC analog end is a **1×9**
+header, not 1×3.)*
 
-1. **Pot style + knob shaft length for RV1** — still undecided. RV09 9 mm is only a tentative
-   default; the pot footprint is **not** finalized. This picks the shaft-length variant / knob
-   to order (§2, §5).
-2. **Rprog mod on TP4056 (1 A → 500 mA):** the plan mandates 5 V/2 A chargers so the 1 A
+1. **Rprog mod on TP4056 (1 A → 500 mA):** the plan mandates 5 V/2 A chargers so the 1 A
    default is safe, but the Rprog swap (one 0402/0603 resistor per module) is still your call —
-   optional, not mandated (§4.3 state 2).
-3. **Do your SuperMini clones really tie VBUS straight to the 5 V pin?** (Beep VBUS pin
-   of the USB-C to the 5 V header pin.) Pending modules in hand. If a diode is present on some
-   revision, state 4 analysis changes (for the better) and D3 might become viable — note it in
-   `measurements.md` during §7.
+   optional, not mandated (§4.3 state 2). *(Measured Rprog = 1.19 kΩ ⇒ ~1 A, as expected.)*
+2. **R10/R11 value:** the module carries its own ~470 Ω output filter (§3.2, measured) — decide
+   0 Ω vs 100 Ω on the Phase-4 bench ramp. Not a layout blocker (footprint stays either way).

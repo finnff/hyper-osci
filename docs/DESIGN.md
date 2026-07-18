@@ -37,7 +37,7 @@ UNO-Q (WiFi AP, 2.4 GHz) ──UDP──▶ 4× [ESP32-C3 ──I2S──▶ PCM
 | 5 | LiPo 3.7 V — **selected: EEMB LP103454, 2000 mAh** (34×56×11 mm, ~40 g, pre-fitted JST) | power | — | mounted off-board (loose in the enclosure, velcro/pocket); 1000 mAh is a smaller-cell reference only |
 | 6 | Carrier PCB (this project) | ties it all together | ~€1–2/board | to design, THT only |
 
-Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (1 A-rated, SS12D00-class — WiFi TX peaks ~0.35 A), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff knob; footprint **still open** — 9 mm PCB-mount RV09 is only a tentative default), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
+Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (1 A-rated, SS12D00-class — WiFi TX peaks ~0.35 A), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff; **RV097NS** 9 mm PCB-mount, B10K, 5-pin, metal shaft turned directly — no knob), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
 
 ## 4. Canonical pin map (ESP32-C3 SuperMini)
 
@@ -171,7 +171,7 @@ Target carrier PCB: **~70 × 50 mm**, 2-layer, all through-hole, modules sockete
 | Module | Approx. size | Mounting |
 |--------|--------------|----------|
 | ESP32-C3 SuperMini | 22.5 × 18 mm | 2× 1×8 header, 2.54 mm |
-| GY-PCM5102A | ~27 × 17 mm | 1×6 header (SCK BCK DIN LCK GND VIN) + 3-pin analog out |
+| GY-PCM5102A | **~31.8 × 17 mm** (measured 2026-07-18) | 1×6 I2S header (SCK BCK DIN LCK GND VIN) on a short edge + **1×9 analog/config header** on the long edge (⊥); analog out on **LROUT / ROUT / AGND** (X = LROUT, Y = ROUT) |
 | MAX4466 | ~20 × 13 mm | on a ~10 cm 3-pin pigtail (VCC GND OUT), exits the enclosure aimed at the PA so its gain trimpot stays screwdriver-reachable — not flat on the carrier |
 | TP4056 (USB-C variant) | blue PCB ~17 × 27 mm (USB-C jack overhangs ~2 mm → ~29 mm effective depth) | 4 pads (B+/B−/OUT+/OUT−) via header or wire, **USB-C** charge-port cutout on the board edge |
 
@@ -179,11 +179,11 @@ Target carrier PCB: **~70 × 50 mm**, 2-layer, all through-hole, modules sockete
 
 **Enclosure:** 3D-printed case; the carrier keeps its 4× M3 mounting holes and its JST-PH battery socket. The 2000 mAh LiPo (34 × 56 × 11 mm) rides **off-board**, loose in the enclosure (velcro/pocket), since it is large relative to the 70 × 50 mm carrier.
 
-**Panel controls:** power = **1 A-rated slide switch** (SS12D00-class, for the ~0.35 A WiFi TX peak). The **pot style and knob shaft length are still open** — the 9 mm PCB-mount RV09 is only a tentative default and the footprint is not finalized.
+**Panel controls:** power = **1 A-rated slide switch** (SS12D00-class, for the ~0.35 A WiFi TX peak). Filter-cutoff pot = **RV097NS** 9 mm PCB-mount (B10K, 5-pin, body 27.3 × 9.5 × 11.3 mm); its **metal shaft is turned directly — no knob**, so the enclosure needs only a shaft hole (resolved 2026-07-18).
 
 ## 12. Verification checklist (must close before PCB order)
 
-- [ ] PCM5102A output truly passes DC on the actual purple modules (drive a slow ramp, watch scope) — datasheet says ground-centered/DC-capable, module layout could add caps.
+- [ ] PCM5102A output truly passes DC on the actual purple modules (drive a slow ramp, watch scope) — datasheet says ground-centered/DC-capable. *Measured 2026-07-18:* the module carries a ~470 Ω "471" output filter but is ground-centered (no DC-blocking cap) — confirm the ramp passes DC and decide R10/R11 = 0 Ω vs 100 Ω.
 - [ ] PCM5102A PLL locks at 32× fs BCK (16-bit stereo, SCK grounded) — verify tone output.
 - [ ] Filter ringing: sharp X/Y steps (square Lissajous) — compare FLT=L vs FLT=H visually on a scope.
 - [ ] SuperMini onboard LDO type & dropout (probe 3V3 during WiFi TX burst at VBAT=3.5 V; check brownout).
