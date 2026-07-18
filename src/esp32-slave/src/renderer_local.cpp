@@ -73,14 +73,25 @@ void render_mic(int16_t* frames, size_t frame_count, float gain) {
   }
 }
 
+// The C3 has no FPU: sinf/cosf are multi-µs soft-float calls, and the original
+// per-sample versions burned 480 of them per 5 ms block — most of the audio
+// budget, and the prime suspect for the LOCAL-pattern supply-droop wedge
+// (2026-07-18). All oscillators now compute sinf/cosf once per BLOCK and
+// advance per sample with an exact phasor rotation (4 mults) instead.
 void render_circle(int16_t* frames, size_t frame_count, float gain) {
   const float step = 2.0f * (float)M_PI * 100.0f / (float)SAMPLE_RATE;
+  const float kc = cosf(step), ks = sinf(step);
+  float c = cosf(phase_a), s = sinf(phase_a);
+  const float amp = 26000.0f * gain;
   for (size_t i = 0; i < frame_count; i++) {
-    frames[i * 2] = sat16(cosf(phase_a) * 26000.0f * gain);
-    frames[i * 2 + 1] = sat16(sinf(phase_a) * 26000.0f * gain);
-    phase_a += step;
-    if (phase_a > 2.0f * (float)M_PI) phase_a -= 2.0f * (float)M_PI;
+    frames[i * 2] = sat16(c * amp);
+    frames[i * 2 + 1] = sat16(s * amp);
+    const float nc = c * kc - s * ks;
+    s = s * kc + c * ks;
+    c = nc;
   }
+  phase_a += step * (float)frame_count;
+  while (phase_a > 2.0f * (float)M_PI) phase_a -= 2.0f * (float)M_PI;
 }
 
 // DESIGN §12 DC test: 0.2 / 0.13 Hz full-scale triangles. On a DC-coupled
@@ -105,12 +116,13 @@ void render_ramp(int16_t* frames, size_t frame_count, float gain) {
 // DESIGN §12 ringing test: X/Y square waves (3:2) jump the beam between four
 // corners; overshoot/ringing on the edges shows the DAC filter behavior.
 void render_square(int16_t* frames, size_t frame_count, float gain) {
+  // sin(phase) >= 0 is just phase < π — no trig needed at all.
   const float step_a = 2.0f * (float)M_PI * 150.0f / (float)SAMPLE_RATE;
   const float step_b = 2.0f * (float)M_PI * 100.0f / (float)SAMPLE_RATE;
+  const int16_t hi = sat16(24000.0f * gain), lo = (int16_t)-hi;
   for (size_t i = 0; i < frame_count; i++) {
-    frames[i * 2] = sat16((sinf(phase_a) >= 0 ? 1.0f : -1.0f) * 24000.0f * gain);
-    frames[i * 2 + 1] =
-        sat16((sinf(phase_b) >= 0 ? 1.0f : -1.0f) * 24000.0f * gain);
+    frames[i * 2] = (phase_a < (float)M_PI) ? hi : lo;
+    frames[i * 2 + 1] = (phase_b < (float)M_PI) ? hi : lo;
     phase_a += step_a;
     phase_b += step_b;
     if (phase_a > 2.0f * (float)M_PI) phase_a -= 2.0f * (float)M_PI;
@@ -119,17 +131,28 @@ void render_square(int16_t* frames, size_t frame_count, float gain) {
 }
 
 void render_lissajous(int16_t* frames, size_t frame_count, float gain) {
-  // 3:2 Lissajous, 150/100 Hz.
+  // 3:2 Lissajous, 150/100 Hz. Two phasor rotators (see render_circle).
   const float step_a = 2.0f * (float)M_PI * 150.0f / (float)SAMPLE_RATE;
   const float step_b = 2.0f * (float)M_PI * 100.0f / (float)SAMPLE_RATE;
+  const float kca = cosf(step_a), ksa = sinf(step_a);
+  const float kcb = cosf(step_b), ksb = sinf(step_b);
+  float ca = cosf(phase_a), sa = sinf(phase_a);
+  float cb = cosf(phase_b), sb = sinf(phase_b);
+  const float amp = 26000.0f * gain;
   for (size_t i = 0; i < frame_count; i++) {
-    frames[i * 2] = sat16(sinf(phase_a) * 26000.0f * gain);
-    frames[i * 2 + 1] = sat16(sinf(phase_b) * 26000.0f * gain);
-    phase_a += step_a;
-    phase_b += step_b;
-    if (phase_a > 2.0f * (float)M_PI) phase_a -= 2.0f * (float)M_PI;
-    if (phase_b > 2.0f * (float)M_PI) phase_b -= 2.0f * (float)M_PI;
+    frames[i * 2] = sat16(sa * amp);
+    frames[i * 2 + 1] = sat16(sb * amp);
+    float t = ca * kca - sa * ksa;
+    sa = sa * kca + ca * ksa;
+    ca = t;
+    t = cb * kcb - sb * ksb;
+    sb = sb * kcb + cb * ksb;
+    cb = t;
   }
+  phase_a += step_a * (float)frame_count;
+  phase_b += step_b * (float)frame_count;
+  while (phase_a > 2.0f * (float)M_PI) phase_a -= 2.0f * (float)M_PI;
+  while (phase_b > 2.0f * (float)M_PI) phase_b -= 2.0f * (float)M_PI;
 }
 
 }  // namespace
@@ -138,7 +161,19 @@ namespace renderer_local {
 
 void init() { update_lpf_coeffs(); }
 
+extern "C" {
+extern volatile uint32_t g_ckpt;  // main.cpp crash forensics, TEMPORARY
+}
+
 void render(int16_t* frames, size_t frame_count, float gain) {
+  // Test patterns don't consume the mic: drain the ADC ring so the DMA pool
+  // never overflows and the vbat/pot smoothers stay alive.
+  if (g_pattern != Pattern::MIC) {
+    g_ckpt = 10;
+    mic_in::drain();
+    g_ckpt = 11;
+  }
+  g_ckpt = 12;
   switch (g_pattern) {
     case Pattern::CIRCLE:
       render_circle(frames, frame_count, gain);
@@ -157,6 +192,7 @@ void render(int16_t* frames, size_t frame_count, float gain) {
       render_mic(frames, frame_count, gain);
       break;
   }
+  g_ckpt = 13;
 }
 
 void next_pattern() {

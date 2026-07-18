@@ -35,6 +35,11 @@ bool stream_active();  // audio packets within STREAM_TIMEOUT_MS
 // provide the block (caller renders locally instead).
 bool pull_block(int16_t* frames, size_t frame_count);
 
+// Discard all buffered audio (race-safe). Called when the slave leaves the
+// stream (LOCAL mode) so re-joining doesn't start with a stale-frame drop
+// burst; the controller also stops sending to LOCAL slaves.
+void flush();
+
 Stats stats();
 
 }  // namespace net_rx

@@ -182,7 +182,7 @@ unconfirmed (§10).
 ### 3.4 HYPE_STATUS — port 5002, slave → controller, every 1 s
 
 `timestamp_us` = slave's local µs clock (informational; the controller must not mix it with its
-own clock). Datagram length MUST equal **54** (20 + 34).
+own clock). Datagram length MUST equal **55** (20 + 35).
 
 | Offset | Size | Field | Type | Description |
 |--------|------|-------|------|-------------|
@@ -199,9 +199,12 @@ own clock). Datagram length MUST equal **54** (20 + 34).
 | 42 | 4 | `underruns` | `uint32_t` | playout ticks that found the buffer empty (§6) |
 | 46 | 4 | `uptime_s` | `uint32_t` | seconds since boot |
 | 50 | 4 | `clock_offset_us` | `int32_t` | current smoothed sync offset, saturated to int32 range |
+| 54 | 1 | `local_pattern` | `uint8_t` | local-render pattern (drawn whenever `source=0`): 0 = mic, 1 = circle, 2 = lissajous, 3 = ramp, 4 = square |
 
 `mode` vs `source` distinction matters for the UI: a slave in NETWORK mode with a lost stream
-reports `mode=1, source=0` (fallback active — NET LED blinking 5 Hz).
+reports `mode=1, source=0` (fallback active — NET LED blinking 5 Hz). `source` is smoothed on
+the slave: brief (<150 ms) concealment gaps still report `source=1` so the 1 Hz sampling doesn't
+flap the UI; a real fallback (rebuffer or stream timeout) reports 0.
 
 STATUS doubles as **discovery**: there is no mDNS in v1. The controller builds its roster from
 incoming STATUS packets, keyed by `mac`, storing the source IP as the unicast destination for

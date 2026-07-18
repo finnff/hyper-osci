@@ -36,7 +36,7 @@ PORT_AUDIO, PORT_CTRL, PORT_STATUS = 5000, 5001, 5002
 
 HDR = struct.Struct("<IBBHIQ")  # magic, ver, type, flags, seq, timestamp_us
 AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, reserved
-STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")
+STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")  # + 1 trailing pattern byte
 
 SAMPLE_RATE = 48000
 FRAMES = 240  # 5 ms
@@ -51,6 +51,7 @@ LEAD_US = 350_000
 SYNC_INTERVAL_US = 500_000
 
 MODE_NAMES = {0: "local", 1: "network", 2: "hybrid"}
+PATTERN_NAMES = {0: "mic", 1: "circle", 2: "lissajous", 3: "ramp", 4: "square"}
 
 
 def mono_us():
@@ -230,21 +231,22 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
 <header>
   <h1>HYPEROSCI</h1>
   <button id="stream" class="on" onclick="toggleStream()"
-    title="Master switch for the UDP audio stream. OFF: slaves lose the stream and fall back to their local render (mic by default) after 1 s. ON: slaves rebuffer and lock back onto the stream within ~1 s.">STREAM ON</button>
-  <span style="color:var(--dim)">all slaves:</span>
-  <span class="seg">
-    <button title="Play the WiFi stream; auto-falls back to the local render if the stream disappears for 1 s" onclick="modeAll('network')">NETWORK</button>
-    <button title="Local render only (mic through the pot-controlled filter, or a test pattern — see each card's 'local pattern'). Radio stays on for control." onclick="modeAll('local')">MIC</button>
-    <button title="Network stream with the slave's own mic mixed in at 50%" onclick="modeAll('hybrid')">HYBRID</button>
-  </span>
+    title="Master switch: does this page send audio at all? OFF = nothing is sent and every slave draws its own local pattern. Independent of each slave's 'draw' setting.">STREAM ON</button>
+  <span style="color:var(--dim)"
+    title="set every slave's draw setting at once — same buttons as on each slave card">all draw:</span>
+  <span class="seg" id="allseg"></span>
 </header>
-<div id="offbanner">⏻ STREAM IS OFF — every slave is drawing its local
- fallback (mic/pattern). Press STREAM ON to resume the network show.</div>
+<div id="offbanner">⏻ STREAM IS OFF — this page is sending no audio; every
+ slave draws its own local pattern. Press STREAM ON to resume the network
+ show (slaves need ~1 s to rebuffer).</div>
 <div id="top">
   <canvas id="scope" width="520" height="520"
     title="Preview of the pattern being streamed (not a measurement — watch the real scope)"></canvas>
   <div id="controls" class="panel">
-    <div class="row"><label title="Waveform streamed to all NETWORK/HYBRID slaves">pattern</label>
+    <div style="color:var(--dim)"
+      title="These settings shape the audio sent over WiFi. They only affect slaves whose draw setting is STREAM or HYBRID — local patterns are generated on the slave itself and ignore this panel.">streamed
+      pattern <span id="pnote" style="color:var(--bad)"></span></div>
+    <div class="row"><label title="Waveform streamed to all STREAM/HYBRID slaves">pattern</label>
       <span class="seg" id="kindseg">
         <button data-k="circle" title="X=cos Y=sin — one circle per period" onclick="setP({kind:'circle'})">circle</button>
         <button data-k="lissajous" title="X/Y sine ratio a:b — classic Lissajous figures" onclick="setP({kind:'lissajous'})">lissajous</button>
@@ -268,19 +270,25 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
 <div id="slaves" class="panel"><div id="none">no slaves discovered yet…</div></div>
 <details><summary>ℹ how to read this dashboard</summary>
  <table>
- <tr><th>mode vs playing</th><td><b>mode</b> is what the slave is told to do
-  (NETWORK / MIC / HYBRID); <b>playing</b> is what its beam is drawing right
-  now. In NETWORK mode a slave automatically falls back to its local render
-  (mic by default) whenever the stream stops for 1 s — so "mode NETWORK,
-  playing mic fallback" simply means: no stream right now.</td></tr>
- <tr><th>local pattern</th><td>what the slave renders when NOT playing the
-  stream: <b>mic</b> = microphone X + filtered Y (the pot on the unit sets the
-  filter, currently the only mic control), or built-in test patterns
-  (circle / lissajous / ramp / square — ramp &amp; square are alignment/test
-  figures).</td></tr>
+ <tr><th>who decides what?</th><td>two switches only: the global <b>STREAM</b>
+  button (does this page send audio at all) and each slave's <b>draw</b>
+  setting. draw = <b>STREAM</b> plays this page's streamed pattern; <b>HYBRID</b>
+  adds the slave's own mic at 50%; every other choice (mic / circle /
+  lissajous / ramp / square) is generated on the slave itself. The controller
+  only sends audio to STREAM/HYBRID slaves — a slave on a local pattern
+  receives nothing (its rx/s = 0 is normal).</td></tr>
+ <tr><th>fallback</th><td>a STREAM slave that stops receiving audio for 1 s
+  (stream switched off, WiFi outage…) automatically draws its local pattern
+  instead — whichever was last chosen (mic after power-up). So
+  "LOCAL·mic" on a STREAM slave simply means: no stream right now.</td></tr>
+ <tr><th>mic pattern</th><td>microphone on X, pot-filtered microphone on Y —
+  the pot on the unit sets the filter cutoff. ramp &amp; square are
+  alignment/test figures (DC deflection, filter ringing).</td></tr>
  <tr><th>buf</th><td>received audio queued ahead of its play deadline. Healthy
-  ≈ the stream lead (200 ms). Shrinks during WiFi hiccups; hitting 0 = an
-  underrun (beam holds, then centers to a dot until the buffer refills).</td></tr>
+  ≈ 350 ms: the stream deliberately runs that far ahead because the UNO-Q's
+  WiFi radio pauses for up to ~0.3 s every ~1.4 s (chip quirk) — the buffer
+  rides those pauses out. Hitting 0 = an underrun (beam collapses to a dot
+  until it refills, ~1 s).</td></tr>
  <tr><th>drop/s &amp; under/s</th><td>should both sit at 0. Drops = packets
   arriving too late (or duplicated); underruns = the buffer ran dry — each one
   is a visible dot-blink on the scope.</td></tr>
@@ -299,8 +307,36 @@ function post(path, body) {
 }
 const setP = p => post("/api/pattern", p);
 const cmd = (ip, c) => post("/api/cmd", {ip:ip, cmd:c});
-const modeAll = m => cmd("all", {cmd:"set_mode", mode:m});
-function toggleStream() { post("/api/pattern", {stream: !S.stream_on}); }
+let lastChange = 0;  // last stream-toggle/draw-command — "buffering" grace
+function toggleStream() {
+  lastChange = performance.now();
+  post("/api/pattern", {stream: !S.stream_on});
+}
+
+// One draw setting per slave: STREAM/HYBRID = play this page's pattern,
+// anything else = a pattern the slave generates itself (mode LOCAL).
+const DRAWS = ["stream","hybrid","mic","circle","lissajous","ramp","square"];
+const DRAW_TIPS = {
+  stream:"play the audio streamed from this page (falls back to the local pattern if the stream stops)",
+  hybrid:"this page's stream + the slave's own mic mixed in at 50%",
+  mic:"local render on the slave: mic on X, pot-filtered mic on Y — the controller stops sending it audio",
+  circle:"test pattern generated on the slave itself — the controller stops sending it audio",
+  lissajous:"test pattern generated on the slave itself — the controller stops sending it audio",
+  ramp:"local alignment pattern: slow full-scale triangles (DC/deflection go-no-go)",
+  square:"local test pattern: sharp 4-corner jumps (interpolation-ringing test)"};
+function drawCmd(ip, w) {
+  lastChange = performance.now();
+  if (w === "stream") return cmd(ip, {cmd:"set_mode", mode:"network"});
+  if (w === "hybrid") return cmd(ip, {cmd:"set_mode", mode:"hybrid"});
+  return cmd(ip, {cmd:"set_pattern", pattern:w})
+      .then(() => cmd(ip, {cmd:"set_mode", mode:"local"}));
+}
+function drawSeg(ip, active) {
+  return DRAWS.map(w =>
+    `<button class="${w===active?'on':''}" title="${DRAW_TIPS[w]}"
+       onclick="drawCmd('${ip}','${w}')">` +
+    (w==="stream"||w==="hybrid" ? w.toUpperCase() : w) + "</button>").join("");
+}
 
 function fmtUp(s) {
   if (s >= 3600) return (s/3600).toFixed(1) + "h";
@@ -348,12 +384,19 @@ function drawScope() {
 
 // What is this slave's beam doing right now, in words?
 function playing(s) {
-  if (s.source) return {cls:"ok", txt:"▶ playing the network stream"};
-  if (s.mode === 0) return {cls:"ok", txt:"▶ playing its local render (MIC mode)"};
-  if (s.mode === 2) return {cls:"warn", txt:"▶ HYBRID: local render only — no stream"};
+  const lp = s.lpat || "mic", p = S.pattern;
+  if (s.source) {
+    const what = s.mode === 2 ? p.kind + " + own mic (HYBRID)" : p.kind;
+    return {cls:"ok", txt:`▶ network stream — ${what} @ ${p.freq} Hz`};
+  }
+  if (s.mode === 0) return {cls:"ok",
+      txt:`▶ local ${lp} (generated on the slave — no stream sent to it)`};
   if (!S.stream_on) return {cls:"warn",
-      txt:"▶ mic fallback — stream is switched OFF"};
-  return {cls:"bad", txt:"▶ mic fallback — stream lost, rebuffering…"};
+      txt:`▶ local ${lp} — the STREAM switch is OFF`};
+  if (performance.now() - lastChange < 4000) return {cls:"warn",
+      txt:"▶ buffering the stream… (normal for ~1 s after a change)"};
+  return {cls:"bad",
+      txt:`▶ stream not arriving — drawing local ${lp} (WiFi problem?)`};
 }
 
 function rates(s) {
@@ -370,24 +413,16 @@ function rates(s) {
 
 function card(s, r) {
   const src = s.source
-    ? '<span class="badge net" title="beam source right now: network stream">NET</span>'
-    : '<span class="badge mic" title="beam source right now: local render (mic or test pattern)">MIC</span>';
+    ? '<span class="badge net" title="beam source right now: the network stream">NET</span>'
+    : `<span class="badge mic" title="beam source right now: a pattern generated locally on the slave">LOCAL·${s.lpat||"?"}</span>`;
   const p = playing(s);
-  const seg = ["network","local","hybrid"].map((m, i) =>
-    `<button class="${s.mode===i?'on':''}" title="${[
-      'play the WiFi stream (auto mic-fallback if it stops)',
-      'local render only — mic/pattern, ignore the stream',
-      'stream + 50% own-mic mix'][i]}"
-       onclick="cmd('${s.ip}',{cmd:'set_mode',mode:'${m}'})">` +
-    ["NETWORK","MIC","HYBRID"][i] + "</button>").join("");
-  const pats = ["mic","circle","lissajous","ramp","square"].map(pt =>
-    `<button title="local-render pattern (drawn in MIC mode / during fallback)"
-       onclick="cmd('${s.ip}',{cmd:'set_pattern',pattern:'${pt}'})">${pt}</button>`
-    ).join("");
+  const active = s.mode===1 ? "stream" : s.mode===2 ? "hybrid"
+                                       : (s.lpat||"mic");
+  const fed = S.stream_on && s.mode !== 0;  // is it being sent audio at all?
   const rcls = v => v === 0 ? "ok" : v < 1 ? "warn" : "bad";
   const rline = r === null
     ? '<span title="rates appear after two status beacons">health <b>…</b></span>'
-    : `<span title="audio packets accepted per second (200/s = a perfect stream)">rx/s <b class="${r.rx>180?'ok':r.rx>0?'warn':'bad'}">${r.rx}</b></span>
+    : `<span title="audio packets accepted per second (200/s = a perfect stream; 0 is normal when the slave is not being sent audio)">rx/s <b class="${fed ? (r.rx>180?'ok':r.rx>0?'warn':'bad') : ''}">${r.rx}</b></span>
        <span title="late/stale/duplicate packets discarded per second — should be 0">drop/s <b class="${rcls(r.drop)}">${r.drop.toFixed(1)}</b></span>
        <span title="buffer ran dry per second — each one blinks the beam to a dot. Should be 0">under/s <b class="${rcls(r.und)}">${r.und.toFixed(1)}</b></span>
        <span title="seconds since the last status heartbeat (sent once per second)">age <b>${(s.age_ms/1000).toFixed(1)}s</b></span>`;
@@ -397,7 +432,7 @@ function card(s, r) {
     <div class="stats">
       <span title="WiFi signal strength at the slave: −30 excellent · −60 good · −75 marginal · −85 unusable">rssi <b>${s.rssi} dBm</b></span>
       <span title="battery voltage measured by the slave (≈0 on the bench: VBAT pin grounded, no battery)">vbat <b>${s.vbat_mv} mV</b></span>
-      <span title="audio buffered ahead of playback. Healthy ≈ 200 ms; 0 during fallback">buf <b>${Math.round(s.depth/48)} ms</b></span>
+      <span title="audio buffered ahead of playback. Healthy ≈ 350 ms (the stream runs ahead on purpose to ride out WiFi pauses); 0 during local render">buf <b>${Math.round(s.depth/48)} ms</b></span>
       <span title="time since the slave booted">up <b>${fmtUp(s.uptime)}</b></span>
       ${rline}
       <span title="lifetime accepted audio packets">rx <b>${fmtN(s.rx)}</b></span>
@@ -406,7 +441,11 @@ function card(s, r) {
       <span></span>
     </div>
     <div class="row">
-      <span class="seg" title="commanded mode">${seg}</span>
+      <label style="width:auto;color:var(--dim)"
+        title="what should this slave draw? STREAM/HYBRID play this page's streamed pattern; the rest are generated on the slave itself (and double as its fallback if the stream dies)">draw</label>
+      <span class="seg">${drawSeg(s.ip, active)}</span>
+    </div>
+    <div class="row" style="margin-top:6px">
       <button title="blink this slave's LEDs for 3 s to identify it" onclick="cmd('${s.ip}',{cmd:'identify'})">ID</button>
       <label style="width:auto;color:var(--dim)" title="per-slave output scale (persisted on the slave) — match deflection between scopes">gain</label>
       <input type="range" min="0" max="100" value="100" style="width:90px"
@@ -415,11 +454,6 @@ function card(s, r) {
       <button class="danger" title="restart the slave (2 s outage)"
         onclick="if(confirm('reboot slave ${s.id}?'))
                  cmd('${s.ip}',{cmd:'reboot'})">reboot</button>
-    </div>
-    <div class="row" style="margin-top:6px">
-      <label style="width:auto;color:var(--dim)"
-        title="what this slave draws when NOT playing the stream (MIC mode or fallback)">local pattern</label>
-      <span class="seg">${pats}</span>
     </div></div>`;
 }
 
@@ -430,6 +464,10 @@ function render() {
   sb.className = S.stream_on ? "on" : "off";
   document.getElementById("offbanner").style.display =
       S.stream_on ? "none" : "block";
+  document.getElementById("controls").style.opacity =
+      S.stream_on ? "1" : ".45";
+  document.getElementById("pnote").textContent =
+      S.stream_on ? "" : "— OFF, nothing is being sent";
   for (const b of document.querySelectorAll("#kindseg button"))
     b.className = b.dataset.k === p.kind ? "on" : "";
   document.getElementById("ratiorow").style.visibility =
@@ -457,6 +495,7 @@ async function poll() {
   try { S = await (await fetch("/api/state")).json(); render(); }
   catch (e) { /* controller restarting; retry next tick */ }
 }
+document.getElementById("allseg").innerHTML = drawSeg("all", null);
 poll(); setInterval(poll, 1000);
 </script></body></html>
 """
@@ -575,7 +614,12 @@ def stream_loop(state, iface_ip):
 
         with state.lock:
             streaming = state.stream_on
-            targets = list(state.slaves.keys())
+            # Only stream to slaves that will actually play it (NETWORK /
+            # HYBRID). A LOCAL slave ignores the stream — sending it 200 pkt/s
+            # just burns airtime and overflows its jitter buffer (which is
+            # what used to inflate the drop counter).
+            targets = [ip for ip, s in state.slaves.items()
+                       if s["mode"] != 0]
 
         if streaming:
             # Send every due packet (catch-up burst after scheduler stalls,
@@ -626,6 +670,11 @@ def stream_loop(state, iface_ip):
                     (mac, sid, mode, source, rssi, vbat, depth, rx, dropped,
                      underruns, uptime, offset) = STATUS_PAYLOAD.unpack_from(
                         data, HDR.size)
+                    # local_pattern byte appended in fw 2026-07-18; tolerate
+                    # a not-yet-reflashed slave sending the 34-byte payload.
+                    lp_off = HDR.size + STATUS_PAYLOAD.size
+                    lpat = (PATTERN_NAMES.get(data[lp_off], "?")
+                            if len(data) > lp_off else None)
                     with state.lock:
                         if src_ip not in state.slaves:
                             print(f"[discovered] slave id={sid} at {src_ip} "
@@ -636,7 +685,7 @@ def stream_loop(state, iface_ip):
                             "vbat_mv": vbat, "depth": depth, "rx": rx,
                             "drop": dropped, "under": underruns,
                             "uptime": uptime, "offs": offset,
-                            "last_us": mono_us(),
+                            "lpat": lpat, "last_us": mono_us(),
                         }
 
         # Forget slaves silent for > 5 s so we stop streaming into the void.

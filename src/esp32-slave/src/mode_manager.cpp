@@ -17,6 +17,10 @@ namespace {
 
 volatile mode_manager::Mode g_mode = mode_manager::Mode::NETWORK;
 volatile uint8_t g_active_source = 0;
+// Last time a network block actually played. STATUS samples the source once
+// a second; without this, a single 5 ms concealment block landing on that
+// instant reports "local" for a whole second (UI flaps to "stream lost").
+volatile uint32_t g_last_net_ms = 0;
 uint8_t g_slave_id = 0;
 Preferences prefs;
 
@@ -74,7 +78,13 @@ void init(Mode boot_mode) {
   audio_out::set_gain(prefs.getFloat("gain", 1.0f));
 }
 
-void set_mode(Mode m) { g_mode = m; }
+void set_mode(Mode m) {
+  // Entering LOCAL: drop any buffered stream audio. The controller stops
+  // sending to LOCAL slaves, so whatever is queued would only rot into a
+  // stale-drop burst on the next switch back to NETWORK/HYBRID.
+  if (m == Mode::LOCAL && g_mode != Mode::LOCAL) net_rx::flush();
+  g_mode = m;
+}
 
 Mode mode() { return g_mode; }
 
@@ -114,6 +124,7 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
     case Mode::NETWORK:
       if (net_rx::pull_block(frames, frame_count)) {
         source = 1;
+        g_last_net_ms = millis();
         conceal_blocks = 0;
         conceal_l = frames[(frame_count - 1) * 2];
         conceal_r = frames[(frame_count - 1) * 2 + 1];
@@ -133,6 +144,7 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
     case Mode::HYBRID:
       if (net_rx::pull_block(frames, frame_count)) {
         source = 1;
+        g_last_net_ms = millis();
         renderer_local::render(mix_buf, frame_count, HYBRID_MIC_GAIN);
         for (size_t i = 0; i < frame_count * 2; i++) {
           frames[i] = sat_add(frames[i], mix_buf[i]);
@@ -146,7 +158,13 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
   return source;
 }
 
-uint8_t active_source() { return g_active_source; }
+uint8_t active_source() {
+  if (g_active_source) return 1;
+  // Bridge sub-150 ms concealment gaps so the 1 Hz STATUS sample doesn't
+  // flap; a real fallback (rebuffer/timeout) exceeds this and reports 0.
+  const uint32_t last = g_last_net_ms;
+  return (last != 0 && millis() - last < 150) ? 1 : 0;
+}
 
 void handle_command(const char* json, size_t len) {
   JsonDocument doc;

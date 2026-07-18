@@ -70,7 +70,9 @@ typedef struct __attribute__((packed)) {
   uint32_t underruns;
   uint32_t uptime_s;
   int32_t clock_offset_us; // current smoothed sync offset (saturated)
-} HypeStatusPayload;     // 34 bytes
+  uint8_t local_pattern;   // renderer_local::Pattern: 0=mic 1=circle
+                           // 2=lissajous 3=ramp 4=square (drawn when source=0)
+} HypeStatusPayload;     // 35 bytes
 
 _Static_assert(sizeof(HypeHeader) == 20, "header must be 20 bytes");
-_Static_assert(sizeof(HypeStatusPayload) == 34, "status must be 34 bytes");
+_Static_assert(sizeof(HypeStatusPayload) == 35, "status must be 35 bytes");

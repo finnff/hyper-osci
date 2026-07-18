@@ -6,6 +6,10 @@
 
 #include "audio_out.h"
 #include "config.h"
+
+namespace app {
+uint32_t audio_stack_hwm();  // main.cpp — audio-task stack headroom (words)
+}
 #include "esp_intr_alloc.h"
 #include "esp_sleep.h"
 #include "mic_in.h"
@@ -180,11 +184,11 @@ void print_stat() {
                 (unsigned long)s.rx_packets, (unsigned long)s.rx_dropped,
                 (unsigned long)s.seq_gaps, (unsigned long)s.underruns,
                 s.buffer_depth_frames);
-  Serial.printf("sync=%s offset=%lldus vbat=%umV pot=%.2f id=%u heap=%u\n",
-                timesync::valid() ? "ok" : "stale",
-                (long long)timesync::offset_us(), mic_in::vbat_mv(),
-                (double)mic_in::pot_norm(), mode_manager::slave_id(),
-                (unsigned)ESP.getFreeHeap());
+  Serial.printf(
+      "sync=%s offset=%lldus vbat=%umV pot=%.2f id=%u heap=%u astk=%u\n",
+      timesync::valid() ? "ok" : "stale", (long long)timesync::offset_us(),
+      mic_in::vbat_mv(), (double)mic_in::pot_norm(), mode_manager::slave_id(),
+      (unsigned)ESP.getFreeHeap(), (unsigned)app::audio_stack_hwm());
   Serial.printf("adc: overflow=%lu errors=%lu clamped=%lu restarts=%lu\n",
                 (unsigned long)mic_in::overflow_count(),
                 (unsigned long)mic_in::adc_error_count(),

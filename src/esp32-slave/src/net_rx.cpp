@@ -12,6 +12,7 @@
 #include "mic_in.h"
 #include "mode_manager.h"
 #include "protocol.h"
+#include "renderer_local.h"
 #include "timesync.h"
 
 namespace {
@@ -171,6 +172,7 @@ void send_status() {
   if (off > INT32_MAX) off = INT32_MAX;
   if (off < INT32_MIN) off = INT32_MIN;
   s->clock_offset_us = (int32_t)off;
+  s->local_pattern = (uint8_t)renderer_local::pattern();
 
   udp_status.beginPacket(controller_ip, PORT_STATUS);
   udp_status.write(out, sizeof(out));
@@ -336,6 +338,8 @@ bool pull_block(int16_t* frames, size_t frame_count) {
   }
   return true;
 }
+
+void flush() { jb.reset(); }
 
 Stats stats() {
   Stats s;

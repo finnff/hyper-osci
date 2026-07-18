@@ -50,3 +50,40 @@ test patterns to the slaves and serves the web control panel:
 ## Rebuilding
 
 Not a plain `make` — the upstream README/CI recipe needed several aarch64 fixes (native Projucer from Debian `juce-tools`, JUCE 8.0.6 cloned locally, drop `-mavx`, remove the develop-only `juce_audio_processors_headless` module, patch 2 lines in `juce_sharedtexture`, build LuaJIT, `-j3` to avoid OOM). Full step-by-step is in Claude's project memory (`osci-render-aarch64-build`). `.orig` backups of the two edited files sit next to them in `~/osci-render`.
+
+## Dashboard v3 + LOCAL-pattern crash investigation (2026-07-18, late evening)
+
+**Dashboard redesigned around one question per slave — "what should it draw?"**
+One `draw` row per card: `STREAM · HYBRID · mic · circle · lissajous · ramp ·
+square`. STREAM/HYBRID play the page's streamed pattern; the rest are rendered
+on the slave itself (pattern buttons send `set_pattern` + `set_mode local` in
+one click). The controller now **only streams audio to slaves in
+NETWORK/HYBRID mode** — a slave on a local pattern gets nothing (this was the
+"why does it stream at a slave set to microphone?" confusion, and it was also
+inflating the drop counter). STATUS grew a `local_pattern` byte (35 B payload,
+protocol.md §3.4 updated) so the UI names the actual local pattern instead of
+guessing "mic". `source` is smoothed over sub-150 ms conceal gaps so the
+"stream lost" line stops flapping, and the UI shows "buffering (normal)" for
+4 s after any switch.
+
+**OPEN BUG — slave hard-wedges when rendering local circle/lissajous/ramp/
+square** (mic pattern is fine, streamed playback is fine — 3 min full-scale
+streamed circle soak clean). Death is a total chip freeze: console dead, no
+panic, no WDT reboot, JTAG debug module can't examine the hart, USB-JTAG
+eventually drops off the bus. Ruled out by experiment: stack overflow (8 KB +
+HWM), my jb-flush change, stream gating, ADC pool overflow (drain added),
+deep-sleep battery guard (dies in <2 s; guard needs 10 s + prints first),
+output amplitude (streamed = same waveform, stable). Working theory: **supply
+brownout from CPU load** — the old renderers burned 480 soft-float sinf/cosf
+ROM calls per 5 ms block (C3 has no FPU) on top of active WiFi, through the
+SuperMini's undecoded `S2LC` LDO, on a bench unit with a suspect ground
+(vbat/pot/mic-bias readings all drift). Renderers rewritten to phasor-rotation
+oscillators (2 sinf/cosf per block instead of 480; square is now trig-free) —
+built, NOT yet flashed: the slave's USB is a phantom device until power-cycled.
+
+**Next bench session:** ① power-cycle the slave (battery switch OFF before
+touching USB!), ② reflash (`pio run -t upload`), ③ soak LOCAL+circle ≥3 min —
+if it still wedges with the cheap renderers, measure 3V3 during local circle
+(ANENG A9002) and re-seat the GPIO1/AGND grounds; the crash then is
+electrical, not firmware. ④ `stat` now prints `astk` (audio stack headroom)
+and the firmware exports `g_ckpt/g_iter` markers for JTAG forensics.
