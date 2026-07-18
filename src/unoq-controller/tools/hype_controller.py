@@ -36,7 +36,7 @@ PORT_AUDIO, PORT_CTRL, PORT_STATUS = 5000, 5001, 5002
 
 HDR = struct.Struct("<IBBHIQ")  # magic, ver, type, flags, seq, timestamp_us
 AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, reserved
-STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")  # + 1 trailing pattern byte
+STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")  # + pattern byte + lost uint32
 
 SAMPLE_RATE = 48000
 FRAMES = 240  # 5 ms
@@ -286,13 +286,14 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
   the pot on the unit sets the filter cutoff. ramp &amp; square are
   alignment/test figures (DC deflection, filter ringing).</td></tr>
  <tr><th>buf</th><td>received audio queued ahead of its play deadline. Healthy
-  ≈ 350 ms: the stream deliberately runs that far ahead because the UNO-Q's
+  ≈ 450 ms: the stream deliberately runs that far ahead because the UNO-Q's
   WiFi radio pauses for up to ~0.3 s every ~1.4 s (chip quirk) — the buffer
   rides those pauses out. Hitting 0 = an underrun (beam collapses to a dot
   until it refills, ~1 s).</td></tr>
- <tr><th>drop/s &amp; under/s</th><td>should both sit at 0. Drops = packets
-  arriving too late (or duplicated); underruns = the buffer ran dry — each one
-  is a visible dot-blink on the scope.</td></tr>
+ <tr><th>drop/s, lost/s &amp; under/s</th><td>should all sit at 0. Drops =
+  packets arriving too late (or duplicated); lost = packets that never arrived
+  at all (sequence gaps — silent WiFi loss); underruns = the buffer ran dry —
+  each one is a visible dot-blink on the scope.</td></tr>
  <tr><th>gain</th><td>per-slave output scale (saved on the slave, survives
   reboot). Use it to match deflection between different scopes.</td></tr>
  </table>
@@ -406,9 +407,10 @@ function rates(s) {
   if (h && now - h.t > 300 && s.rx >= h.rx) {
     const dt = (now - h.t) / 1000;
     r = {rx: Math.round((s.rx-h.rx)/dt),
-         drop: (s.drop-h.drop)/dt, und: (s.under-h.under)/dt};
+         drop: (s.drop-h.drop)/dt, und: (s.under-h.under)/dt,
+         lost: (s.lost==null||h.lost==null) ? null : (s.lost-h.lost)/dt};
   }
-  hist[s.ip] = {rx: s.rx, drop: s.drop, under: s.under, t: now};
+  hist[s.ip] = {rx: s.rx, drop: s.drop, under: s.under, lost: s.lost, t: now};
   return r;
 }
 
@@ -425,6 +427,7 @@ function card(s, r) {
     ? '<span title="rates appear after two status beacons">health <b>…</b></span>'
     : `<span title="audio packets accepted per second (200/s = a perfect stream; 0 is normal when the slave is not being sent audio)">rx/s <b class="${fed ? (r.rx>180?'ok':r.rx>0?'warn':'bad') : ''}">${r.rx}</b></span>
        <span title="late/stale/duplicate packets discarded per second — should be 0">drop/s <b class="${rcls(r.drop)}">${r.drop.toFixed(1)}</b></span>
+       <span title="packets that never arrived per second, inferred from sequence gaps — catches silent WiFi/lwIP loss that drop/s cannot see. Should be 0">lost/s <b class="${r.lost==null?'':rcls(r.lost)}">${r.lost==null?"–":r.lost.toFixed(1)}</b></span>
        <span title="buffer ran dry per second — each one blinks the beam to a dot. Should be 0">under/s <b class="${rcls(r.und)}">${r.und.toFixed(1)}</b></span>
        <span title="seconds since the last status heartbeat (sent once per second)">age <b>${(s.age_ms/1000).toFixed(1)}s</b></span>`;
   return `<div class="card ${s.age_ms>3000?'stale':''}" style="padding:4px 0">
@@ -433,13 +436,13 @@ function card(s, r) {
     <div class="stats">
       <span title="WiFi signal strength at the slave: −30 excellent · −60 good · −75 marginal · −85 unusable">rssi <b>${s.rssi} dBm</b></span>
       <span title="battery voltage measured by the slave (≈0 on the bench: VBAT pin grounded, no battery)">vbat <b>${s.vbat_mv} mV</b></span>
-      <span title="audio buffered ahead of playback. Healthy ≈ 350 ms (the stream runs ahead on purpose to ride out WiFi pauses); 0 during local render">buf <b>${Math.round(s.depth/48)} ms</b></span>
+      <span title="audio buffered ahead of playback. Healthy ≈ 450 ms (the stream runs ahead on purpose to ride out WiFi pauses); 0 during local render">buf <b>${Math.round(s.depth/48)} ms</b></span>
       <span title="time since the slave booted">up <b>${fmtUp(s.uptime)}</b></span>
       ${rline}
       <span title="lifetime accepted audio packets">rx <b>${fmtN(s.rx)}</b></span>
       <span title="lifetime discarded packets (late, duplicate, or buffer-full)">drop <b>${fmtN(s.drop)}</b></span>
       <span title="lifetime underruns (buffer ran dry)">under <b>${fmtN(s.under)}</b></span>
-      <span></span>
+      <span title="lifetime packets that never arrived (inferred from sequence gaps)">lost <b>${s.lost==null?"–":fmtN(s.lost)}</b></span>
     </div>
     <div class="row">
       <label style="width:auto;color:var(--dim)"
@@ -680,6 +683,12 @@ def stream_loop(state, iface_ip):
                     lp_off = HDR.size + STATUS_PAYLOAD.size
                     lpat = (PATTERN_NAMES.get(data[lp_off], "?")
                             if len(data) > lp_off else None)
+                    # lost_packets uint32 appended after local_pattern
+                    # (protocol.md §3.4, fw 2026-07-19): cumulative missing
+                    # AUDIO seq — loss the slave's rx_dropped cannot see.
+                    # None until the slave runs the new firmware.
+                    lost = (struct.unpack_from("<I", data, lp_off + 1)[0]
+                            if len(data) >= lp_off + 5 else None)
                     with state.lock:
                         if src_ip not in state.slaves:
                             print(f"[discovered] slave id={sid} at {src_ip} "
@@ -689,6 +698,7 @@ def stream_loop(state, iface_ip):
                             "mode": mode, "source": source, "rssi": rssi,
                             "vbat_mv": vbat, "depth": depth, "rx": rx,
                             "drop": dropped, "under": underruns,
+                            "lost": lost,
                             "uptime": uptime, "offs": offset,
                             "lpat": lpat, "last_us": mono_us(),
                         }
