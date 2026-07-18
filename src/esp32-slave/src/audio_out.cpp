@@ -10,6 +10,10 @@ namespace {
 
 i2s_chan_handle_t tx_chan = nullptr;
 volatile float g_gain = 1.0f;
+// Q15 mirror of g_gain: the C3 has no FPU, so the per-sample scale in write()
+// must stay integer (a float multiply here is 480 soft-float calls per block
+// in the prio-10 audio task). 32768 == unity.
+volatile int32_t g_gain_q15 = 32768;
 int16_t scaled[AUDIO_BLOCK_FRAMES * 2];
 bool g_init_ok = false;
 volatile uint32_t g_write_calls = 0;   // audio-task liveness (see `stat`)
@@ -77,13 +81,13 @@ bool write(const int16_t* frames, size_t frame_count) {
     vTaskDelay(pdMS_TO_TICKS(5));
     return false;
   }
-  const float g = g_gain;
+  const int32_t q = g_gain_q15;
   const size_t n = frame_count * 2;
-  if (g >= 0.999f) {
+  if (q >= 32768) {
     memcpy(scaled, frames, n * sizeof(int16_t));
   } else {
     for (size_t i = 0; i < n; i++) {
-      scaled[i] = (int16_t)((float)frames[i] * g);
+      scaled[i] = (int16_t)(((int32_t)frames[i] * q) >> 15);
     }
   }
   size_t written = 0;
@@ -103,6 +107,7 @@ void set_gain(float g) {
   if (g < 0.0f) g = 0.0f;
   if (g > 1.0f) g = 1.0f;
   g_gain = g;
+  g_gain_q15 = (int32_t)(g * 32768.0f + 0.5f);
 }
 
 float gain() { return g_gain; }

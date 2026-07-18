@@ -128,7 +128,7 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
         conceal_blocks = 0;
         conceal_l = frames[(frame_count - 1) * 2];
         conceal_r = frames[(frame_count - 1) * 2 + 1];
-        mic_in::drain();  // keep vbat/pot smoothers alive, mic ring fresh
+        mic_in::drain();  // pump ADC DMA (anti-wedge); vbat/pot stay fresh
       } else if (net_rx::stream_active()) {
         // Brief hiccup (rebuffer / lost packets / early block): conceal
         // instead of flapping to the mic for 5 ms at a time.

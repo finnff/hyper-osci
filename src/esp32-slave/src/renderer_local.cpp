@@ -22,12 +22,13 @@ void update_lpf_coeffs() {
              (LOCAL_LPF_FC_MAX_HZ - LOCAL_LPF_FC_MIN_HZ) * mic_in::pot_norm();
   g_fc = fc;
   float w0 = 2.0f * (float)M_PI * fc / (float)SAMPLE_RATE;
+  const float cw = cosf(w0);  // soft-float trig: once, not 4x (no FPU)
   float alpha = sinf(w0) / (2.0f * 0.7071f);
   float a0 = 1.0f + alpha;
-  b0 = ((1.0f - cosf(w0)) / 2.0f) / a0;
-  b1 = (1.0f - cosf(w0)) / a0;
-  b2 = ((1.0f - cosf(w0)) / 2.0f) / a0;
-  a1 = (-2.0f * cosf(w0)) / a0;
+  b0 = ((1.0f - cw) / 2.0f) / a0;
+  b1 = (1.0f - cw) / a0;
+  b2 = b0;
+  a1 = (-2.0f * cw) / a0;
   a2 = (1.0f - alpha) / a0;
 }
 

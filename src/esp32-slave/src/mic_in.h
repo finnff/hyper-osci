@@ -17,8 +17,10 @@ uint32_t restart_count();  // ADC-liveness watchdog firings (C3 GDMA conflict)
 size_t read(int16_t* dst, size_t n);
 
 // Call once per block when the mic is NOT being rendered (network source
-// active): drains the ADC DMA pool so the vbat/pot smoothers keep updating
-// and the mic ring holds fresh audio for an instant fallback.
+// active, non-mic local pattern): drains the ADC DMA pool — mandatory, an
+// overflowing pool is the documented wedge risk — but skips the per-sample
+// soft-float mic math (output would be discarded) and decimates the
+// vbat/pot/bias IIRs to ~1 s freshness, saving ~8-10% of the core.
 void drain();
 
 uint16_t vbat_mv();  // smoothed, divider-corrected battery voltage

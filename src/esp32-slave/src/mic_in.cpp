@@ -71,8 +71,19 @@ void ring_push(int16_t s) {
   ring_tail = next;
 }
 
+// Decimation counters for light pumps (one per channel; see pump()).
+uint16_t vbat_skip = 0, pot_skip = 0, bias_skip = 0;
+constexpr uint16_t LIGHT_DECIM = 256;  // IIR tau ~4 ms -> ~1 s wall time
+
 // Drain whatever the DMA has ready into the ring / smoothers.
-void pump() {
+//
+// mic_math=false is the "light" pump for paths that discard the mic anyway
+// (NETWORK streaming, non-mic local patterns): the DMA pool is still fully
+// drained (the documented anti-wedge — never let it overflow), but the
+// per-sample soft-float DC-blocker/ring work is skipped and the slow-channel
+// IIRs update 1-in-256 (they only need ~1 Hz freshness; this also matches
+// power-budget.md's ">=1 s decimation"). Saves ~8-10% of the FPU-less core.
+void pump(bool mic_math) {
   if (adc_handle == nullptr) return;
   static uint8_t buf[2048];
   uint32_t got = 0;
@@ -86,6 +97,13 @@ void pump() {
       uint32_t ch = p->type2.channel;
       uint32_t raw = p->type2.data;
       if (ch == ADC_CHANNEL_0) {  // mic
+        if (!mic_math) {  // output discarded: keep only the bias meter, slow
+          if (++bias_skip >= LIGHT_DECIM) {
+            bias_skip = 0;
+            mic_raw_avg += MIC_BIAS_ALPHA * ((float)raw - mic_raw_avg);
+          }
+          continue;
+        }
         mic_raw_avg += MIC_BIAS_ALPHA * ((float)raw - mic_raw_avg);
         // Center 12-bit and scale to Q15, then DC-block.
         float x = (float)((int32_t)raw - 2048) * 16.0f;
@@ -99,9 +117,15 @@ void pump() {
         if (mag > st_mic_peak) st_mic_peak = mag;
         ring_push(s);
       } else if (ch == ADC_CHANNEL_1) {  // vbat
-        vbat_raw_avg += SLOW_ALPHA * ((float)raw - vbat_raw_avg);
+        if (mic_math || ++vbat_skip >= LIGHT_DECIM) {
+          vbat_skip = 0;
+          vbat_raw_avg += SLOW_ALPHA * ((float)raw - vbat_raw_avg);
+        }
       } else if (ch == ADC_CHANNEL_3) {  // pot
-        pot_raw_avg += SLOW_ALPHA * ((float)raw - pot_raw_avg);
+        if (mic_math || ++pot_skip >= LIGHT_DECIM) {
+          pot_skip = 0;
+          pot_raw_avg += SLOW_ALPHA * ((float)raw - pot_raw_avg);
+        }
       }
     }
     if (got < sizeof(buf)) break;  // pool drained
@@ -179,12 +203,12 @@ bool init_ok() { return g_init_ok; }
 uint32_t restart_count() { return st_adc_restarts; }
 
 void drain() {
-  pump();
+  pump(false);  // light: DMA drained, per-sample mic math skipped (unused)
   ring_head = ring_tail;  // discard buffered mic audio; fallback starts fresh
 }
 
 size_t read(int16_t* dst, size_t n) {
-  pump();
+  pump(true);
   // Latency clamp: the true ADC rate is ~2.1% above nominal (see
   // RING_MAX_DEPTH note), so surplus accumulates. Discard the oldest overage
   // to keep mic-to-scope latency bounded at ~20 ms.
