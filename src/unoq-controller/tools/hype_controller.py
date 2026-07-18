@@ -192,6 +192,8 @@ class State:
         self.pulse_rate = 1.5     # amplitude-LFO Hz
         self.pulse_depth = 0.0    # 0..1 of amp (0 = steady)
         self.rot_speed = 0.0      # revolutions/s (0 = static)
+        self.flip_x = False       # mirror left-right (scope polarity)
+        self.flip_y = False       # mirror top-bottom (scope polarity)
         self.text_tbl = render_text(self.text, self.font)  # None off-board
         self.text_ver = 1         # bumped on rebuild; UI refetches preview
         self.stream_on = True
@@ -201,7 +203,8 @@ class State:
         with self.lock:
             return (self.kind, self.freq, self.amp * 32000.0,
                     self.ratio_a, self.ratio_b, self.text_tbl,
-                    self.pulse_rate, self.pulse_depth, self.rot_speed)
+                    self.pulse_rate, self.pulse_depth, self.rot_speed,
+                    self.flip_x, self.flip_y)
 
     def snapshot(self):
         now = mono_us()
@@ -214,6 +217,7 @@ class State:
                             "pulse_rate": self.pulse_rate,
                             "pulse_depth": self.pulse_depth,
                             "rot": self.rot_speed,
+                            "flip_x": self.flip_x, "flip_y": self.flip_y,
                             "tver": self.text_ver},
                 "stream_on": self.stream_on,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
@@ -235,8 +239,8 @@ class PatternGen:
         self.rot = 0.0   # text: current rotation angle
 
     def block(self, n, params):
-        (kind, freq, amp, a, b,
-         ttbl, pulse_rate, pulse_depth, rot_speed) = params
+        (kind, freq, amp, a, b, ttbl,
+         pulse_rate, pulse_depth, rot_speed, flip_x, flip_y) = params
         out = array("h", bytes(4 * n))  # n stereo frames, zeroed
         two_pi = 2.0 * math.pi
         sin = math.sin
@@ -248,13 +252,17 @@ class PatternGen:
             tstep = m * freq / SAMPLE_RATE  # table entries per sample
             ae = amp * (1.0 - pulse_depth * (0.5 - 0.5 * sin(self.lfo)))
             rc, rs = math.cos(self.rot), sin(self.rot)
+            fx = -1.0 if flip_x else 1.0  # mirror before rotation
+            fy = -1.0 if flip_y else 1.0
+            axx, axy = ae * rc * fx, ae * rs * fy  # X = x*axx - y*axy
+            ayx, ayy = ae * rs * fx, ae * rc * fy  # Y = x*ayx + y*ayy
             pos = self.tpos
             if pos >= m:  # table swapped for a shorter one mid-stream
                 pos %= m
             for i in range(n):
                 x, y = ttbl[int(pos)]
-                out[2 * i] = int(ae * (x * rc - y * rs))      # X
-                out[2 * i + 1] = int(ae * (x * rs + y * rc))  # Y
+                out[2 * i] = int(x * axx - y * axy)      # X
+                out[2 * i + 1] = int(x * ayx + y * ayy)  # Y
                 pos += tstep
                 if pos >= m:
                     pos -= m
@@ -438,7 +446,11 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
               onchange="setP({font:this.value})">
         <option>simplex</option><option>duplex</option><option>script</option>
         <option>gothic</option><option>times</option><option>italic</option>
-      </select></div>
+      </select>
+      <button id="fxbtn" title="mirror left-right — fix a scope whose X polarity is inverted (text reads backwards)"
+              onclick="setP({flip_x:!S.pattern.flip_x})">⇋ X</button>
+      <button id="fybtn" title="mirror top-bottom — fix a scope whose Y polarity is inverted (text is upside down)"
+              onclick="setP({flip_y:!S.pattern.flip_y})">⇵ Y</button></div>
     <div class="row" id="pulserow" style="display:none"><label
         title="amplitude pulse: how deep the text 'breathes' and how fast">pulse</label>
       <input type="range" id="pdepth" min="0" max="100" step="1"
@@ -574,8 +586,9 @@ function drawScope() {
   g.shadowColor = "#39ff14"; g.shadowBlur = 8;
   g.beginPath();
   if (p.kind === "text") {
+    const sx = p.flip_x ? -1 : 1, sy = p.flip_y ? -1 : 1;
     for (let i = 0; i < TP.pts.length; i++) {
-      const px = w/2 + amp*TP.pts[i][0], py = h/2 - amp*TP.pts[i][1];
+      const px = w/2 + amp*sx*TP.pts[i][0], py = h/2 - amp*sy*TP.pts[i][1];
       i ? g.lineTo(px, py) : g.moveTo(px, py);
     }
     g.stroke(); g.shadowBlur = 0;
@@ -694,6 +707,8 @@ function render() {
       (p.kind === "circle" || isText) ? "none" : "flex";
   for (const id of ["textrow", "pulserow", "rotrow"])
     document.getElementById(id).style.display = isText ? "flex" : "none";
+  document.getElementById("fxbtn").className = p.flip_x ? "on" : "";
+  document.getElementById("fybtn").className = p.flip_y ? "on" : "";
   if (isText && p.tver !== TP.ver) fetchPreview();
   // Don't fight the user mid-drag: only sync widgets nobody is touching.
   const act = document.activeElement;
@@ -803,6 +818,10 @@ def make_http_handler(state, cmds):
                     if "rot" in body:
                         state.rot_speed = min(2.0, max(
                             -2.0, float(body["rot"])))
+                    if "flip_x" in body:
+                        state.flip_x = bool(body["flip_x"])
+                    if "flip_y" in body:
+                        state.flip_y = bool(body["flip_y"])
                     if "stream" in body:
                         state.stream_on = bool(body["stream"])
                     if new_tbl is not None:
