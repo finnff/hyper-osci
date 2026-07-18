@@ -87,3 +87,13 @@ if it still wedges with the cheap renderers, measure 3V3 during local circle
 (ANENG A9002) and re-seat the GPIO1/AGND grounds; the crash then is
 electrical, not firmware. ④ `stat` now prints `astk` (audio stack headroom)
 and the firmware exports `g_ckpt/g_iter` markers for JTAG forensics.
+
+**RESOLVED same evening:** the slave's USB recovered after a JTAG reset (no
+power-cycle needed); flashed the phasor-rotator build and re-ran the soaks:
+LOCAL+circle 3¾ min clean (was: dead <10 s, every time), lissajous/ramp/square
+40 s each clean, clean rejoin to NETWORK streaming afterwards. The 480
+soft-float sinf/cosf calls per block were the trigger — with them gone the
+wedge is unreproducible. Caveat for the PCB: the failure mode was a
+supply-level freeze, so the underlying power margin is thin — keep the S2LC
+LDO decode (Q) open, add bulk capacitance near the C3, and re-check the bench
+unit's grounds (vbat still reads 6-10 mV noise, GPIO1 divider ground suspect).
