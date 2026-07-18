@@ -144,3 +144,32 @@ microbursts overflowing lwIP's 6-slot UDP recvmbox, analysis §4.1), forcing a
 jb rebuffer (~1-2 s of mic) every ~10 s. This is the measurement §7 Tier 3 was
 gated on → **AsyncUDP audio RX is now warranted** for a W2 work item. RF was worse
 tonight than during yesterday's clean 44 s soak; re-check loss rate in daytime too.
+
+## AsyncUDP audio RX landed — silent loss fixed & now measurable (2026-07-19, night)
+
+Commits: `db67afe` (slave: AsyncUDP audio RX + `lost_packets` on the wire, STATUS
+55→59 B, protocol.md updated), `420882c` (controller: parse + dashboard `lost` /
+`lost/s`). Deployed to the UNO-Q and flashed on the bench slave.
+
+What changed: the audio socket no longer goes through WiFiUDP's BSD-socket path
+(6-slot lwIP recvmbox, the silent-drop bottleneck) — a raw lwIP callback feeds
+AsyncUDP's 32-deep queue with tcpip backpressure, and the handler pushes straight
+into the jitter buffer from the `async_udp` task (bumped to prio 8). New
+`lost_packets` counter (seq-gap inferred, SYNC_PULSE-aware) finally counts loss
+the slave never saw arrive; on serial `stat` as `lost=` and on the dashboard.
+
+Verified on hardware (same bad-RF night as the wedge writeup):
+- **rx/s 190–198 of 200** (was 155–175); rx+lost ≈ 200 — full accounting.
+- 60 s soak: `source=1` throughout — **the ~10 s mic-dip flap is gone**;
+  drop/s=0, under/s=0, depth pinned at 450 ms.
+- Ping-flood stress (14 s, ~200×1 kB/s extra): no flap, no underruns, depth
+  dipped to 300 ms and recovered. Pre-fix this burst profile forced rebuffers.
+- WiFi bounce (`wifi off`/`on` on console): stream back in <5 s (AsyncUDP
+  re-listen + IGMP re-join in `on_wifi_up`).
+- Residual lost/s ≈ 3–10 (~2.5%) in tonight's RF is **upstream** (air/AP-side),
+  arrives as 1–2-packet gaps, and is concealed by hold-fill without rebuffering.
+  Re-measure in daytime RF; watch `lost/s` on the dashboard at the venue.
+
+Rollout note: STATUS length changed 55→59 B, both directions compatible — the
+3 unflashed slaves show `lost –` on the dashboard until reflashed; flash them
+before the show so per-slave RF loss is visible from FOH.
