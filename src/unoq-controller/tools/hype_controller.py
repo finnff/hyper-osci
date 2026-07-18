@@ -601,7 +601,7 @@ function live() {
 // controller (~/hype_presets.json) so they survive restarts.
 function savePreset() {
   const p = S.pattern;
-  const def = (p.kind === "text" ? p.text.split("\n")[0] : p.kind).slice(0, 24);
+  const def = (p.kind === "text" ? p.text.split("\\n")[0] : p.kind).slice(0, 24);
   const name = prompt("preset name (e.g. the artist):", def);
   if (name && name.trim()) post("/api/preset", {op:"save", name:name.trim()});
 }
