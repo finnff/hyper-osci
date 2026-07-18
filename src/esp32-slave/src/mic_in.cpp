@@ -6,6 +6,7 @@
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_continuous.h"
+#include "esp_private/gdma.h"
 
 namespace {
 
@@ -35,6 +36,20 @@ constexpr float SLOW_ALPHA = 0.01f;
 uint32_t st_ring_overflow = 0;  // ring full, sample dropped
 uint32_t st_adc_errors = 0;     // adc_continuous_read hard errors
 uint32_t st_latency_clamps = 0; // oldest samples discarded to bound latency
+
+// Bring-up meters (see `stat`): peak |mic sample| since last query, plus a
+// slow IIR of the raw mic counts to verify the MAX4466's ~VCC/2 bias.
+volatile uint16_t st_mic_peak = 0;
+float mic_raw_avg = 2048.0f;
+constexpr float MIC_BIAS_ALPHA = 0.001f;  // ~40 ms at 24 kHz
+bool g_init_ok = false;
+
+// NOTE: an ADC-liveness watchdog that stop/recreated the driver from the
+// audio task boot-looped the chip (xTaskPriorityDisinherit assert — driver
+// lifecycle must stay in the task that created it). The C3's real conflict is
+// interrupt-line allocation (intr_alloc "No free interrupt inputs for
+// DMA_CH0"), fixed at init time, not by runtime restarts.
+uint32_t st_adc_restarts = 0;  // reserved for a future safe recovery path
 
 // The nominal 24 kHz/channel is actually ~24.51 kHz: the ADC divider is
 // (80 MHz>>5)/ADC_SAMPLE_RATE_TOTAL truncated to an integer (2.5e6/72000 →
@@ -71,6 +86,7 @@ void pump() {
       uint32_t ch = p->type2.channel;
       uint32_t raw = p->type2.data;
       if (ch == ADC_CHANNEL_0) {  // mic
+        mic_raw_avg += MIC_BIAS_ALPHA * ((float)raw - mic_raw_avg);
         // Center 12-bit and scale to Q15, then DC-block.
         float x = (float)((int32_t)raw - 2048) * 16.0f;
         float y = x - dc_prev_x + DC_R * dc_prev_y;
@@ -78,7 +94,10 @@ void pump() {
         dc_prev_y = y;
         if (y > 32767.0f) y = 32767.0f;
         if (y < -32768.0f) y = -32768.0f;
-        ring_push((int16_t)y);
+        const int16_t s = (int16_t)y;
+        const uint16_t mag = (uint16_t)(s < 0 ? -(int32_t)s : s);
+        if (mag > st_mic_peak) st_mic_peak = mag;
+        ring_push(s);
       } else if (ch == ADC_CHANNEL_1) {  // vbat
         vbat_raw_avg += SLOW_ALPHA * ((float)raw - vbat_raw_avg);
       } else if (ch == ADC_CHANNEL_3) {  // pot
@@ -90,11 +109,23 @@ void pump() {
   if (err != ESP_OK && err != ESP_ERR_TIMEOUT) st_adc_errors++;
 }
 
-}  // namespace
+// Everything that allocates driver/GDMA resources.
+bool create_and_start() {
+  // GDMA pair decoy (must run AFTER audio_out::init()). The I2S TX channel
+  // sits on GDMA pair 0 and exclusively owns that pair's one interrupt source
+  // (DMA_CH0). Without this, the ADC's RX channel lands on pair 0's free RX
+  // slot and then can't install its interrupt ("intr_alloc: No free interrupt
+  // inputs for DMA_CH0" — even with 16 CPU lines free, a source can only be
+  // allocated once). A decoy RX channel (never started, installs no ISR)
+  // occupies pair 0's RX slot so the ADC allocates on pair 1 and gets the
+  // free DMA_CH1 interrupt.
+  static gdma_channel_handle_t gdma_decoy_rx = nullptr;
+  if (gdma_decoy_rx == nullptr) {
+    gdma_channel_alloc_config_t decoy = {};
+    decoy.direction = GDMA_CHANNEL_DIRECTION_RX;
+    gdma_new_ahb_channel(&decoy, &gdma_decoy_rx);  // best-effort
+  }
 
-namespace mic_in {
-
-bool init() {
   adc_continuous_handle_cfg_t hcfg = {
       .max_store_buf_size = 8192,
       .conv_frame_size = 1024,
@@ -122,6 +153,16 @@ bool init() {
   };
   if (adc_continuous_config(adc_handle, &ccfg) != ESP_OK) return false;
 
+  return adc_continuous_start(adc_handle) == ESP_OK;
+}
+
+}  // namespace
+
+namespace mic_in {
+
+bool init() {
+  g_init_ok = create_and_start();
+
   adc_cali_curve_fitting_config_t cali_cfg = {
       .unit_id = ADC_UNIT_1,
       .chan = ADC_CHANNEL_1,
@@ -131,8 +172,11 @@ bool init() {
   cali_ok =
       adc_cali_create_scheme_curve_fitting(&cali_cfg, &cali_handle) == ESP_OK;
 
-  return adc_continuous_start(adc_handle) == ESP_OK;
+  return g_init_ok;
 }
+
+bool init_ok() { return g_init_ok; }
+uint32_t restart_count() { return st_adc_restarts; }
 
 void drain() {
   pump();
@@ -176,6 +220,14 @@ float pot_norm() {
   if (v > 1.0f) v = 1.0f;
   return v;
 }
+
+uint16_t mic_peak() {
+  const uint16_t p = st_mic_peak;
+  st_mic_peak = 0;
+  return p;
+}
+
+uint16_t mic_bias_raw() { return (uint16_t)mic_raw_avg; }
 
 uint32_t overflow_count() { return st_ring_overflow; }
 uint32_t adc_error_count() { return st_adc_errors; }

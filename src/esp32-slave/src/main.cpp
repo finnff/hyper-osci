@@ -33,8 +33,10 @@ void setup() {
   mode_manager::init(boot_local ? mode_manager::Mode::LOCAL
                                 : mode_manager::Mode::NETWORK);
 
-  if (!mic_in::init()) Serial.println("[init] adc_continuous FAILED");
+  // I2S before ADC: both allocate GDMA/interrupt resources; probing which one
+  // loses the race when they contend (bring-up).
   if (!audio_out::init()) Serial.println("[init] i2s FAILED");
+  if (!mic_in::init()) Serial.println("[init] adc_continuous FAILED");
   renderer_local::init();
 
   net_rx::set_cmd_handler(mode_manager::handle_command);

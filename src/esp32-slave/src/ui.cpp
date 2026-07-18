@@ -6,6 +6,7 @@
 
 #include "audio_out.h"
 #include "config.h"
+#include "esp_intr_alloc.h"
 #include "esp_sleep.h"
 #include "mic_in.h"
 #include "mode_manager.h"
@@ -18,6 +19,8 @@ namespace {
 bool g_boot_local = false;
 bool identify_active = false;
 uint32_t identify_started_ms = 0;
+bool g_log_periodic = false;  // `log on` — print stat every second
+uint32_t last_log_ms = 0;
 
 // --- Buttons -----------------------------------------------------------------
 struct Button {
@@ -127,7 +130,10 @@ void battery_policy() {
   last_check_ms = now;
 
   const uint16_t mv = mic_in::vbat_mv();
-  if (mv < 1000) return;  // divider not connected (bench/USB bring-up)
+  // Divider not connected (bench/USB bring-up): a floating GPIO1 can drift
+  // past 1 V and fake a dying cell (radio off / deep sleep). Any real LiPo
+  // reads >= ~3000 mV through the 2:1 divider, so 2000 is still unambiguous.
+  if (mv < 2000) return;
 
   if (mv < VBAT_WIFI_OFF_MV && net_rx::radio_enabled()) {
     Serial.printf("[batt] %u mV — radio off, forcing LOCAL\n", mv);
@@ -155,8 +161,8 @@ void battery_policy() {
 // --- Serial console ----------------------------------------------------------
 void print_help() {
   Serial.println(
-      "commands: help | stat | mode <local|net|hybrid> | pat | gain <0-100> | "
-      "wifi <on|off> | id <0-255> | reboot");
+      "commands: help | stat | log <on|off> | mode <local|net|hybrid> | pat | "
+      "gain <0-100> | wifi <on|off> | id <0-255> | reboot");
 }
 
 void print_stat() {
@@ -178,10 +184,20 @@ void print_stat() {
                 (long long)timesync::offset_us(), mic_in::vbat_mv(),
                 (double)mic_in::pot_norm(), mode_manager::slave_id(),
                 (unsigned)ESP.getFreeHeap());
-  Serial.printf("adc: overflow=%lu errors=%lu clamped=%lu\n",
+  Serial.printf("adc: overflow=%lu errors=%lu clamped=%lu restarts=%lu\n",
                 (unsigned long)mic_in::overflow_count(),
                 (unsigned long)mic_in::adc_error_count(),
-                (unsigned long)mic_in::latency_clamp_count());
+                (unsigned long)mic_in::latency_clamp_count(),
+                (unsigned long)mic_in::restart_count());
+  Serial.printf("mic: peak=%u/32767 bias_raw=%u/4095 (expect bias ~2100-2300)\n",
+                mic_in::mic_peak(), mic_in::mic_bias_raw());
+  Serial.printf(
+      "audio: i2s_init=%s(step=%s err=0x%x) adc_init=%s write_calls=%lu "
+      "done=%lu\n",
+      audio_out::init_ok() ? "ok" : "FAILED", audio_out::init_err_step(),
+      audio_out::init_err_code(), mic_in::init_ok() ? "ok" : "FAILED",
+      (unsigned long)audio_out::write_calls(),
+      (unsigned long)audio_out::writes_done());
 }
 
 void handle_line(char* line) {
@@ -193,6 +209,15 @@ void handle_line(char* line) {
     print_help();
   } else if (strcmp(cmd, "stat") == 0) {
     print_stat();
+  } else if (strcmp(cmd, "intr") == 0) {
+    // CPU interrupt allocation table — the C3 runs out of lines for the
+    // second GDMA client (I2S vs adc_continuous); this shows who holds what.
+    esp_intr_dump(stdout);
+    fflush(stdout);
+  } else if (strcmp(cmd, "log") == 0) {
+    g_log_periodic = (arg != nullptr) ? (strcmp(arg, "on") == 0)
+                                      : !g_log_periodic;
+    Serial.printf("log=%s\n", g_log_periodic ? "on" : "off");
   } else if (strcmp(cmd, "mode") == 0 && arg != nullptr) {
     if (strcmp(arg, "local") == 0)
       mode_manager::set_mode(mode_manager::Mode::LOCAL);
@@ -287,6 +312,11 @@ void poll() {
   update_leds();
   battery_policy();
   console_poll();
+
+  if (g_log_periodic && millis() - last_log_ms >= 1000) {
+    last_log_ms = millis();
+    print_stat();
+  }
 }
 
 void identify() {
