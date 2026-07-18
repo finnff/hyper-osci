@@ -97,3 +97,50 @@ wedge is unreproducible. Caveat for the PCB: the failure mode was a
 supply-level freeze, so the underlying power margin is thin — keep the S2LC
 LDO decode (Q) open, add bulk capacitance near the C3, and re-check the bench
 unit's grounds (vbat still reads 6-10 mV noise, GPIO1 divider ground suspect).
+
+---
+
+## Perf Tier 1+2 landed + NEW show-day risk: ath10k AP rate-control wedge (2026-07-18, night)
+
+Implemented the "small cheap" tier of PERFORMANCE_HEAT_ANALYSIS.md (§7 items 1-5;
+commits d192b3a controller, d0e23ae firmware):
+
+1. `LEAD_US` 350 → **450 ms** — verified: slave settles at `depth=21600` frames (450 ms).
+2. `audio.setblocking(False)` on the controller audio socket.
+3. Q15 integer gain in `audio_out::write` (no float left in the audio-output path).
+4. `update_lpf_coeffs` computes `cosf(w0)` once (was 4×).
+5. `mic_in::pump(mic_math)` — light drain when the mic output is discarded: DMA pool
+   still fully drained (anti-wedge), soft-float DC-blocker skipped, vbat/pot/bias IIRs
+   decimated 1-in-256 (~1 s freshness). Frees ~8-10% of the core. MIC/HYBRID unchanged.
+
+§7 item 6 (80 MHz downclock) deliberately NOT done — small win, wants its own soak.
+
+### The wedge (found while verifying #1; NOT caused by it — A/B-proven)
+
+Symptom: slave stuck on mic fallback, dashboard `rx/s` near zero, slave `stat` showed
+`drop` climbing ~100/s with `rx` frozen, `gaps` huge. Diagnosis: **ping from the UNO-Q
+showed 0% loss but RTT 465-1690 ms under streaming load** (idle: 2 ms). The ath10k AP's
+per-station TX rate control had wedged below the stream's 1.58 Mbit/s → a standing ~1 s
+TX queue → every audio packet arrived far past its deadline → 100% stale-dropped by the
+slave, and the qdisc tail-dropped ~40% besides. Self-sustaining as long as the stream
+keeps feeding the queue.
+
+Remedy ladder (tested in order): controller restart ✗, slave reboot ✗ (fresh assoc did
+NOT reset the AP's rate state), **AP bounce ✓**:
+
+    sudo nmcli c down hyperosci-ap && sleep 3 && sudo nmcli c up hyperosci-ap
+    sudo systemctl restart hyperosci-controller   # its multicast SYNC socket dies with the iface
+
+**Show runbook:** if all scopes fall back to mic and `rx/s` is ~0 while WiFi shows
+connected — bounce the AP, then restart the controller. ~15 s total. (SSH via USB
+tether survives the bounce; the AP bounce is invisible to nothing except the slaves,
+which rejoin in ~5 s.)
+
+### Residual (measured tonight, pre-existing): silent burst loss
+
+With everything healthy: rx ≈ 155-175 pkt/s of 200 sent, `drop=0`, `underrun=0` —
+i.e. **15-20% of packets are lost below the app layer** (ath10k deaf-stall flush
+microbursts overflowing lwIP's 6-slot UDP recvmbox, analysis §4.1), forcing a
+jb rebuffer (~1-2 s of mic) every ~10 s. This is the measurement §7 Tier 3 was
+gated on → **AsyncUDP audio RX is now warranted** for a W2 work item. RF was worse
+tonight than during yesterday's clean 44 s soak; re-check loss rate in daytime too.
