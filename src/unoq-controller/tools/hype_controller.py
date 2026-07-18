@@ -74,6 +74,34 @@ TEXT_FONTS = {  # friendly name -> file from the hershey-fonts-data package
 TEXT_TABLE_POINTS = 2000  # equal-arc-length samples per rendered path
 _glyph_cache = {}
 
+# Streamed-pattern presets (artist names etc.), persisted across restarts.
+PRESETS_FILE = os.environ.get(
+    "HYPE_PRESETS", os.path.expanduser("~/hype_presets.json"))
+PRESETS_MAX = 10
+PRESET_FIELDS = ("kind", "freq", "amp", "a", "b", "text", "font",
+                 "pulse_rate", "pulse_depth", "rot", "flip_x", "flip_y")
+
+
+def load_presets():
+    try:
+        with open(PRESETS_FILE) as f:
+            data = json.load(f)
+        return [p for p in data
+                if isinstance(p, dict) and p.get("name")
+                and all(k in p for k in PRESET_FIELDS)][:PRESETS_MAX]
+    except (OSError, ValueError):
+        return []
+
+
+def save_presets(presets):
+    tmp = PRESETS_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(presets, f, indent=1)
+        os.replace(tmp, PRESETS_FILE)  # atomic: never a half-written file
+    except OSError as e:
+        print(f"[presets] save failed: {e}", flush=True)
+
 
 def _jhf_glyphs(fname):
     """Parse a Hershey .jhf font -> {ascii: (left, right, [polyline, ...])}.
@@ -130,7 +158,7 @@ def render_text(text, font):
         return None
     strokes = []
     line_h = 32.0
-    for row, linetext in enumerate(text.split("|")):
+    for row, linetext in enumerate(text.replace("|", "\n").split("\n")):
         x = 0.0
         dy = -row * line_h
         for ch in linetext:
@@ -196,6 +224,7 @@ class State:
         self.flip_y = False       # mirror top-bottom (scope polarity)
         self.text_tbl = render_text(self.text, self.font)  # None off-board
         self.text_ver = 1         # bumped on rebuild; UI refetches preview
+        self.presets = load_presets()  # [{name + PRESET_FIELDS}, ...]
         self.stream_on = True
         self.slaves = {}          # ip -> dict(status fields + last_us)
 
@@ -219,6 +248,7 @@ class State:
                             "rot": self.rot_speed,
                             "flip_x": self.flip_x, "flip_y": self.flip_y,
                             "tver": self.text_ver},
+                "presets": [p["name"] for p in self.presets],
                 "stream_on": self.stream_on,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
                            for s in self.slaves.values()],
@@ -436,12 +466,12 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
       <input type="number" id="rb" min="1" max="9" style="width:64px"
              onchange="setP({b:+this.value})"></div>
     <div class="row" id="textrow" style="display:none"><label
-        title="text to draw — printable ASCII, '|' starts a new line">text</label>
-      <input type="text" id="text" maxlength="80" spellcheck="false"
+        title="text to draw — printable ASCII, Enter starts a new line">text</label>
+      <textarea id="text" maxlength="80" rows="2" spellcheck="false"
              style="flex:1;min-width:120px;background:#101b10;color:var(--fg);
                     border:1px solid var(--line);border-radius:5px;
-                    padding:5px 8px;font:inherit"
-             onchange="setP({text:this.value})">
+                    padding:5px 8px;font:inherit;resize:vertical"
+             onchange="setP({text:this.value})"></textarea>
       <select id="font" title="Hershey typeface"
               onchange="setP({font:this.value})">
         <option>simplex</option><option>duplex</option><option>script</option>
@@ -466,6 +496,11 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
       <input type="range" id="rot" min="-100" max="100" step="1"
              oninput="live()" onchange="setP({rot:this.value/100})">
       <span class="val" id="rotv"></span></div>
+    <div class="row" id="presetrow"><label
+        title="saved snapshots of everything in this panel — prepare artist names before the show, then switch in one tap">presets</label>
+      <span id="plist" style="display:flex;gap:6px;flex-wrap:wrap"></span>
+      <button title="save the current pattern settings as a named preset (max 10)"
+              onclick="savePreset()">+ save</button></div>
   </div>
 </div>
 <div id="slaves" class="panel"><div id="none">no slaves discovered yet…</div></div>
@@ -560,6 +595,27 @@ function live() {
   document.getElementById("rotv").textContent =
       (document.getElementById("rot").value/100).toFixed(2) + " rev/s";
   drawScope();
+}
+
+// Presets: snapshots of the whole streamed-pattern panel, kept on the
+// controller (~/hype_presets.json) so they survive restarts.
+function savePreset() {
+  const p = S.pattern;
+  const def = (p.kind === "text" ? p.text.split("\n")[0] : p.kind).slice(0, 24);
+  const name = prompt("preset name (e.g. the artist):", def);
+  if (name && name.trim()) post("/api/preset", {op:"save", name:name.trim()});
+}
+const loadPreset = n => post("/api/preset", {op:"load", name:n});
+function delPreset(n) {
+  if (confirm(`delete preset "${n}"?`))
+    post("/api/preset", {op:"delete", name:n});
+}
+function presetChips() {
+  document.getElementById("plist").innerHTML = (S.presets || []).map(n =>
+    `<span class="seg"><button title="apply this preset"
+        onclick="loadPreset('${n}')">${esc(n)}</button><button class="danger"
+        title="delete preset '${esc(n)}'" onclick="delPreset('${n}')">×</button></span>`
+  ).join("") || '<span style="color:var(--dim)">none saved yet</span>';
 }
 
 // Text-path preview: fetched only when the server-side table changes (tver).
@@ -709,6 +765,7 @@ function render() {
     document.getElementById(id).style.display = isText ? "flex" : "none";
   document.getElementById("fxbtn").className = p.flip_x ? "on" : "";
   document.getElementById("fybtn").className = p.flip_y ? "on" : "";
+  presetChips();
   if (isText && p.tver !== TP.ver) fetchPreview();
   // Don't fight the user mid-drag: only sync widgets nobody is touching.
   const act = document.activeElement;
@@ -791,9 +848,11 @@ def make_http_handler(state, cmds):
                     with state.lock:
                         text, font = state.text, state.font
                     if "text" in body:
-                        # Hershey covers printable ASCII; '|' = newline.
+                        # Hershey covers printable ASCII; newline (or '|')
+                        # starts a new display line.
                         text = "".join(c for c in str(body["text"])
-                                       if 32 <= ord(c) <= 126)[:80]
+                                       if 32 <= ord(c) <= 126
+                                       or c == "\n")[:80]
                     if body.get("font") in TEXT_FONTS:
                         font = body["font"]
                     new_tbl = (text, font, render_text(text, font))
@@ -828,6 +887,71 @@ def make_http_handler(state, cmds):
                         state.text, state.font, state.text_tbl = new_tbl
                         state.text_ver += 1
                 self._json({"ok": True})
+            elif self.path == "/api/preset":
+                op = body.get("op")
+                # Names are embedded in onclick attributes client-side — keep
+                # them to a safe charset instead of escaping in four places.
+                name = "".join(c for c in str(body.get("name", ""))
+                               if c.isalnum() or c in " ._-()&+")[:24].strip()
+                if op not in ("save", "load", "delete") or not name:
+                    return self._json({"err": "need op + name"}, 400)
+                if op == "save":
+                    with state.lock:
+                        snap = {"name": name,
+                                "kind": state.kind, "freq": state.freq,
+                                "amp": state.amp, "a": state.ratio_a,
+                                "b": state.ratio_b, "text": state.text,
+                                "font": state.font,
+                                "pulse_rate": state.pulse_rate,
+                                "pulse_depth": state.pulse_depth,
+                                "rot": state.rot_speed,
+                                "flip_x": state.flip_x,
+                                "flip_y": state.flip_y}
+                        for i, p in enumerate(state.presets):
+                            if p["name"] == name:  # overwrite in place
+                                state.presets[i] = snap
+                                break
+                        else:
+                            if len(state.presets) >= PRESETS_MAX:
+                                return self._json(
+                                    {"err": f"max {PRESETS_MAX} presets"}, 400)
+                            state.presets.append(snap)
+                        plist = list(state.presets)
+                    save_presets(plist)  # file IO outside the lock
+                    self._json({"ok": True})
+                elif op == "delete":
+                    with state.lock:
+                        state.presets = [p for p in state.presets
+                                         if p["name"] != name]
+                        plist = list(state.presets)
+                    save_presets(plist)
+                    self._json({"ok": True})
+                else:  # load
+                    with state.lock:
+                        p = next((dict(p) for p in state.presets
+                                  if p["name"] == name), None)
+                    if p is None:
+                        return self._json({"err": "no such preset"}, 404)
+                    tbl = render_text(p["text"], p["font"])  # outside lock
+                    with state.lock:
+                        if p["kind"] in ("circle", "lissajous", "rose",
+                                         "text"):
+                            state.kind = p["kind"]
+                        state.freq = min(2000.0, max(1.0, float(p["freq"])))
+                        state.amp = min(1.0, max(0.0, float(p["amp"])))
+                        state.ratio_a = min(9, max(1, int(p["a"])))
+                        state.ratio_b = min(9, max(1, int(p["b"])))
+                        state.pulse_rate = min(10.0, max(
+                            0.1, float(p["pulse_rate"])))
+                        state.pulse_depth = min(1.0, max(
+                            0.0, float(p["pulse_depth"])))
+                        state.rot_speed = min(2.0, max(-2.0, float(p["rot"])))
+                        state.flip_x = bool(p["flip_x"])
+                        state.flip_y = bool(p["flip_y"])
+                        state.text, state.font = p["text"], p["font"]
+                        state.text_tbl = tbl
+                        state.text_ver += 1
+                    self._json({"ok": True})
             elif self.path == "/api/cmd":
                 ip, cmd_obj = body.get("ip"), body.get("cmd")
                 if not ip or not isinstance(cmd_obj, dict):
