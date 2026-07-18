@@ -3,6 +3,21 @@
 _Last verified: 2026-07-18. Scope: the physical Arduino UNO-Q board and the osci-render
 render engine. The controller app in this directory is still a stub — see [README.md](README.md)._
 
+## Controller daemon (bring-up, 2026-07-18)
+
+`tools/hype_controller.py` (deployed at `/home/arduino/hype_controller.py`) streams
+test patterns to the slaves and serves the web control panel:
+
+- **Web UI:** <http://10.42.0.128:8080> (USB tether) or <http://192.168.50.1:8080>
+  (on `HYPEROSCI_AP`). Pattern/freq/amp controls, stream on/off, per-slave and
+  all-slave mode toggles (network / mic / hybrid), identify, gain, reboot.
+- **Runs as a systemd service**, starts on boot:
+  `sudo systemctl {status,restart,stop} hyperosci-controller`, logs via
+  `journalctl -u hyperosci-controller -f`. Unit file mirrored at
+  `deploy/hyperosci-controller.service` in this directory.
+- Predecessor `tools/hype_sender.py` is kept as the minimal protocol reference
+  (don't run both — they'd fight over UDP :5002 and the slaves' jitter buffers).
+
 ## How to get on the board
 
 - **SSH:** `ssh arduino@10.42.0.128` — password `arduino`. Host is `uno-q`, Debian 13 (trixie), **aarch64**, 4 cores / 3.6 GB RAM.

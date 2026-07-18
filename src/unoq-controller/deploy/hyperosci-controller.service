@@ -1,0 +1,13 @@
+[Unit]
+Description=HYPEROSCI controller (HYPE streamer + web panel)
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+User=arduino
+ExecStart=/usr/bin/python3 /home/arduino/hype_controller.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
