@@ -46,8 +46,9 @@ PACKET_US = FRAMES * 1_000_000 // SAMPLE_RATE
 # config.h JB_CAPACITY_FRAMES); 350 ms lead rides through it against the
 # slave's 512 ms jitter buffer. Latency is irrelevant for scope art — only
 # slave-to-slave sync matters, and a shared deadline keeps them locked
-# regardless of lead.
-LEAD_US = 350_000
+# regardless of lead. 450 ms leaves ~150 ms in the buffer through a worst-case
+# stall (vs ~50 ms at 350) while staying under the 512 ms ring.
+LEAD_US = 450_000
 SYNC_INTERVAL_US = 500_000
 
 MODE_NAMES = {0: "local", 1: "network", 2: "hybrid"}
@@ -578,6 +579,10 @@ def stream_loop(state, iface_ip):
 
     ctrl = make_ctrl()
     audio = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Non-blocking (protocol.md §10): if the AP stalls and the kernel TX queue
+    # fills, a blocking sendto to slave 1 would stall the whole fan-out loop
+    # past the 20 ms re-anchor threshold — rebuffering every scope at once.
+    audio.setblocking(False)
 
     status = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     status.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

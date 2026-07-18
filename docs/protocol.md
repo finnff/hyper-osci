@@ -296,7 +296,7 @@ On packet receive (after §2.2 validation and the `sample_rate`/`frame_count` ch
 | earlier than the buffer's current tail deadline (duplicate/reordered) | drop, `rx_dropped++` |
 | 1–20 ms past the tail deadline (packets lost ahead of this one) | hold-fill the gap with the last frame, then append |
 | > 20 ms past the tail deadline (epoch jump / long outage) | flush, re-anchor on this packet, rebuffer |
-| buffer full (`JB_CAPACITY_FRAMES` = 8192 ≈ 170 ms) — overflow | drop, `rx_dropped++` |
+| buffer full (`JB_CAPACITY_FRAMES` = 24576 ≈ 512 ms) — overflow | drop, `rx_dropped++` |
 | otherwise (deadline-contiguous with the tail, ±1 ms rounding tolerance) | append |
 
 On each playout tick (the I2S write of one 240-frame block, every 5 ms):
@@ -489,12 +489,14 @@ captured at startup. AUDIO and SYNC timestamps MUST come from this same function
 process (if rendering and networking are ever split into separate services, the network service
 must do all timestamping). Never `CLOCK_REALTIME` — NTP steps would desync everything.
 
-**Pacing & timestamps.** At stream start, fix `epoch = now_us() + 60_000` (the 60 ms lead =
-`JB_TARGET_DEPTH_MS`). Packet *n* carries `timestamp_us = epoch + n × 5000` and 240 freshly
-rendered frames. Send packet *n* when `now_us() ≥ timestamp_us − 60_000` — i.e. one packet per
-5 ms tick, each stamped 60 ms ahead of its send time. Drive the tick with `timerfd` or an absolute
+**Pacing & timestamps.** At stream start, fix `epoch = now_us() + LEAD_US` (`LEAD_US` = 450 ms —
+the slaves' steady-state buffer depth, sized to ride through the UNO-Q AP's ath10k deaf stalls of
+up to ~300 ms with margin; the original 60 ms design predated that discovery). Packet *n* carries
+`timestamp_us = epoch + n × 5000` and 240 freshly rendered frames. Send packet *n* when
+`now_us() ≥ timestamp_us − LEAD_US` — i.e. one packet per 5 ms tick, each stamped 450 ms ahead of
+its send time. Drive the tick with `timerfd` or an absolute
 `clock_nanosleep`, not relative sleeps (they accumulate error). If the loop oversleeps, send the
-backlog as a small burst (cap ~12 packets ≈ 60 ms; the slave ring absorbs 170 ms) — deadlines are
+backlog as a small burst (cap ~10 packets ≈ 50 ms; the slave ring absorbs 512 ms) — deadlines are
 absolute, so bursts are harmless. Set `HYPE_FLAG_SYNC_PULSE` on packet 0 of every new `epoch`.
 Render ahead of the send tick; never let rendering block the sender.
 
@@ -526,7 +528,8 @@ with the C3 slaves).
 
 ## 11. Constants quick reference
 
-Sources: `protocol.h` (P), `config.h` (C), DESIGN.md §8 (D). Values are law — see those files.
+Sources: `protocol.h` (P), `config.h` (C), DESIGN.md §8 (D), `hype_controller.py` (ctrl).
+Values are law — see those files.
 
 | Constant | Value | Src | Meaning |
 |----------|-------|-----|---------|
@@ -542,7 +545,8 @@ Sources: `protocol.h` (P), `config.h` (C), DESIGN.md §8 (D). Values are law —
 | SYNC beacon interval | 500 ms | D/P | §3.2 |
 | `SYNC_STALE_MS` | 5000 | C | clock staleness threshold |
 | `DEADLINE_SLACK_US` | 5000 | C | ±5 ms playback tolerance (v3.1 req) |
-| `JB_CAPACITY_FRAMES` | 8192 (~170 ms) | C | jitter-buffer ring size |
-| `JB_TARGET_DEPTH_MS` | 60 | C | buffering target = controller send lead |
+| `JB_CAPACITY_FRAMES` | 24576 (~512 ms) | C | jitter-buffer ring size (sized for ath10k AP stalls) |
+| `JB_TARGET_DEPTH_MS` | 60 | C | startup buffering target (steady depth is set by `LEAD_US`) |
+| `LEAD_US` | 450 ms | ctrl | controller send lead = steady-state slave buffer depth |
 | `STREAM_TIMEOUT_MS` | 1000 | C | no audio → fallback to local render |
 | `STATUS_INTERVAL_MS` | 1000 | C | slave status rate |
