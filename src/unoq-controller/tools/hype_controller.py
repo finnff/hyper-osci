@@ -18,6 +18,7 @@ Then browse http://10.42.0.128:8080 (USB tether) or http://192.168.50.1:8080.
 import argparse
 import json
 import math
+import os
 import select
 import socket
 import struct
@@ -55,6 +56,123 @@ MODE_NAMES = {0: "local", 1: "network", 2: "hybrid"}
 PATTERN_NAMES = {0: "mic", 1: "circle", 2: "lissajous", 3: "ramp", 4: "square"}
 
 
+# ---------------------------------------------------------------------------
+# Text rendering: Hershey single-stroke vector fonts -> XY point table.
+# Same algorithm as osci-render's text path (glyph strokes -> normalized
+# shapes -> constant arc-length traversal), see docs/text-rendering-findings.md.
+# ---------------------------------------------------------------------------
+
+HERSHEY_DIR = os.environ.get("HERSHEY_DIR", "/usr/share/hershey-fonts")
+TEXT_FONTS = {  # friendly name -> file from the hershey-fonts-data package
+    "simplex": "futural.jhf",
+    "duplex": "futuram.jhf",
+    "script": "scriptc.jhf",
+    "gothic": "gothiceng.jhf",
+    "times": "timesrb.jhf",
+    "italic": "timesi.jhf",
+}
+TEXT_TABLE_POINTS = 2000  # equal-arc-length samples per rendered path
+_glyph_cache = {}
+
+
+def _jhf_glyphs(fname):
+    """Parse a Hershey .jhf font -> {ascii: (left, right, [polyline, ...])}.
+
+    .jhf line: 5-char glyph id, 3-char vertex count (includes the margin
+    pair), then coordinate chars offset from 'R'; long glyphs wrap across
+    lines; " R" is pen-up. Glyphs map sequentially onto ASCII from 32.
+    """
+    if fname in _glyph_cache:
+        return _glyph_cache[fname]
+    with open(os.path.join(HERSHEY_DIR, fname)) as f:
+        lines = f.read().splitlines()
+    glyphs = {}
+    code = 32
+    R = ord("R")
+    i = 0
+    while i < len(lines) and code < 127:
+        line = lines[i]
+        i += 1
+        if not line.strip():
+            continue
+        nverts = int(line[5:8])
+        need = 8 + 2 * nverts
+        while len(line) < need and i < len(lines):
+            line += lines[i]
+            i += 1
+        left, right = ord(line[8]) - R, ord(line[9]) - R
+        strokes, cur = [], []
+        for j in range(1, nverts):
+            cx, cy = line[8 + 2 * j], line[9 + 2 * j]
+            if cx == " " and cy == "R":  # pen up
+                if cur:
+                    strokes.append(cur)
+                    cur = []
+            else:  # Hershey Y grows downward; flip so +Y is up (scope)
+                cur.append((ord(cx) - R, R - ord(cy)))
+        if cur:
+            strokes.append(cur)
+        glyphs[code] = (left, right, strokes)
+        code += 1
+    _glyph_cache[fname] = glyphs
+    return glyphs
+
+
+def render_text(text, font):
+    """Text -> [(x, y), ...] table normalized to [-1, 1], resampled to equal
+    arc steps so the beam moves at constant speed (uniform trace brightness).
+    Pen-up gaps cost zero table entries: the beam jumps in one sample.
+    '|' in the text starts a new line. Returns None if nothing is drawable.
+    """
+    try:
+        glyphs = _jhf_glyphs(TEXT_FONTS[font])
+    except (OSError, KeyError, ValueError, IndexError):
+        return None
+    strokes = []
+    line_h = 32.0
+    for row, linetext in enumerate(text.split("|")):
+        x = 0.0
+        dy = -row * line_h
+        for ch in linetext:
+            g = glyphs.get(ord(ch)) or glyphs.get(ord("?"))
+            if g is None:
+                continue
+            left, right, gstrokes = g
+            for st in gstrokes:
+                strokes.append([(x + sx - left, sy + dy) for sx, sy in st])
+            x += right - left
+    pts = [p for s in strokes for p in s]
+    if len(pts) < 2:
+        return None
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+    span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
+    k = 1.8 / span  # 90% of full scale, same headroom as osci-render
+    strokes = [[((px - cx) * k, (py - cy) * k) for px, py in s]
+               for s in strokes]
+
+    total = sum(math.hypot(b[0] - a[0], b[1] - a[1])
+                for s in strokes for a, b in zip(s, s[1:]))
+    if total <= 0.0:
+        return None
+    step = total / TEXT_TABLE_POINTS
+    tbl = []
+    need = 0.0  # arc distance (jumps excluded) at which the next point falls
+    dist = 0.0
+    for s in strokes:
+        for a, b in zip(s, s[1:]):
+            seglen = math.hypot(b[0] - a[0], b[1] - a[1])
+            if seglen == 0.0:
+                continue
+            while need <= dist + seglen:
+                t = (need - dist) / seglen
+                tbl.append((a[0] + (b[0] - a[0]) * t,
+                            a[1] + (b[1] - a[1]) * t))
+                need += step
+            dist += seglen
+    return tbl or None
+
+
 def mono_us():
     return time.monotonic_ns() // 1000
 
@@ -64,18 +182,26 @@ class State:
 
     def __init__(self, pattern):
         self.lock = threading.Lock()
-        self.kind = pattern       # circle | lissajous | rose
+        self.kind = pattern       # circle | lissajous | rose | text
         self.freq = 100.0         # base Hz
         self.amp = 0.8            # 0..1 of int16 headroom
         self.ratio_a = 3          # lissajous X multiplier / rose petal count
         self.ratio_b = 2          # lissajous Y multiplier
+        self.text = "HYPEROSCI"
+        self.font = "simplex"     # TEXT_FONTS key
+        self.pulse_rate = 1.5     # amplitude-LFO Hz
+        self.pulse_depth = 0.0    # 0..1 of amp (0 = steady)
+        self.rot_speed = 0.0      # revolutions/s (0 = static)
+        self.text_tbl = render_text(self.text, self.font)  # None off-board
+        self.text_ver = 1         # bumped on rebuild; UI refetches preview
         self.stream_on = True
         self.slaves = {}          # ip -> dict(status fields + last_us)
 
     def pattern_params(self):
         with self.lock:
             return (self.kind, self.freq, self.amp * 32000.0,
-                    self.ratio_a, self.ratio_b)
+                    self.ratio_a, self.ratio_b, self.text_tbl,
+                    self.pulse_rate, self.pulse_depth, self.rot_speed)
 
     def snapshot(self):
         now = mono_us()
@@ -83,7 +209,12 @@ class State:
             return {
                 "pattern": {"kind": self.kind, "freq": self.freq,
                             "amp": self.amp, "a": self.ratio_a,
-                            "b": self.ratio_b},
+                            "b": self.ratio_b, "text": self.text,
+                            "font": self.font,
+                            "pulse_rate": self.pulse_rate,
+                            "pulse_depth": self.pulse_depth,
+                            "rot": self.rot_speed,
+                            "tver": self.text_ver},
                 "stream_on": self.stream_on,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
                            for s in self.slaves.values()],
@@ -99,14 +230,43 @@ class PatternGen:
 
     def __init__(self):
         self.phase = 0.0
+        self.tpos = 0.0  # text: fractional index into the point table
+        self.lfo = 0.0   # text: pulse-LFO phase
+        self.rot = 0.0   # text: current rotation angle
 
     def block(self, n, params):
-        kind, freq, amp, a, b = params
+        (kind, freq, amp, a, b,
+         ttbl, pulse_rate, pulse_depth, rot_speed) = params
         out = array("h", bytes(4 * n))  # n stereo frames, zeroed
         two_pi = 2.0 * math.pi
+        sin = math.sin
+        if kind == "text" and ttbl:
+            # Walk the precomputed equal-arc-length table at freq redraws/s.
+            # Pulse (amp LFO) and rotation advance per block — 5 ms steps are
+            # smooth for the sub-10 Hz rates these run at.
+            m = len(ttbl)
+            tstep = m * freq / SAMPLE_RATE  # table entries per sample
+            ae = amp * (1.0 - pulse_depth * (0.5 - 0.5 * sin(self.lfo)))
+            rc, rs = math.cos(self.rot), sin(self.rot)
+            pos = self.tpos
+            if pos >= m:  # table swapped for a shorter one mid-stream
+                pos %= m
+            for i in range(n):
+                x, y = ttbl[int(pos)]
+                out[2 * i] = int(ae * (x * rc - y * rs))      # X
+                out[2 * i + 1] = int(ae * (x * rs + y * rc))  # Y
+                pos += tstep
+                if pos >= m:
+                    pos -= m
+            self.tpos = pos
+            self.lfo = (self.lfo +
+                        two_pi * pulse_rate * n / SAMPLE_RATE) % two_pi
+            self.rot = (self.rot +
+                        two_pi * rot_speed * n / SAMPLE_RATE) % two_pi
+            return out.tobytes()
+        # text with no drawable table falls through to a plain circle.
         step = two_pi * freq / SAMPLE_RATE
         p = self.phase
-        sin = math.sin
         if kind == "lissajous":
             half_pi = math.pi / 2.0
             for i in range(n):
@@ -252,6 +412,7 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
         <button data-k="circle" title="X=cos Y=sin — one circle per period" onclick="setP({kind:'circle'})">circle</button>
         <button data-k="lissajous" title="X/Y sine ratio a:b — classic Lissajous figures" onclick="setP({kind:'lissajous'})">lissajous</button>
         <button data-k="rose" title="r=sin(a·t) rosette — 'a' petals (2a when a is even)" onclick="setP({kind:'rose'})">rose</button>
+        <button data-k="text" title="draw text in a Hershey vector font (single-stroke, made for scopes)" onclick="setP({kind:'text'})">text</button>
       </span></div>
     <div class="row"><label title="Base repetition rate of the figure. Low = slower beam, brighter trace; high = faster redraw, dimmer">freq</label>
       <input type="range" id="freq" min="10" max="400" step="1"
@@ -266,6 +427,33 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
              onchange="setP({a:+this.value})"> :
       <input type="number" id="rb" min="1" max="9" style="width:64px"
              onchange="setP({b:+this.value})"></div>
+    <div class="row" id="textrow" style="display:none"><label
+        title="text to draw — printable ASCII, '|' starts a new line">text</label>
+      <input type="text" id="text" maxlength="80" spellcheck="false"
+             style="flex:1;min-width:120px;background:#101b10;color:var(--fg);
+                    border:1px solid var(--line);border-radius:5px;
+                    padding:5px 8px;font:inherit"
+             onchange="setP({text:this.value})">
+      <select id="font" title="Hershey typeface"
+              onchange="setP({font:this.value})">
+        <option>simplex</option><option>duplex</option><option>script</option>
+        <option>gothic</option><option>times</option><option>italic</option>
+      </select></div>
+    <div class="row" id="pulserow" style="display:none"><label
+        title="amplitude pulse: how deep the text 'breathes' and how fast">pulse</label>
+      <input type="range" id="pdepth" min="0" max="100" step="1"
+             title="pulse depth — 0% = steady"
+             oninput="live()" onchange="setP({pulse_depth:this.value/100})">
+      <span class="val" id="pdepthv"></span>
+      <input type="range" id="prate" min="1" max="80" step="1"
+             title="pulse rate in Hz"
+             oninput="live()" onchange="setP({pulse_rate:this.value/10})">
+      <span class="val" id="pratev"></span></div>
+    <div class="row" id="rotrow" style="display:none"><label
+        title="continuous rotation in revolutions per second — 0 = static">spin</label>
+      <input type="range" id="rot" min="-100" max="100" step="1"
+             oninput="live()" onchange="setP({rot:this.value/100})">
+      <span class="val" id="rotv"></span></div>
   </div>
 </div>
 <div id="slaves" class="panel"><div id="none">no slaves discovered yet…</div></div>
@@ -353,7 +541,22 @@ function live() {
       document.getElementById("freq").value + " Hz";
   document.getElementById("ampv").textContent =
       document.getElementById("amp").value + " %";
+  document.getElementById("pdepthv").textContent =
+      document.getElementById("pdepth").value + " %";
+  document.getElementById("pratev").textContent =
+      (document.getElementById("prate").value/10).toFixed(1) + " Hz";
+  document.getElementById("rotv").textContent =
+      (document.getElementById("rot").value/100).toFixed(2) + " rev/s";
   drawScope();
+}
+
+// Text-path preview: fetched only when the server-side table changes (tver).
+let TP = {ver: -1, pts: []};
+async function fetchPreview() {
+  try {
+    const d = await (await fetch("/api/textpreview")).json();
+    TP = d; drawScope();
+  } catch (e) { /* controller restarting */ }
 }
 
 function drawScope() {
@@ -370,6 +573,14 @@ function drawScope() {
   g.strokeStyle = "#39ff14"; g.lineWidth = 2;
   g.shadowColor = "#39ff14"; g.shadowBlur = 8;
   g.beginPath();
+  if (p.kind === "text") {
+    for (let i = 0; i < TP.pts.length; i++) {
+      const px = w/2 + amp*TP.pts[i][0], py = h/2 - amp*TP.pts[i][1];
+      i ? g.lineTo(px, py) : g.moveTo(px, py);
+    }
+    g.stroke(); g.shadowBlur = 0;
+    return;
+  }
   const N = 1200, k = p.kind, a = p.a, b = p.b, hp = Math.PI/2;
   for (let i = 0; i <= N; i++) {
     const t = 2*Math.PI*i/N;
@@ -385,10 +596,14 @@ function drawScope() {
 }
 
 // What is this slave's beam doing right now, in words?
+const esc = t => t.replace(/[&<>"]/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function playing(s) {
   const lp = s.lpat || "mic", p = S.pattern;
   if (s.source) {
-    const what = s.mode === 2 ? p.kind + " + own mic (HYBRID)" : p.kind;
+    let what = s.mode === 2 ? p.kind + " + own mic (HYBRID)" : p.kind;
+    if (p.kind === "text") what = `text "${esc(p.text)}" (${p.font})` +
+        (s.mode === 2 ? " + own mic (HYBRID)" : "");
     return {cls:"ok", txt:`▶ network stream — ${what} @ ${p.freq} Hz`};
   }
   if (s.mode === 0) return {cls:"ok",
@@ -474,14 +689,22 @@ function render() {
       S.stream_on ? "" : "— OFF, nothing is being sent";
   for (const b of document.querySelectorAll("#kindseg button"))
     b.className = b.dataset.k === p.kind ? "on" : "";
-  document.getElementById("ratiorow").style.visibility =
-      p.kind === "circle" ? "hidden" : "visible";
+  const isText = p.kind === "text";
+  document.getElementById("ratiorow").style.display =
+      (p.kind === "circle" || isText) ? "none" : "flex";
+  for (const id of ["textrow", "pulserow", "rotrow"])
+    document.getElementById(id).style.display = isText ? "flex" : "none";
+  if (isText && p.tver !== TP.ver) fetchPreview();
   // Don't fight the user mid-drag: only sync widgets nobody is touching.
   const act = document.activeElement;
   const sync = (id, v) => { const e = document.getElementById(id);
                             if (e !== act) e.value = v; };
   sync("freq", p.freq); sync("amp", Math.round(p.amp*100));
   sync("ra", p.a); sync("rb", p.b);
+  sync("text", p.text); sync("font", p.font);
+  sync("pdepth", Math.round(p.pulse_depth*100));
+  sync("prate", Math.round(p.pulse_rate*10));
+  sync("rot", Math.round(p.rot*100));
   live();
   // Rates must be sampled every poll even if the card DOM isn't rebuilt.
   const rr = {};
@@ -528,6 +751,13 @@ def make_http_handler(state, cmds):
                 self.wfile.write(body)
             elif self.path == "/api/state":
                 self._json(state.snapshot())
+            elif self.path == "/api/textpreview":
+                with state.lock:
+                    tbl, ver = state.text_tbl, state.text_ver
+                dec = max(1, len(tbl) // 400) if tbl else 1
+                self._json({"ver": ver,
+                            "pts": [[round(x, 3), round(y, 3)]
+                                    for x, y in (tbl or [])[::dec]]})
             else:
                 self._json({"err": "not found"}, 404)
 
@@ -539,8 +769,22 @@ def make_http_handler(state, cmds):
                 return self._json({"err": "bad json"}, 400)
 
             if self.path == "/api/pattern":
+                # Text/font changes rebuild the point table OUTSIDE the lock:
+                # font parsing must never stall the 5 ms stream pacing.
+                new_tbl = None
+                if "text" in body or "font" in body:
+                    with state.lock:
+                        text, font = state.text, state.font
+                    if "text" in body:
+                        # Hershey covers printable ASCII; '|' = newline.
+                        text = "".join(c for c in str(body["text"])
+                                       if 32 <= ord(c) <= 126)[:80]
+                    if body.get("font") in TEXT_FONTS:
+                        font = body["font"]
+                    new_tbl = (text, font, render_text(text, font))
                 with state.lock:
-                    if body.get("kind") in ("circle", "lissajous", "rose"):
+                    if body.get("kind") in ("circle", "lissajous", "rose",
+                                            "text"):
                         state.kind = body["kind"]
                     if "freq" in body:
                         state.freq = min(2000.0, max(1.0, float(body["freq"])))
@@ -550,8 +794,20 @@ def make_http_handler(state, cmds):
                         state.ratio_a = min(9, max(1, int(body["a"])))
                     if "b" in body:
                         state.ratio_b = min(9, max(1, int(body["b"])))
+                    if "pulse_rate" in body:
+                        state.pulse_rate = min(10.0, max(
+                            0.1, float(body["pulse_rate"])))
+                    if "pulse_depth" in body:
+                        state.pulse_depth = min(1.0, max(
+                            0.0, float(body["pulse_depth"])))
+                    if "rot" in body:
+                        state.rot_speed = min(2.0, max(
+                            -2.0, float(body["rot"])))
                     if "stream" in body:
                         state.stream_on = bool(body["stream"])
+                    if new_tbl is not None:
+                        state.text, state.font, state.text_tbl = new_tbl
+                        state.text_ver += 1
                 self._json({"ok": True})
             elif self.path == "/api/cmd":
                 ip, cmd_obj = body.get("ip"), body.get("cmd")

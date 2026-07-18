@@ -173,3 +173,28 @@ Verified on hardware (same bad-RF night as the wedge writeup):
 Rollout note: STATUS length changed 55→59 B, both directions compatible — the
 3 unflashed slaves show `lost –` on the dashboard until reflashed; flash them
 before the show so per-slave RF loss is visible from FOH.
+
+## Text rendering landed — Hershey fonts + pulse/spin effects (2026-07-18)
+
+Outcome of the osci-render investigation (docs/text-rendering-findings.md): wrapping
+osci-render headlessly is not realistic (no headless entry point); instead its
+algorithm (glyph strokes → normalized path → constant arc-length traversal →
+LFO-modulated point transforms) is reimplemented in `hype_controller.py` as
+pattern `kind="text"`.
+
+- **Fonts:** Hershey single-stroke vector fonts, `apt install hershey-fonts-data`
+  (installed on the board, `/usr/share/hershey-fonts/*.jhf`). Six faces exposed:
+  simplex, duplex, script, gothic, times, italic. `python3-freetype` also
+  installed for a future arbitrary-TTF outline route.
+- **Controls (dashboard + `/api/pattern`):** `text` (`|` = newline, printable
+  ASCII, ≤80 chars), `font`, `pulse_depth`/`pulse_rate` (amplitude LFO,
+  osci-render's Scale+sine-LFO equivalent), `rot` (rev/s spin), plus the existing
+  freq (redraws/s — 40–80 looks best) and amp. Canvas preview via
+  `GET /api/textpreview` (refetched when `pattern.tver` bumps).
+- **Hot path:** text/font changes rebuild a 2000-point equal-arc-length table
+  outside the state lock; the per-block loop is a table walk + rotate/scale
+  (124 µs vs 94 µs for circle per 5 ms block on the dev box). Verified on
+  hardware 2026-07-18 night: 30 s soak while streaming pulsing text — rx/s
+  187–201, drop/s 0, under/s 0, source locked, zero re-anchors/tracebacks
+  through live text/font rebuilds.
+- No protocol or firmware changes — slaves just play the XY PCM.
