@@ -1,7 +1,8 @@
-# UNO-Q status — board access & osci-render build
+# UNO-Q status — board access, controller daemon & change log
 
-_Last verified: 2026-07-18. Scope: the physical Arduino UNO-Q board and the osci-render
-render engine. The controller app in this directory is still a stub — see [README.md](README.md)._
+_Last verified: 2026-07-19. Scope: the physical Arduino UNO-Q board, the deployed
+controller daemon, and the (rejected) osci-render route. The controller app itself is
+documented in [README.md](README.md)._
 
 ## Controller daemon (bring-up, 2026-07-18)
 

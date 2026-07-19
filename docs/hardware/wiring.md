@@ -369,8 +369,9 @@ previous one measured clean. DMM required; scope required from Phase 4.
 
 ### Phase 6 — WiFi / NETWORK mode
 
-1. Bring up the AP (`HYPEROSCI_AP` / `hyperosci2026`, **2.4 GHz** — UNO-Q hostapd or any
-   temporary 2.4 GHz AP for a first test).
+1. Bring up the AP (`HYPEROSCI_AP` / `hyperosci2026`, **2.4 GHz** — the UNO-Q's
+   NetworkManager connection `hyperosci-ap` at 192.168.50.1/24, or any temporary
+   2.4 GHz AP for a first test).
 2. Reboot the slave in default mode. **Expect LED sequence (DESIGN §7):** green NET LED
    1 Hz blink (connecting/no stream) → **solid** once audio packets flow on UDP 5000 →
    5 Hz blink if you kill the stream (fallback active within ~1 s).

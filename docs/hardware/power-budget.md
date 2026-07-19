@@ -55,7 +55,7 @@ Notes:
 | Event | Peak rail current | Duration | Frequency |
 |---|---:|---|---|
 | 802.11 ACK (basic rate) | ~300 mA (chip TX) + ~9 mA rest-of-board | tens of µs | ~200/s while streaming |
-| `HYPE_STATUS` packet (54 B on the wire: 20 B header + 34 B payload) | same | ≤ ~1 ms at low MCS | 1 Hz |
+| `HYPE_STATUS` packet (59 B on the wire: 20 B header + 39 B payload) | same | ≤ ~1 ms at low MCS | 1 Hz |
 | WiFi scan/connect/DHCP | same, back-to-back frames | bursts over ~1–3 s | boot + reconnects |
 | Absolute worst case | **335 mA** chip TX (802.11b 1 Mbps @ +21 dBm, datasheet) → **~345 mA board** | sub-ms | rare (management frames at basic rate) |
 

@@ -7,13 +7,13 @@ Each of the 4 slave units drives one analog oscilloscope with a stereo audio sig
 ## Architecture
 
 ```
-                     phone browser (web UI, http://192.168.4.1)
+                     phone browser (web UI, http://192.168.50.1:8080)
                                       │
                                       ▼
         ┌─────────────────────────────────────────────┐
         │        Arduino UNO-Q  (Debian, QRB2210)     │
         │  renderer ─▶ streamer ─▶ WiFi AP (2.4 GHz)  │
-        │        SSID HYPEROSCI_AP · 192.168.4.1      │
+        │        SSID HYPEROSCI_AP · 192.168.50.1     │
         └───────┬─────────┬──────────┬─────────┬──────┘
         UDP :5000 audio (unicast ×4) · :5001 sync/cmd · :5002 status
                 │         │          │         │
@@ -29,7 +29,7 @@ Each of the 4 slave units drives one analog oscilloscope with a stereo audio sig
           └─────────┘ └─────────┘ └─────────┘ └─────────┘
 ```
 
-Sync target ±5 ms via 500 ms beacons; ~70 ms end-to-end latency (60 ms jitter buffer); stream loss > 1 s → automatic local-mic fallback.
+Sync target ±5 ms via 500 ms beacons; the stream deliberately runs ~450 ms ahead of playback (512 ms slave jitter buffer) to ride out the UNO-Q radio's periodic ~300 ms stalls — latency is irrelevant for scope art, only slave-to-slave sync matters; stream loss > 1 s → automatic local-mic fallback.
 
 ## Documentation
 
@@ -47,7 +47,7 @@ Sync target ±5 ms via 500 ms beacons; ~70 ms end-to-end latency (60 ms jitter b
 | [FURTHER_CLARIFICATION_NEEDED.md](FURTHER_CLARIFICATION_NEEDED.md) | Open questions for Finn |
 | [docs/research/](docs/research/) | Historical planning docs — superseded where they conflict with DESIGN.md |
 
-Research index: [v3.md](docs/research/v3.md) (feasibility) · [v3.1-requirements.md](docs/research/v3.1-requirements.md) (confirmed requirements) · [v3.2-dual-dac.md](docs/research/v3.2-dual-dac.md) (DAC selection) · [UNO-Q_controller.md](docs/research/UNO-Q_controller.md) (controller architecture — note: its 5 GHz AP config is wrong, see DESIGN.md §2) · [esp32-c3-vs-s3.md](docs/research/esp32-c3-vs-s3.md) · [arduino-uno-r4-option.md](docs/research/arduino-uno-r4-option.md) · [README-original.md](docs/research/README-original.md)
+Research index: [v3.md](docs/research/v3.md) (feasibility) · [v3.1-requirements.md](docs/research/v3.1-requirements.md) (confirmed requirements) · [v3.2-dual-dac.md](docs/research/v3.2-dual-dac.md) (DAC selection) · [UNO-Q_controller.md](docs/research/UNO-Q_controller.md) (controller architecture — note: its whole software stack is illustrative and was NOT built as described: no FastAPI/WebSocket/hostapd, and its 5 GHz AP config is wrong — see DESIGN.md §2 and src/unoq-controller/README.md for what exists) · [esp32-c3-vs-s3.md](docs/research/esp32-c3-vs-s3.md) · [arduino-uno-r4-option.md](docs/research/arduino-uno-r4-option.md) · [README-original.md](docs/research/README-original.md)
 
 ## Hardware summary
 
@@ -64,17 +64,16 @@ Scope output is 2× RCA flying-lead pads (X = DAC L, Y = DAC R, 100 Ω series) d
 
 Controls per unit: power switch, mode button (NETWORK / LOCAL / HYBRID), filter-cutoff pot, 2 status LEDs. Controller: 1× Arduino UNO-Q (4 GB, Debian). Pin map and all constants: [src/esp32-slave/include/config.h](src/esp32-slave/include/config.h) — **canonical, do not improvise**.
 
-## Status (2026-07-17)
+## Status (2026-07-19)
 
 - [x] Research + feasibility (docs/research/)
 - [x] Design locked ([docs/DESIGN.md](docs/DESIGN.md))
 - [x] Hardware modules owned/ordered (SuperMinis, DACs, mics, chargers, UNO-Q — arrived, Debian 13 trixie aarch64)
-- [x] Firmware skeleton written (`src/esp32-slave/` — PlatformIO project, config + protocol headers)
-- [ ] Breadboard bring-up + DESIGN §12 verification checklist (week 1)
+- [x] Slave firmware (`src/esp32-slave/`): full audio/network/mode stack — AsyncUDP audio RX, 512 ms jitter buffer + concealment, local mic/pattern renderers, console; unit #1 on breadboard streams end-to-end
+- [x] UNO-Q controller app **deployed** (`hyperosci-controller` systemd service): streamer + web UI + patterns/Hershey-font text/effects/presets — [src/unoq-controller/README.md](src/unoq-controller/README.md). osci-render was built for aarch64 but deliberately **not** integrated (no headless entry point — [docs/text-rendering-findings.md](docs/text-rendering-findings.md))
 - [ ] Carrier PCB designed & ordered (order gate ~Aug 1 — see [docs/PLAN.md](docs/PLAN.md))
-- [ ] 4-slave sync demo
-- [ ] UNO-Q controller app (osci-render aarch64 build in progress — [src/unoq-controller/README.md](src/unoq-controller/README.md); Python test-streamer on the UNO-Q comes first)
-- [ ] Assembly + venue rehearsal (target Aug 21)
+- [ ] 4-slave sync demo (slaves 2–4 not yet on breadboards; 3 built slaves need reflashing for the lost-packets counter)
+- [ ] Assembly + venue rehearsal (show 2026-08-21)
 
 ## Repository layout
 
@@ -86,11 +85,11 @@ docs/                 all documentation (DESIGN.md = canon)
   protocol.md         normative wire protocol
   PLAN.md             5-week execution plan
 src/esp32-slave/      PlatformIO project — slave firmware
-src/unoq-controller/  UNO-Q Debian app (stub — streamer/renderer/web UI)
+src/unoq-controller/  UNO-Q controller app (streamer + renderer + web UI, deployed)
 FURTHER_CLARIFICATION_NEEDED.md
 ```
 
-The repo root also carries two gitignored third-party binaries: `arduino-flasher-cli` (UNO-Q Debian flasher, used in PLAN W3) and `osci-render-premium-linux.zip` (the renderer the controller will feed from).
+The repo root also carries two gitignored third-party binaries: `arduino-flasher-cli` (UNO-Q Debian flasher) and `osci-render-premium-linux.zip` (x86-64 only — does not run on the aarch64 UNO-Q; kept for desktop reference. The controller renders natively instead, see [docs/text-rendering-findings.md](docs/text-rendering-findings.md)).
 
 ## Quickstart
 

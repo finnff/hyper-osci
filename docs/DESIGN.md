@@ -89,7 +89,7 @@ Key electrical facts (⚠️ VERIFY items covered in verification checklist §12
 | Mic ADC | `adc_continuous`, 3 channels (mic + vbat + pot) at **24 kHz each** (72 kHz total, C3 DMA limit is ~83 kHz) | mic upsampled ×2 (linear interp) to 48 kHz; vbat/pot decimated in software |
 | Local fallback pattern | X = DC-blocked mic, Y = 2-pole Butterworth LPF of mic, cutoff = pot (20–300 Hz) | exact filter from the proven old unit |
 | I2S block size | 240 frames (5 ms) | matches network packet size |
-| Jitter buffer | 8192-frame ring (~170 ms capacity), target depth **60 ms** | end-to-end latency ~70 ms < 100 ms AV-sync threshold |
+| Jitter buffer | 24576-frame ring (**512 ms** capacity), start gate 60 ms; steady depth = controller lead (450 ms) | sized to ride the UNO-Q ath10k AP's ~300 ms radio stalls; latency is irrelevant for scope art — only slave-to-slave sync matters (updated 2026-07-18 from the original 8192/~170 ms/60 ms once the stalls were measured) |
 | Sync accuracy target | ±5 ms (per v3.1 requirement) | beacon-based offset, no RTT compensation needed in v1 |
 
 ## 7. Modes, LEDs, buttons (UX spec)
@@ -127,7 +127,7 @@ Normative spec: [docs/protocol.md](protocol.md) + `src/esp32-slave/include/proto
 
 | Item | Value |
 |------|-------|
-| AP | SSID `HYPEROSCI_AP` / WPA2 `hyperosci2026`, **2.4 GHz**, controller at 192.168.4.1 |
+| AP | SSID `HYPEROSCI_AP` / WPA2 `hyperosci2026`, **2.4 GHz** ch 6, controller at **192.168.50.1/24** (NetworkManager conn `hyperosci-ap`; 10.42.x/192.168.4.x collided with the USB tether) |
 | Audio | UDP port **5000** (unicast to each slave; multicast 239.0.0.1 also joined) |
 | Control + sync | UDP port **5001** (SYNC beacon every 500 ms from controller; JSON commands unicast) |
 | Status | UDP port **5002** (each slave → controller, 1 Hz binary status) |
@@ -203,6 +203,6 @@ docs/            all documentation (this file = canon)
   protocol.md    normative wire protocol
   PLAN.md        ~5-week execution plan
 src/esp32-slave/     PlatformIO project (slave firmware)
-src/unoq-controller/ UNO-Q Debian app (TBA — stub)
+src/unoq-controller/ UNO-Q controller app (deployed — see its README.md)
 FURTHER_CLARIFICATION_NEEDED.md   open questions for Finn
 ```

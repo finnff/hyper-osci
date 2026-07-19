@@ -1,44 +1,73 @@
-# unoq-controller — HYPEROSCI controller app (stub)
+# unoq-controller — HYPEROSCI controller app
 
-**Status: nothing implemented yet.** This directory is a placeholder for the Debian app that runs on the Arduino UNO-Q (Qualcomm QRB2210). Read this so you know what it will become and what happens first instead.
-
-## What this will be
-
-Per [docs/research/UNO-Q_controller.md](../../docs/research/UNO-Q_controller.md), as corrected by [docs/DESIGN.md](../../docs/DESIGN.md) §2:
-
-1. **WiFi access point** — hostapd + dnsmasq. SSID `HYPEROSCI_AP` / WPA2 `hyperosci2026`, controller at 192.168.4.1. **2.4 GHz, `hw_mode=g`, channel 1/6/11 — NOT the 5 GHz `hw_mode=a`/channel 36 config in the research doc.** The ESP32-C3 slaves are 2.4 GHz-only; that config would leave all four slaves unable to connect. Do a channel scan at the venue.
-2. **Streamer** — implements [docs/protocol.md](../../docs/protocol.md) / [protocol.h](../esp32-slave/include/protocol.h): 988-byte `HYPE_AUDIO` packets (240 stereo frames, 48 kHz/16-bit, L=X R=Y) every 5 ms, **UDP unicast to each of the 4 slaves on port 5000** (not multicast — DESIGN §2), `HYPE_SYNC` beacon every 500 ms on port 5001, `HYPE_CMD` JSON commands on 5001, and a listener for 1 Hz slave status on port 5002.
-3. **Renderer** — X/Y vector audio source. First: built-in test patterns (circle, Lissajous, SVG path playback). Later: osci-render integration (native ARM64 build, or a lightweight custom renderer if that fights back — see research doc §4).
-4. **Web UI** — mobile-first control page at `http://192.168.4.1` (FastAPI + WebSocket): preset select, mode switching, per-slave status/override.
+**Status: implemented and running in production on the UNO-Q** as the systemd
+service `hyperosci-controller` (deployed at `/home/arduino/hype_controller.py`).
+Board access, build notes and the change log live in [STATUS.md](STATUS.md).
 
 ## What exists today
 
-Nothing. Deliberately.
+One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
+(pure Python 3 stdlib — no FastAPI, no numpy, no external deps). It is:
 
-Per [docs/PLAN.md](../../docs/PLAN.md), week 2 delivers a **laptop Python streamer stand-in** first: the same streamer code, run from a laptop, used to bring up and soak-test 2- then 4-slave sync while the PCBs are being designed and fabbed. In week 3 it gets ported (mostly copied — both machines are Linux + Python) to the UNO-Q behind hostapd. The laptop streamer stays maintained afterwards as the performance-day fallback controller if the UNO-Q misbehaves.
+1. **Streamer** — implements [docs/protocol.md](../../docs/protocol.md) /
+   [protocol.h](../esp32-slave/include/protocol.h): 988-byte `HYPE_AUDIO`
+   packets (240 stereo frames, 48 kHz/16-bit, L=X R=Y) every 5 ms, UDP
+   **unicast** to every discovered NETWORK/HYBRID slave on port 5000, deadline
+   timestamps run `LEAD_US = 450 ms` ahead (rides the UNO-Q ath10k AP's
+   ~300 ms radio stalls against the slave's 512 ms jitter buffer);
+   `HYPE_SYNC` multicast beacon every 500 ms and `HYPE_CMD` JSON on 5001;
+   1 Hz `HYPE_STATUS` listener + slave discovery on 5002 (accepts ≥ 55-byte
+   payloads; parses `local_pattern` and `lost_packets` when present).
+2. **Renderer** — `PatternGen`: circle / lissajous / rose, plus **text** in
+   Hershey single-stroke vector fonts (6 faces from the `hershey-fonts-data`
+   package, multi-line with per-line centering, amplitude-pulse and spin LFOs,
+   X/Y mirror for scope deflection polarity). Text is prebuilt into a
+   2000-point equal-arc-length table (constant beam speed — osci-render's
+   algorithm, see
+   [docs/text-rendering-findings.md](../../docs/text-rendering-findings.md));
+   the 5 ms hot loop only walks the table. osci-render itself was evaluated
+   and **not** integrated (no headless entry point — same doc).
+3. **Web UI** — single embedded page (stdlib `http.server`, port 8080,
+   no external assets so it works on the AP without internet):
+   <http://192.168.50.1:8080> (on `HYPEROSCI_AP`) or <http://10.42.0.128:8080>
+   (USB tether). Pattern/text/effect controls with live canvas preview,
+   stream on/off, per-slave draw mode (stream/hybrid/mic/local patterns),
+   identify/gain/reboot, per-second health rates (rx/drop/lost/under).
+4. **Presets** — up to 10 named snapshots of the whole streamed-pattern panel
+   (artist names for stage changeovers), persisted at
+   `~/hype_presets.json` across restarts.
 
-The tool for flashing the UNO-Q Debian image (`arduino-flasher-cli`) lives in the repo root.
+HTTP API: `GET /api/state`, `GET /api/textpreview`; `POST /api/pattern`,
+`POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete).
 
-## Planned module layout
+`tools/hype_sender.py` is the original minimal streamer, kept only as a
+protocol reference — never run both (they fight over port 5002).
 
-```
-src/unoq-controller/
-  hyperosci/
-    streamer/        packetizer (HYPE_AUDIO), sync beacon (HYPE_SYNC),
-                     command sender (HYPE_CMD), status listener + stats table
-    renderer/        test patterns → SVG playback → osci-render bridge
-    web/             FastAPI app, WebSocket, static mobile UI
-    config.py        constants mirroring protocol.h / config.h (ports 5000/5001/5002,
-                     48000 Hz, 240 frames — never redefine, mirror)
-  system/
-    hostapd.conf     2.4 GHz AP config (hw_mode=g)
-    dnsmasq.conf     DHCP 192.168.4.2–.20
-    *.service        systemd units (hyperosci-core, hyperosci-web, hyperosci-network)
-  README.md          this file
-```
+## Deviations from the original plan (kept deliberately)
 
-Design notes for whoever starts this (probably future Finn):
+- **AP** is a NetworkManager connection `hyperosci-ap` (SSID `HYPEROSCI_AP`,
+  2.4 GHz channel 6, controller at **192.168.50.1/24**) — not hostapd+dnsmasq
+  and not 192.168.4.1 (10.42.x and .4.x collided with the USB tether; see
+  STATUS.md).
+- **Single-file app**, not the `hyperosci/{streamer,renderer,web}` package
+  layout once sketched here — at this size the one file is easier to deploy
+  (scp + restart) and to keep in lockstep with the firmware.
+- The "laptop streamer stand-in" phase was skipped — the UNO-Q arrived in
+  time and bring-up happened directly on it. Any Linux laptop can still run
+  `hype_controller.py` unchanged as the show-day fallback controller.
 
-- `protocol.h` is the canonical wire format; the Python side mirrors it with `struct` pack strings and must round-trip the 20-byte header + payloads byte-exact. All fields little-endian.
-- Timestamps are the controller's monotonic clock in µs (`time.monotonic_ns() // 1000`); `HYPE_AUDIO.timestamp_us` is the playback deadline of the packet's first frame.
-- Pace transmission from the audio clock (one packet per 5 ms per slave), not from `sleep()` drift.
+## Design notes (still canonical)
+
+- `protocol.h` is the canonical wire format; the Python side mirrors it with
+  `struct` pack strings and must round-trip byte-exact. All fields
+  little-endian. Never redefine constants — mirror them.
+- Timestamps are the controller's monotonic clock in µs
+  (`time.monotonic_ns() // 1000`); `HYPE_AUDIO.timestamp_us` is the playback
+  deadline of the packet's first frame.
+- Transmission is paced from the audio clock with deadline catch-up bursts,
+  not `sleep()` drift; pacing drift > 20 ms re-anchors the epoch once,
+  cleanly.
+- The embedded web page (`PAGE`) is a **plain** triple-quoted Python string:
+  a `\n` typed into its JavaScript becomes a real newline in the served
+  source (this broke the dashboard once). Write `\\n` and syntax-check with
+  `node --check` on the extracted `<script>` after editing.

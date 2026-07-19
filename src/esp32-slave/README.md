@@ -57,7 +57,8 @@ pio device monitor         # 115200 baud, USB CDC
 - [ ] Bench bring-up: I2S output on a real scope (circle, then `pat` → ramp for
       the DC go/no-go test, square for filter ringing)
 - [ ] Bench bring-up: mic path + pot filter (compare with old sigma-delta unit)
-- [ ] Network test against the laptop Python streamer stand-in (PLAN.md W2)
+- [x] Network test against the UNO-Q controller (the laptop stand-in phase was
+      skipped — the UNO-Q arrived in time and streams end-to-end since 2026-07-18)
 - [ ] Clock-drift compensation (single-frame slip/insert per protocol.md §5.3)
       — v1 corrects in whole 5 ms blocks at the window edge; fine for the ±5 ms
       spec, revisit if scopes drift apart visibly over long sets

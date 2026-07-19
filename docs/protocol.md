@@ -18,7 +18,7 @@ All traffic is UDP over the controller's own WiFi AP:
 |------|-------|
 | AP SSID / passphrase | `HYPEROSCI_AP` / `hyperosci2026` (WPA2-PSK) |
 | Band | **2.4 GHz only** (`hw_mode=g`, channel 1/6/11 — ESP32-C3 has no 5 GHz radio) |
-| Controller address | `192.168.4.1` (static; slaves get DHCP, typically `192.168.4.2+`) |
+| Controller address | `192.168.50.1` (static; slaves get DHCP in `192.168.50.0/24`) |
 | Multicast group | `239.0.0.1` (optional transport, see below) |
 | Byte order | **Little-endian** for every multi-byte field |
 
@@ -35,8 +35,9 @@ Socket layout:
 - **Slave** binds `0.0.0.0:5000` and `0.0.0.0:5001`, and joins multicast group `239.0.0.1` so it
   receives audio/sync/cmd whether the controller sends unicast or multicast (transport-agnostic,
   DESIGN.md §2). STATUS is sent to **the source IP of the most recent SYNC/CMD packet**, port 5002,
-  from any source port. Learning the controller address (instead of hardcoding `192.168.4.1`) is
-  deliberate: it lets the Python test-streamer (running on the UNO-Q) work on any AP/subnet during weeks 1–3. A slave
+  from any source port. Learning the controller address (instead of hardcoding `192.168.50.1`) is
+  deliberate: it lets the controller work on any AP/subnet (it already survived one subnet
+  change — the AP moved from 10.42.x to 192.168.50.0/24 during bring-up). A slave
   that has never received a SYNC/CMD sends no STATUS. The controller must identify slaves by the
   STATUS payload (`mac`, `slave_id`) and the datagram's source IP, never by source port.
 - **Controller** binds `:5002` to receive STATUS, and uses one ordinary UDP socket to fan out
@@ -71,7 +72,7 @@ Related requirement: slaves run with WiFi modem sleep **off** while streaming
 (`WiFi.setSleep(false)`), otherwise DTIM buffering adds 100+ ms jitter (DESIGN.md §2).
 
 ```
-UNO-Q 192.168.4.1
+UNO-Q 192.168.50.1
   ├── :5000 AUDIO ──unicast──▶ slave1:5000 … slave4:5000   (200 pps each, 988 B)
   ├── :5001 SYNC ──multicast─▶ 239.0.0.1:5001              (every 500 ms, 20 B — discovery beacon)
   ├── :5001 CMD ────unicast──▶ slaveN:5001                 (on demand, JSON)
@@ -375,7 +376,7 @@ image, so a lost 5 ms block is nearly invisible.
 ```mermaid
 sequenceDiagram
     participant S as Slave (ESP32-C3)
-    participant C as Controller (UNO-Q, 192.168.4.1)
+    participant C as Controller (UNO-Q, 192.168.50.1)
 
     Note over S: boot, mode = NETWORK (default)
     S->>C: WiFi join HYPEROSCI_AP (timeout 5 s) + DHCP
@@ -422,14 +423,16 @@ sequenceDiagram
     participant C as Controller
     participant S as Slave 3
 
-    P->>C: HTTP POST /api/slaves/3/mode {"mode":"hybrid"}
+    P->>C: HTTP POST /api/cmd {"ip":"<slave3-ip>","cmd":{"cmd":"set_mode","mode":"hybrid"}}
     C->>S: CMD {"cmd":"set_mode","mode":"hybrid"} (unicast :5001)
     Note over S: apply immediately, MODE LED 1 Hz (HYBRID)
     S->>C: STATUS (mode = 2) within 1 s
-    Note over C: mode confirmed -> stop re-sending
-    C->>P: WebSocket status update
-    Note over C: if next STATUS did not confirm,<br/>re-send CMD once after ~250 ms
+    P->>C: GET /api/state (UI polls at 1 Hz)
+    C->>P: JSON state incl. slave mode = 2
 ```
+
+(The web UI is plain 1 Hz polling of `GET /api/state` — no WebSocket. Commands are
+fire-and-forget; the next STATUS beacon is the confirmation the UI displays.)
 
 ---
 
@@ -526,9 +529,10 @@ STATUS (≤ 1 s) doesn't reflect an expected `mode` change, re-send once after ~
 commands are idempotent.
 
 **Process hygiene.** `SCHED_FIFO` or at least `nice -10` for the sender loop; it needs 5 ms
-regularity, which stock Debian achieves easily when not swapping. Lock the WiFi AP config to
-2.4 GHz `hw_mode=g` (DESIGN.md §2 — the 5 GHz hostapd config in the research docs will not work
-with the C3 slaves).
+regularity, which stock Debian achieves easily when not swapping. The AP must stay on
+2.4 GHz (DESIGN.md §2 — the 5 GHz config in the research docs will not work with the C3
+slaves); as deployed it is a NetworkManager connection `hyperosci-ap`, channel 6,
+192.168.50.1/24.
 
 ---
 
