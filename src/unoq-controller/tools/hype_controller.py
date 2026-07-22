@@ -79,7 +79,7 @@ _glyph_cache = {}
 # Streamed-pattern presets (artist names etc.), persisted across restarts.
 PRESETS_FILE = os.environ.get(
     "HYPE_PRESETS", os.path.expanduser("~/hype_presets.json"))
-PRESETS_MAX = 10
+PRESETS_MAX = 20   # the page's "max N" text tracks this, see __PRESETS_MAX__
 # The LIVE pattern, persisted too. Without this a reboot came back drawing a
 # circle whatever was on the scopes, and the only way to know was to look --
 # on a dark stage, with no laptop. Same field set as a preset, so clean_preset
@@ -799,7 +799,7 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
     <div class="row" id="presetrow"><label
         title="saved snapshots of everything in this panel — prepare artist names before the show, then switch in one tap">presets</label>
       <span id="plist" style="display:flex;gap:6px;flex-wrap:wrap"></span>
-      <button title="save the current pattern settings as a named preset (max 10)"
+      <button title="save the current pattern settings as a named preset (max __PRESETS_MAX__)"
               onclick="savePreset()">+ save</button></div>
   </div>
 </div>
@@ -1105,6 +1105,9 @@ document.getElementById("allseg").innerHTML = drawSeg("all", null);
 poll(); setInterval(poll, 1000);
 </script></body></html>
 """
+# Keep the page's "max N" in step with the constant. A targeted replace, not
+# .format(): the page is full of JS braces.
+PAGE = PAGE.replace("__PRESETS_MAX__", str(PRESETS_MAX))
 
 
 def make_http_handler(state, cmds):

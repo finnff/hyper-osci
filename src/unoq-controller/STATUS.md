@@ -325,7 +325,7 @@ pattern `kind="text"`.
 - No protocol or firmware changes — slaves just play the XY PCM.
 - **Added 2026-07-19:** flip ⇋X/⇵Y mirror toggles (scope deflection polarity —
   bench scope needed flip_y), true multi-line text (textarea, Enter = new line),
-  and **presets**: up to 10 named snapshots of the whole streamed-pattern panel
+  and **presets**: up to 20 named snapshots of the whole streamed-pattern panel
   (`POST /api/preset` op=save|load|delete), persisted at
   `/home/arduino/hype_presets.json` across restarts — made for pre-saving
   artist names and switching in one tap between stage acts.

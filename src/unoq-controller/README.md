@@ -49,7 +49,7 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    as a preset, so a corrupt file degrades to defaults instead of stopping
    the daemon. `stream_on` is deliberately not persisted — a rig that boots
    silent is worse than one that boots drawing.
-5. **Presets** — up to 10 named snapshots of the whole streamed-pattern panel
+5. **Presets** — up to 20 named snapshots of the whole streamed-pattern panel
    (artist names for stage changeovers), persisted at
    `~/hype_presets.json` across restarts. Every field is optional on load and
    filled from `PRESET_DEFAULTS`, so adding a field to a later build cannot
