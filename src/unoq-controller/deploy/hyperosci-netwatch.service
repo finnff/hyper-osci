@@ -1,0 +1,11 @@
+[Unit]
+Description=HYPEROSCI network watchdog (AP up + audio-actually-playing check)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hyperosci-netwatch
+# Runs as root: nmcli needs it, and there is no laptop to answer a polkit
+# prompt. TimeoutStartSec covers the down+sleep 3+up path with room to spare.
+TimeoutStartSec=90

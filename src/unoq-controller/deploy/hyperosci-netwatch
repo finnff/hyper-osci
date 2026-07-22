@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Keep HYPEROSCI on the air with nobody at a keyboard.
+
+Two faults take the rig off the air and neither can be cleared from the phone
+dashboard, because both of them are the phone's own path to the box:
+
+  1. `hyperosci-ap` is not up at all, so nothing holds 192.168.50.1 and no
+     slave can associate. NetworkManager autoconnect handles the ordinary
+     case; this catches the rest.
+  2. The ath10k AP wedges its per-station rate control (STATUS.md, 2026-07-18).
+     Slaves stay associated and keep sending STATUS, so nothing looks
+     disconnected, but every audio packet arrives too late to play and all of
+     them sit on their local mic forever. The documented manual fix is
+     `nmcli c down hyperosci-ap && nmcli c up hyperosci-ap`.
+
+Deliberately a separate process on a systemd timer, NOT a thread in
+hype_controller.py: that process paces 48 kHz audio in 5 ms blocks and must
+never fork. Bouncing the AP needs no controller restart -- bind_egress()
+re-applies IP_MULTICAST_IF on every 500 ms beacon.
+
+Exit code is always 0: a watchdog that fails a unit on a transient is noise.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+AP_CONN = "hyperosci-ap"
+AP_IFACE = "wlan0"
+AP_ADDR = "192.168.50.1"
+API = "http://127.0.0.1:8080/api/state"
+STRIKES = 3          # consecutive checks before we blame the AP for silence
+COOLDOWN_S = 300.0   # never bounce more often than this
+STATE = "/run/hyperosci-netwatch.state"
+
+
+def log(msg):
+    print(f"[netwatch] {msg}", flush=True)
+
+
+def run(*argv, timeout=45):
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True,
+                           timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+
+
+def uptime_s():
+    """Monotonic across our own restarts -- and immune to the NTP step this
+    board takes a few minutes after boot, which would make time.time() deltas
+    lie by an hour."""
+    with open("/proc/uptime") as f:
+        return float(f.read().split()[0])
+
+
+def load():
+    try:
+        with open(STATE) as f:
+            d = json.load(f)
+        return (int(d.get("strikes", 0)), float(d.get("last_bounce", -1e9)),
+                dict(d.get("rx", {})))
+    except (OSError, ValueError, TypeError):
+        return 0, -1e9, {}
+
+
+def save(strikes, last_bounce, rx=None):
+    try:
+        with open(STATE, "w") as f:
+            json.dump({"strikes": strikes, "last_bounce": last_bounce,
+                       "rx": rx or {}}, f)
+    except OSError:
+        pass  # /run not writable: we simply forget, and re-strike next tick
+
+
+def ap_is_up():
+    rc, out = run("ip", "-4", "-o", "addr", "show", "dev", AP_IFACE)
+    return rc == 0 and f"inet {AP_ADDR}/" in out
+
+
+def ap_up():
+    rc, out = run("nmcli", "c", "up", AP_CONN)
+    log(f"nmcli c up {AP_CONN} -> rc={rc} {out}")
+    return rc == 0
+
+
+def ap_bounce():
+    run("nmcli", "c", "down", AP_CONN)
+    time.sleep(3)
+    return ap_up()
+
+
+RX_FLOOR = 200   # packets in a ~30 s tick; healthy is ~5700, a wedge is ~0
+
+
+def audio_is_dead(prev_rx):
+    """(dead?, rx-by-ip). Dead means the controller is streaming, at least one
+    slave wants that stream, and for every one of them BOTH:
+
+      * it is playing its own mic rather than the stream, and
+      * its rx counter has barely moved since the last tick.
+
+    The second test is what makes this safe to act on. `source` alone flickers
+    to 0 several times a minute in normal operation -- measured 2026-07-22:
+    ~6.5% air loss makes the jitter buffer sawtooth between 450 ms and 140 ms
+    and the slave conceals through it, with ZERO underruns. Striking on
+    `source` alone would have bounced a perfectly healthy AP mid-show. In the
+    real ath10k wedge the rx counter freezes, and that does not flicker.
+    """
+    try:
+        with urllib.request.urlopen(API, timeout=4) as r:
+            st = json.load(r)
+    except Exception:
+        return False, prev_rx  # controller restarting or busy; not our problem
+    # mode 0 = LOCAL, it ignores the stream by design; source truthy = playing
+    # the network stream rather than its own mic.
+    want = [s for s in st.get("slaves", []) if s.get("mode") != 0]
+    rx = {s.get("ip"): int(s.get("rx") or 0) for s in want}
+    if not st.get("stream_on") or not want:
+        return False, rx       # muted on purpose, or nothing to feed
+    for s in want:
+        if s.get("source"):
+            return False, rx   # someone is playing the stream: not the AP
+        was = prev_rx.get(s.get("ip"))
+        if was is None:
+            return False, rx   # first sight of it: never act on one reading
+        delta = rx[s.get("ip")] - was
+        if delta >= RX_FLOOR or delta < 0:
+            # delta < 0 means the slave rebooted and zeroed its counter --
+            # precisely when it is reconnecting and must be left alone.
+            return False, rx   # packets still arriving: not a wedge
+    return True, rx
+
+
+def main():
+    strikes, last_bounce, prev_rx = load()
+    now = uptime_s()
+
+    if not ap_is_up():
+        log(f"{AP_ADDR} is not on {AP_IFACE} — reactivating {AP_CONN}")
+        ap_up()
+        save(0, now, {})
+        return
+
+    dead, rx = audio_is_dead(prev_rx)
+    if not dead:
+        if strikes:
+            log(f"audio recovered after {strikes} strike(s)")
+        save(0, last_bounce, rx)
+        return
+
+    strikes += 1
+    if strikes < STRIKES:
+        log(f"no slave is receiving audio ({strikes}/{STRIKES})")
+        save(strikes, last_bounce, rx)
+        return
+
+    if now - last_bounce < COOLDOWN_S:
+        log(f"still silent, but bounced {now - last_bounce:.0f}s ago "
+            f"(cooldown {COOLDOWN_S:.0f}s) — leaving it alone")
+        save(strikes, last_bounce, rx)
+        return
+
+    log(f"no slave has received audio for {STRIKES} checks — "
+        f"bouncing {AP_CONN} (suspected AP rate-control wedge)")
+    ap_bounce()
+    save(0, now, {})
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:                                   # never fail loud
+        log(f"unhandled: {type(e).__name__}: {e}")
+    sys.exit(0)

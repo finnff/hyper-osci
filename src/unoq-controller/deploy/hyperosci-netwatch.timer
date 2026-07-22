@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the HYPEROSCI network watchdog every 30 s
+
+[Timer]
+# First check 45 s after boot: NetworkManager autoconnect gets the normal
+# path, and the slaves need ~18 s to appear, so an earlier check would only
+# ever see a healthy boot as a fault.
+OnBootSec=45
+OnUnitActiveSec=30
+AccuracySec=5
+Unit=hyperosci-netwatch.service
+
+[Install]
+WantedBy=timers.target
