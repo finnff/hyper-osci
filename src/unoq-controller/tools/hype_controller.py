@@ -25,7 +25,9 @@ import struct
 import sys
 import threading
 import time
+import unicodedata
 from array import array
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HYPE_MAGIC = 0x45505948
@@ -78,19 +80,82 @@ _glyph_cache = {}
 PRESETS_FILE = os.environ.get(
     "HYPE_PRESETS", os.path.expanduser("~/hype_presets.json"))
 PRESETS_MAX = 10
-PRESET_FIELDS = ("kind", "freq", "amp", "a", "b", "text", "font",
-                 "pulse_rate", "pulse_depth", "rot", "flip_x", "flip_y")
+# "name" plus these. Every field is OPTIONAL on load and filled from the
+# default here, so adding an entry can never disqualify a preset written by an
+# older build — the filter used to require all of them, and the next save then
+# rewrote the file from the surviving list, deleting the show's artist names
+# with no log line.
+PRESET_DEFAULTS = {"kind": "circle", "freq": 100.0, "amp": 0.8, "a": 3, "b": 2,
+                   "text": "HYPEROSCI", "font": "simplex", "pulse_rate": 1.5,
+                   "pulse_depth": 0.0, "rot": 0.0,
+                   "flip_x": False, "flip_y": False}
+
+
+def sanitize_text(s):
+    """Anything a phone keyboard can produce -> drawable text.
+
+    NFC first, so a decomposed 'e'+U+0301 becomes the single 'é' that
+    render_text can compose an accent for; control characters out; newline
+    (like '|') starts a display line.
+    """
+    s = unicodedata.normalize("NFC", str(s))
+    return "".join(c for c in s if c == "\n" or c.isprintable())[:80]
+
+
+def sanitize_name(s):
+    # Preset names are embedded in onclick attributes client-side — keep them
+    # to a safe charset instead of escaping in four places.
+    return "".join(c for c in unicodedata.normalize("NFC", str(s))
+                   if c.isalnum() or c in " ._-()&+")[:24].strip()
+
+
+def clean_preset(p):
+    """Preset dict -> fully populated, range-checked copy.
+
+    Every value is clamped and every choice whitelisted right here, so the
+    load path cannot install a font name that does not exist: render_text
+    returns None for one, and block() then quietly draws a circle while
+    /api/state still reports kind="text" — unbreakable on a dark stage.
+    """
+    q = {"name": sanitize_name(p.get("name", ""))}
+    for k, default in PRESET_DEFAULTS.items():
+        v = p.get(k, default)
+        try:
+            if isinstance(default, bool):
+                v = bool(v)
+            elif isinstance(default, int):
+                v = int(v)
+            elif isinstance(default, float):
+                v = float(v)
+            else:
+                v = str(v)
+        except (TypeError, ValueError):
+            v = default
+        q[k] = v
+    if q["kind"] not in ("circle", "lissajous", "rose", "text"):
+        q["kind"] = PRESET_DEFAULTS["kind"]
+    if q["font"] not in TEXT_FONTS:
+        q["font"] = PRESET_DEFAULTS["font"]
+    q["freq"] = min(2000.0, max(1.0, q["freq"]))
+    q["amp"] = min(1.0, max(0.0, q["amp"]))
+    q["a"] = min(9, max(1, q["a"]))
+    q["b"] = min(9, max(1, q["b"]))
+    q["pulse_rate"] = min(10.0, max(0.1, q["pulse_rate"]))
+    q["pulse_depth"] = min(1.0, max(0.0, q["pulse_depth"]))
+    q["rot"] = min(2.0, max(-2.0, q["rot"]))
+    q["text"] = sanitize_text(q["text"])
+    return q
 
 
 def load_presets():
     try:
         with open(PRESETS_FILE) as f:
             data = json.load(f)
-        return [p for p in data
-                if isinstance(p, dict) and p.get("name")
-                and all(k in p for k in PRESET_FIELDS)][:PRESETS_MAX]
     except (OSError, ValueError):
         return []
+    return [q for q in (clean_preset(p) for p in data
+                        if isinstance(p, dict) and p.get("name"))
+            if q["name"]][:PRESETS_MAX]
 
 
 def save_presets(presets):
@@ -146,6 +211,95 @@ def _jhf_glyphs(fname):
     return glyphs
 
 
+# Combining marks drawn as extra strokes, in the faces' own units: x is centred
+# on the base glyph's ink and y=0 sits just above it (just below, for the
+# BELOW set). Cap height is 21 units and the ' glyph spans 6 of them, so a
+# ~4.5-unit accent box matches the proportions Hershey drew.
+_MARKS = {
+    "\u0300": [[(-2.2, 4.6), (2.2, 0.4)]],                       # grave
+    "\u0301": [[(-2.2, 0.4), (2.2, 4.6)]],                       # acute
+    "\u0302": [[(-2.8, 0.8), (0.0, 4.6), (2.8, 0.8)]],           # circumflex
+    "\u0303": [[(-3.0, 1.2), (-1.9, 3.4), (-0.6, 3.6),           # tilde
+                (0.6, 1.4), (1.9, 1.2), (3.0, 3.4)]],
+    "\u0304": [[(-2.8, 2.4), (2.8, 2.4)]],                       # macron
+    "\u0306": [[(-2.6, 4.4), (-1.8, 1.6), (0.0, 1.0),            # breve
+                (1.8, 1.6), (2.6, 4.4)]],
+    "\u0307": [[(0.0, 1.6), (0.0, 3.6)]],                        # dot above
+    "\u0308": [[(-2.0, 1.6), (-2.0, 3.8)], [(2.0, 1.6), (2.0, 3.8)]],
+    "\u0309": [[(-0.6, 0.6), (0.8, 1.8), (0.4, 3.2), (-0.8, 3.4)]],  # hook
+    "\u030a": [[(0.0, 0.6), (1.1, 1.1), (1.6, 2.2), (1.1, 3.3),  # ring
+                (0.0, 3.8), (-1.1, 3.3), (-1.6, 2.2), (-1.1, 1.1),
+                (0.0, 0.6)]],
+    "\u030b": [[(-2.8, 0.6), (-0.8, 4.6)], [(0.6, 0.6), (2.6, 4.6)]],
+    "\u030c": [[(-2.8, 4.6), (0.0, 0.8), (2.8, 4.6)]],           # caron
+    "\u0327": [[(0.0, 0.0), (0.7, -1.5), (-1.1, -2.1), (-1.6, -3.6)]],
+    "\u0328": [[(0.6, 0.0), (-0.7, -1.4), (0.5, -2.6), (1.8, -2.2)]],
+}
+_MARKS_BELOW = frozenset(("\u0327", "\u0328"))  # cedilla, ogonek
+
+# No Hershey glyph and no decomposition we can draw: expand to ASCII the face
+# does have, so a name pasted off a phone keyboard renders instead of turning
+# into a row of '?'.
+_FOLD = {
+    " ": " ", "­": "", "«": "<<", "»": ">>",
+    "×": "x", "÷": "/", "‐": "-", "‑": "-",
+    "‒": "-", "–": "-", "—": "-", "―": "-",
+    "‘": "'", "’": "'", "‚": ",", "“": '"',
+    "”": '"', "„": '"', "•": ".", "…": "...",
+    "‹": "<", "›": ">", "−": "-",
+    "ß": "ss", "æ": "ae", "Æ": "AE", "œ": "oe",
+    "Œ": "OE", "ø": "o", "Ø": "O", "þ": "th",
+    "Þ": "Th", "ð": "d", "Ð": "D", "đ": "d",
+    "Đ": "D", "ł": "l", "Ł": "L", "ı": "i",
+    "ȷ": "j", "µ": "u", "ƒ": "f",
+}
+
+
+def _glyph_for(glyphs, ch):
+    """One character -> [(left, right, strokes), ...] — 0, 1 or more glyphs.
+
+    A .jhf file holds printable ASCII and nothing else (95 glyphs), so a bare
+    table lookup turns every accented letter into '?'. Decompose instead: the
+    base letter comes from the face, the combining marks are drawn from
+    _MARKS, and 'é' is a real 'e' under a real acute. Marks we cannot draw are
+    dropped (bare base letter beats '?'); characters with no base at all fold
+    to ASCII.
+    """
+    g = glyphs.get(ord(ch))
+    if g is not None:
+        return [g]
+    dec = unicodedata.normalize("NFD", ch)
+    base = dec[0]
+    g = glyphs.get(ord(base))
+    if g is None:
+        sub = _FOLD.get(ch, _FOLD.get(base))
+        if sub is None:
+            q = glyphs.get(ord("?"))
+            return [q] if q is not None else []
+        return [x for c in sub for x in _glyph_for(glyphs, c)]
+    marks = [m for m in dec[1:] if m in _MARKS]
+    if not marks:
+        return [g]
+    left, right, strokes = g
+    if base in "ij" and any(m not in _MARKS_BELOW for m in marks):
+        # Drop the tittle: a stroke lying entirely above the x-height.
+        strokes = [s for s in strokes if min(y for _, y in s) <= 5]
+    ink = [p for s in strokes for p in s] or [(0, 0)]
+    xs = [p[0] for p in ink]
+    cx = (min(xs) + max(xs)) / 2.0
+    out = list(strokes)
+    above = max(y for _, y in ink) + 2.0
+    below = min(y for _, y in ink) - 0.5
+    for m in marks:
+        if m in _MARKS_BELOW:
+            out += [[(cx + mx, below + my) for mx, my in s] for s in _MARKS[m]]
+            below -= 4.5
+        else:
+            out += [[(cx + mx, above + my) for mx, my in s] for s in _MARKS[m]]
+            above += 5.0
+    return [(left, right, out)]
+
+
 def render_text(text, font):
     """Text -> [(x, y), ...] table normalized to [-1, 1], resampled to equal
     arc steps so the beam moves at constant speed (uniform trace brightness).
@@ -160,8 +314,8 @@ def render_text(text, font):
     line_h = 32.0
     for row, linetext in enumerate(text.replace("|", "\n").split("\n")):
         dy = -row * line_h
-        gl = [g for g in (glyphs.get(ord(ch)) or glyphs.get(ord("?"))
-                          for ch in linetext) if g is not None]
+        # rstrip so a stray trailing space cannot pull the line off centre
+        gl = [g for ch in linetext.rstrip() for g in _glyph_for(glyphs, ch)]
         # centre each line on its own width (not left-aligned in the block)
         x = -sum(right - left for left, right, _ in gl) / 2.0
         for left, right, gstrokes in gl:
@@ -200,6 +354,24 @@ def render_text(text, font):
     return tbl or None
 
 
+def table_rmax(tbl):
+    """Largest |point| in a table — the per-block amplitude ceiling.
+
+    render_text normalises by the bounding-box SPAN, which bounds |x| and |y|
+    at 0.9 each but lets the radius reach 0.9*sqrt(2) = 1.273. Rotation mixes
+    the axes, so amp*r can pass int16 and array("h") raises OverflowError
+    inside the stream loop, which has no handler: the daemon dies and comes
+    back at CLI defaults with the live look gone. block() caps against this.
+    """
+    return max((math.hypot(x, y) for x, y in tbl), default=0.0) if tbl else 0.0
+
+
+def build_text(text, font):
+    """(text, font) -> (table, rmax), the pair every writer of state must set."""
+    tbl = render_text(text, font)
+    return tbl, table_rmax(tbl)
+
+
 def mono_us():
     return time.monotonic_ns() // 1000
 
@@ -221,16 +393,24 @@ class State:
         self.rot_speed = 0.0      # revolutions/s (0 = static)
         self.flip_x = False       # mirror left-right (scope polarity)
         self.flip_y = False       # mirror top-bottom (scope polarity)
-        self.text_tbl = render_text(self.text, self.font)  # None off-board
+        # None off-board; rmax rides along so block() can cap amp (see
+        # table_rmax) without walking the table.
+        self.text_tbl, self.text_rmax = build_text(self.text, self.font)
         self.text_ver = 1         # bumped on rebuild; UI refetches preview
-        self.presets = load_presets()  # [{name + PRESET_FIELDS}, ...]
+        self.presets = load_presets()  # [{name + PRESET_DEFAULTS keys}, ...]
         self.stream_on = True
         self.slaves = {}          # ip -> dict(status fields + last_us)
+        # Held across snapshot -> render -> write-back of the text table. Two
+        # overlapping rebuilds would otherwise revert each other's field, and
+        # would put two CPU-bound threads on top of stream_loop — the regime
+        # where block gaps reach 300-600 ms and every scope rebuffers.
+        # Ordering: take this BEFORE self.lock, never the other way round.
+        self.rebuild_lock = threading.Lock()
 
     def pattern_params(self):
         with self.lock:
             return (self.kind, self.freq, self.amp * 32000.0,
-                    self.ratio_a, self.ratio_b, self.text_tbl,
+                    self.ratio_a, self.ratio_b, self.text_tbl, self.text_rmax,
                     self.pulse_rate, self.pulse_depth, self.rot_speed,
                     self.flip_x, self.flip_y)
 
@@ -268,7 +448,7 @@ class PatternGen:
         self.rot = 0.0   # text: current rotation angle
 
     def block(self, n, params):
-        (kind, freq, amp, a, b, ttbl,
+        (kind, freq, amp, a, b, ttbl, rmax,
          pulse_rate, pulse_depth, rot_speed, flip_x, flip_y) = params
         out = array("h", bytes(4 * n))  # n stereo frames, zeroed
         two_pi = 2.0 * math.pi
@@ -280,7 +460,18 @@ class PatternGen:
             m = len(ttbl)
             tstep = m * freq / SAMPLE_RATE  # table entries per sample
             ae = amp * (1.0 - pulse_depth * (0.5 - 0.5 * sin(self.lfo)))
-            rc, rs = math.cos(self.rot), sin(self.rot)
+            if rmax > 0.0:
+                ae = min(ae, 32767.0 / rmax)  # int16 guard, see table_rmax
+            # Spin off means upright. Without the else the angle stays frozen
+            # wherever the slider left it: the axes keep mixing, so "turn spin
+            # off" is not an escape from anything and the word sits crooked
+            # with no control that can straighten it.
+            if rot_speed:
+                rot = self.rot
+                self.rot = (rot + two_pi * rot_speed * n / SAMPLE_RATE) % two_pi
+            else:
+                rot = self.rot = 0.0
+            rc, rs = math.cos(rot), sin(rot)
             fx = -1.0 if flip_x else 1.0  # mirror before rotation
             fy = -1.0 if flip_y else 1.0
             axx, axy = ae * rc * fx, ae * rs * fy  # X = x*axx - y*axy
@@ -298,8 +489,6 @@ class PatternGen:
             self.tpos = pos
             self.lfo = (self.lfo +
                         two_pi * pulse_rate * n / SAMPLE_RATE) % two_pi
-            self.rot = (self.rot +
-                        two_pi * rot_speed * n / SAMPLE_RATE) % two_pi
             return out.tobytes()
         # text with no drawable table falls through to a plain circle.
         step = two_pi * freq / SAMPLE_RATE
@@ -465,7 +654,7 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
       <input type="number" id="rb" min="1" max="9" style="width:64px"
              onchange="setP({b:+this.value})"></div>
     <div class="row" id="textrow" style="display:none"><label
-        title="text to draw — printable ASCII, Enter starts a new line">text</label>
+        title="text to draw — accents welcome (é ü ñ ç are composed from the face's own strokes), Enter starts a new line">text</label>
       <textarea id="text" maxlength="80" rows="2" spellcheck="false"
              style="flex:1;min-width:120px;background:#101b10;color:var(--fg);
                     border:1px solid var(--line);border-radius:5px;
@@ -840,117 +1029,25 @@ def make_http_handler(state, cmds):
                 return self._json({"err": "bad json"}, 400)
 
             if self.path == "/api/pattern":
-                # Text/font changes rebuild the point table OUTSIDE the lock:
-                # font parsing must never stall the 5 ms stream pacing.
+                rebuild = "text" in body or "font" in body
+                # Only a rebuild needs the mutex; slider POSTs must not queue
+                # behind a 36 ms font parse.
                 new_tbl = None
-                if "text" in body or "font" in body:
-                    with state.lock:
-                        text, font = state.text, state.font
-                    if "text" in body:
-                        # Hershey covers printable ASCII; newline (or '|')
-                        # starts a new display line.
-                        text = "".join(c for c in str(body["text"])
-                                       if 32 <= ord(c) <= 126
-                                       or c == "\n")[:80]
-                    if body.get("font") in TEXT_FONTS:
-                        font = body["font"]
-                    new_tbl = (text, font, render_text(text, font))
-                with state.lock:
-                    if body.get("kind") in ("circle", "lissajous", "rose",
-                                            "text"):
-                        state.kind = body["kind"]
-                    if "freq" in body:
-                        state.freq = min(2000.0, max(1.0, float(body["freq"])))
-                    if "amp" in body:
-                        state.amp = min(1.0, max(0.0, float(body["amp"])))
-                    if "a" in body:
-                        state.ratio_a = min(9, max(1, int(body["a"])))
-                    if "b" in body:
-                        state.ratio_b = min(9, max(1, int(body["b"])))
-                    if "pulse_rate" in body:
-                        state.pulse_rate = min(10.0, max(
-                            0.1, float(body["pulse_rate"])))
-                    if "pulse_depth" in body:
-                        state.pulse_depth = min(1.0, max(
-                            0.0, float(body["pulse_depth"])))
-                    if "rot" in body:
-                        state.rot_speed = min(2.0, max(
-                            -2.0, float(body["rot"])))
-                    if "flip_x" in body:
-                        state.flip_x = bool(body["flip_x"])
-                    if "flip_y" in body:
-                        state.flip_y = bool(body["flip_y"])
-                    if "stream" in body:
-                        state.stream_on = bool(body["stream"])
-                    if new_tbl is not None:
-                        state.text, state.font, state.text_tbl = new_tbl
-                        state.text_ver += 1
+                with state.rebuild_lock if rebuild else nullcontext():
+                    if rebuild:
+                        with state.lock:
+                            text, font = state.text, state.font
+                        if "text" in body:
+                            text = sanitize_text(body["text"])
+                        if body.get("font") in TEXT_FONTS:
+                            font = body["font"]
+                        # Rebuild OUTSIDE state.lock: font parsing must never
+                        # stall the 5 ms stream pacing.
+                        new_tbl = (text, font) + build_text(text, font)
+                    self._apply_pattern(state, body, new_tbl)
                 self._json({"ok": True})
             elif self.path == "/api/preset":
-                op = body.get("op")
-                # Names are embedded in onclick attributes client-side — keep
-                # them to a safe charset instead of escaping in four places.
-                name = "".join(c for c in str(body.get("name", ""))
-                               if c.isalnum() or c in " ._-()&+")[:24].strip()
-                if op not in ("save", "load", "delete") or not name:
-                    return self._json({"err": "need op + name"}, 400)
-                if op == "save":
-                    with state.lock:
-                        snap = {"name": name,
-                                "kind": state.kind, "freq": state.freq,
-                                "amp": state.amp, "a": state.ratio_a,
-                                "b": state.ratio_b, "text": state.text,
-                                "font": state.font,
-                                "pulse_rate": state.pulse_rate,
-                                "pulse_depth": state.pulse_depth,
-                                "rot": state.rot_speed,
-                                "flip_x": state.flip_x,
-                                "flip_y": state.flip_y}
-                        for i, p in enumerate(state.presets):
-                            if p["name"] == name:  # overwrite in place
-                                state.presets[i] = snap
-                                break
-                        else:
-                            if len(state.presets) >= PRESETS_MAX:
-                                return self._json(
-                                    {"err": f"max {PRESETS_MAX} presets"}, 400)
-                            state.presets.append(snap)
-                        plist = list(state.presets)
-                    save_presets(plist)  # file IO outside the lock
-                    self._json({"ok": True})
-                elif op == "delete":
-                    with state.lock:
-                        state.presets = [p for p in state.presets
-                                         if p["name"] != name]
-                        plist = list(state.presets)
-                    save_presets(plist)
-                    self._json({"ok": True})
-                else:  # load
-                    with state.lock:
-                        p = next((dict(p) for p in state.presets
-                                  if p["name"] == name), None)
-                    if p is None:
-                        return self._json({"err": "no such preset"}, 404)
-                    tbl = render_text(p["text"], p["font"])  # outside lock
-                    with state.lock:
-                        if p["kind"] in ("circle", "lissajous", "rose",
-                                         "text"):
-                            state.kind = p["kind"]
-                        state.freq = min(2000.0, max(1.0, float(p["freq"])))
-                        state.amp = min(1.0, max(0.0, float(p["amp"])))
-                        state.ratio_a = min(9, max(1, int(p["a"])))
-                        state.ratio_b = min(9, max(1, int(p["b"])))
-                        state.pulse_rate = min(10.0, max(
-                            0.1, float(p["pulse_rate"])))
-                        state.pulse_depth = min(1.0, max(
-                            0.0, float(p["pulse_depth"])))
-                        state.rot_speed = min(2.0, max(-2.0, float(p["rot"])))
-                        state.flip_x = bool(p["flip_x"])
-                        state.flip_y = bool(p["flip_y"])
-                        state.text, state.font = p["text"], p["font"]
-                        state.text_tbl = tbl
-                        state.text_ver += 1
-                    self._json({"ok": True})
+                return self._preset(state, body)
             elif self.path == "/api/cmd":
                 ip, cmd_obj = body.get("ip"), body.get("cmd")
                 if not ip or not isinstance(cmd_obj, dict):
@@ -959,6 +1056,102 @@ def make_http_handler(state, cmds):
                 self._json({"ok": True})
             else:
                 self._json({"err": "not found"}, 404)
+
+        def _apply_pattern(self, state, body, new_tbl):
+            with state.lock:
+                if body.get("kind") in ("circle", "lissajous", "rose", "text"):
+                    state.kind = body["kind"]
+                if "freq" in body:
+                    state.freq = min(2000.0, max(1.0, float(body["freq"])))
+                if "amp" in body:
+                    state.amp = min(1.0, max(0.0, float(body["amp"])))
+                if "a" in body:
+                    state.ratio_a = min(9, max(1, int(body["a"])))
+                if "b" in body:
+                    state.ratio_b = min(9, max(1, int(body["b"])))
+                if "pulse_rate" in body:
+                    state.pulse_rate = min(10.0, max(
+                        0.1, float(body["pulse_rate"])))
+                if "pulse_depth" in body:
+                    state.pulse_depth = min(1.0, max(
+                        0.0, float(body["pulse_depth"])))
+                if "rot" in body:
+                    state.rot_speed = min(2.0, max(-2.0, float(body["rot"])))
+                if "flip_x" in body:
+                    state.flip_x = bool(body["flip_x"])
+                if "flip_y" in body:
+                    state.flip_y = bool(body["flip_y"])
+                if "stream" in body:
+                    state.stream_on = bool(body["stream"])
+                if new_tbl is not None:
+                    # Write back only what this request set: a POST carrying
+                    # just "text" must not also restore its stale snapshot of
+                    # "font" over a concurrent font change.
+                    if "text" in body:
+                        state.text = new_tbl[0]
+                    if body.get("font") in TEXT_FONTS:
+                        state.font = new_tbl[1]
+                    state.text_tbl, state.text_rmax = new_tbl[2], new_tbl[3]
+                    state.text_ver += 1
+
+        def _preset(self, state, body):
+            op = body.get("op")
+            name = sanitize_name(body.get("name", ""))
+            if op not in ("save", "load", "delete") or not name:
+                return self._json({"err": "need op + name"}, 400)
+            if op == "save":
+                with state.lock:
+                    snap = {"name": name,
+                            "kind": state.kind, "freq": state.freq,
+                            "amp": state.amp, "a": state.ratio_a,
+                            "b": state.ratio_b, "text": state.text,
+                            "font": state.font,
+                            "pulse_rate": state.pulse_rate,
+                            "pulse_depth": state.pulse_depth,
+                            "rot": state.rot_speed,
+                            "flip_x": state.flip_x,
+                            "flip_y": state.flip_y}
+                    for i, p in enumerate(state.presets):
+                        if p["name"] == name:  # overwrite in place
+                            state.presets[i] = snap
+                            break
+                    else:
+                        if len(state.presets) >= PRESETS_MAX:
+                            return self._json(
+                                {"err": f"max {PRESETS_MAX} presets"}, 400)
+                        state.presets.append(snap)
+                    plist = list(state.presets)
+                save_presets(plist)  # file IO outside the lock
+                return self._json({"ok": True})
+            if op == "delete":
+                with state.lock:
+                    state.presets = [p for p in state.presets
+                                     if p["name"] != name]
+                    plist = list(state.presets)
+                save_presets(plist)
+                return self._json({"ok": True})
+            with state.lock:  # load
+                p = next((dict(p) for p in state.presets
+                          if p["name"] == name), None)
+            if p is None:
+                return self._json({"err": "no such preset"}, 404)
+            # Same mutex as /api/pattern: a preset tap and a font change are
+            # two rebuilds like any other pair.
+            with state.rebuild_lock:
+                p = clean_preset(p)  # never install an unknown font (circle!)
+                tbl, rmax = build_text(p["text"], p["font"])  # outside lock
+                with state.lock:
+                    state.kind, state.freq, state.amp = (
+                        p["kind"], p["freq"], p["amp"])
+                    state.ratio_a, state.ratio_b = p["a"], p["b"]
+                    state.pulse_rate = p["pulse_rate"]
+                    state.pulse_depth = p["pulse_depth"]
+                    state.rot_speed = p["rot"]
+                    state.flip_x, state.flip_y = p["flip_x"], p["flip_y"]
+                    state.text, state.font = p["text"], p["font"]
+                    state.text_tbl, state.text_rmax = tbl, rmax
+                    state.text_ver += 1
+            return self._json({"ok": True})
 
     return Handler
 
@@ -970,15 +1163,20 @@ def make_http_handler(state, cmds):
 def stream_loop(state, iface_ip):
     def make_ctrl():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        return s
+
+    def bind_egress(s):
+        """Aim multicast at the AP interface. False until that IP exists."""
         try:
             s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
                          socket.inet_aton(iface_ip))
-            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+            return True
         except OSError:
-            pass  # iface may be mid-bounce; retried on next failure
-        return s
+            return False  # EADDRNOTAVAIL: no interface holds iface_ip yet
 
     ctrl = make_ctrl()
+    egress = None  # last reported bind state; None = nothing logged yet
     audio = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # Non-blocking (protocol.md §10): if the AP stalls and the kernel TX queue
     # fills, a blocking sendto to slave 1 would stall the whole fan-out loop
@@ -1004,6 +1202,21 @@ def stream_loop(state, iface_ip):
         now = mono_us()
 
         if now >= next_sync:
+            # Re-aim the beacon socket every 500 ms. Booting before
+            # hyperosci-ap exists makes IP_MULTICAST_IF fail with
+            # EADDRNOTAVAIL; the socket then follows the DEFAULT ROUTE — out
+            # of the USB tether, to a laptop — and nothing ever retries,
+            # because the only retry hangs off the send-failure path and sends
+            # stop failing the moment any route exists. The log stays clean
+            # and no slave ever hears a beacon. This is not a hot path and
+            # setsockopt is microseconds, so just do it unconditionally.
+            ok = bind_egress(ctrl)
+            if ok is not egress:
+                egress = ok
+                print(f"[net] multicast egress {iface_ip}: "
+                      + ("bound" if ok else
+                         "UNAVAILABLE — beacons follow the default route"),
+                      flush=True)
             pkt = HDR.pack(HYPE_MAGIC, HYPE_VERSION, HYPE_SYNC, 0, seq_sync,
                            mono_us())
             try:
@@ -1015,6 +1228,7 @@ def stream_loop(state, iface_ip):
                       flush=True)
                 ctrl.close()
                 ctrl = make_ctrl()
+                egress = None  # force a re-bind + log line next beacon
             seq_sync += 1
             next_sync += SYNC_INTERVAL_US
 

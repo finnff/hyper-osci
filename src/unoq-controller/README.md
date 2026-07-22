@@ -21,7 +21,12 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
 2. **Renderer** — `PatternGen`: circle / lissajous / rose, plus **text** in
    Hershey single-stroke vector fonts (6 faces from the `hershey-fonts-data`
    package, multi-line with per-line centering, amplitude-pulse and spin LFOs,
-   X/Y mirror for scope deflection polarity). Text is prebuilt into a
+   X/Y mirror for scope deflection polarity). A `.jhf` file holds printable
+   ASCII and nothing else, so accented letters are **composed**: NFD-decompose,
+   draw the base glyph from the face, add the combining mark from `_MARKS` in
+   the face's own units (14 marks — acute through ogonek); anything with no
+   base at all folds to ASCII (`ß`→`ss`, curly quotes, dashes). `é` is a real
+   `e` under a real acute, not a `?`. Text is prebuilt into a
    2000-point equal-arc-length table (constant beam speed — osci-render's
    algorithm, see
    [docs/text-rendering-findings.md](../../docs/text-rendering-findings.md));
@@ -35,7 +40,10 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    identify/gain/reboot, per-second health rates (rx/drop/lost/under).
 4. **Presets** — up to 10 named snapshots of the whole streamed-pattern panel
    (artist names for stage changeovers), persisted at
-   `~/hype_presets.json` across restarts.
+   `~/hype_presets.json` across restarts. Every field is optional on load and
+   filled from `PRESET_DEFAULTS`, so adding a field to a later build cannot
+   drop a preset written by an earlier one; values are clamped and the font
+   whitelisted in `clean_preset()`, on both the file and the load path.
 
 HTTP API: `GET /api/state`, `GET /api/textpreview`; `POST /api/pattern`,
 `POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete).
