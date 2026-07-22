@@ -80,6 +80,12 @@ _glyph_cache = {}
 PRESETS_FILE = os.environ.get(
     "HYPE_PRESETS", os.path.expanduser("~/hype_presets.json"))
 PRESETS_MAX = 10
+# The LIVE pattern, persisted too. Without this a reboot came back drawing a
+# circle whatever was on the scopes, and the only way to know was to look --
+# on a dark stage, with no laptop. Same field set as a preset, so clean_preset
+# clamps and whitelists both and an older build's file still loads.
+STATE_FILE = os.environ.get(
+    "HYPE_STATE", os.path.expanduser("~/hype_state.json"))
 # "name" plus these. Every field is OPTIONAL on load and filled from the
 # default here, so adding an entry can never disqualify a preset written by an
 # older build — the filter used to require all of them, and the next save then
@@ -161,11 +167,54 @@ def load_presets():
 def save_presets(presets):
     tmp = PRESETS_FILE + ".tmp"
     try:
+        # ONE generation of undo, kept because the artist names ARE the show
+        # and every path into this function is destructive: a delete, or
+        # anything that empties the in-memory list, overwrites the file with
+        # [] and leaves no trace to recover from. One generation covers a
+        # single bad write, NOT a run of deletes -- delete five presets in a
+        # row and the backup holds only the fourth.
+        #   cp ~/hype_presets.json.bak ~/hype_presets.json && \
+        #     sudo systemctl restart hyperosci-controller
+        try:
+            with open(PRESETS_FILE, "rb") as src:
+                prev = src.read()
+            if prev.strip() not in (b"", b"[]"):   # never shadow a good file
+                with open(PRESETS_FILE + ".bak", "wb") as dst:
+                    dst.write(prev)
+        except OSError:
+            pass                                   # no file yet: nothing to keep
         with open(tmp, "w") as f:
             json.dump(presets, f, indent=1)
         os.replace(tmp, PRESETS_FILE)  # atomic: never a half-written file
     except OSError as e:
         print(f"[presets] save failed: {e}", flush=True)
+
+
+def load_live():
+    """Saved live pattern -> clean dict, or None if there is no usable one.
+
+    Anything unreadable, truncated or hand-edited into nonsense returns None
+    and the daemon starts on defaults. A bad state file must never be able to
+    stop the rig from booting.
+    """
+    try:
+        with open(STATE_FILE) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return clean_preset(d) if isinstance(d, dict) else None
+
+
+def save_live(d):
+    """Atomically persist the live pattern. Returns an OSError, or None."""
+    tmp = STATE_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(d, f, indent=1)
+        os.replace(tmp, STATE_FILE)  # atomic: never a half-written file
+    except OSError as e:
+        return e
+    return None
 
 
 def _jhf_glyphs(fname):
@@ -376,6 +425,30 @@ def mono_us():
     return time.monotonic_ns() // 1000
 
 
+def persist_loop(state, period=3.0):
+    """Debounce the live pattern to disk: a slider drag is one write, not 60.
+
+    Its own thread on purpose. os.replace on the eMMC can block for tens of
+    milliseconds, which off the stream thread is nothing and on it would be
+    several missed 5 ms blocks -- an audible gap on every scope at once.
+    """
+    last, warned = None, False
+    while True:
+        time.sleep(period)
+        if not state.dirty:
+            continue
+        state.dirty = False   # a write landing here just re-arms us next tick
+        cur = state.live_snapshot()
+        if cur == last:
+            continue
+        err = save_live(cur)
+        if err is None:
+            last, warned = cur, False
+        elif not warned:
+            warned = True     # once per outage, not every 3 s forever
+            print(f"[state] cannot save {STATE_FILE}: {err}", flush=True)
+
+
 class State:
     """Shared between the stream loop and HTTP threads. Lock-protected."""
 
@@ -393,12 +466,32 @@ class State:
         self.rot_speed = 0.0      # revolutions/s (0 = static)
         self.flip_x = False       # mirror left-right (scope polarity)
         self.flip_y = False       # mirror top-bottom (scope polarity)
+        # Come back drawing whatever was on the scopes, not a circle. Restored
+        # before the table is built, so the very first block is already right
+        # -- no flash of the default pattern on stage. Command-line --pattern
+        # only decides the FIRST ever boot, before a state file exists.
+        saved = load_live()
+        if saved:
+            (self.kind, self.freq, self.amp, self.ratio_a, self.ratio_b,
+             self.text, self.font, self.pulse_rate, self.pulse_depth,
+             self.rot_speed, self.flip_x, self.flip_y) = (
+                saved["kind"], saved["freq"], saved["amp"], saved["a"],
+                saved["b"], saved["text"], saved["font"],
+                saved["pulse_rate"], saved["pulse_depth"], saved["rot"],
+                saved["flip_x"], saved["flip_y"])
         # None off-board; rmax rides along so block() can cap amp (see
         # table_rmax) without walking the table.
         self.text_tbl, self.text_rmax = build_text(self.text, self.font)
         self.text_ver = 1         # bumped on rebuild; UI refetches preview
         self.presets = load_presets()  # [{name + PRESET_DEFAULTS keys}, ...]
+        # Deliberately NOT persisted: a restart always comes back streaming.
+        # The failure modes are not symmetric -- a rig that boots silent after
+        # a power blip because someone muted it during setup is far worse than
+        # one that boots drawing when you wanted quiet, and the STREAM button
+        # says which it is at a glance.
         self.stream_on = True
+        # Set by any writer of the fields above; cleared by persist_loop.
+        self.dirty = False
         self.slaves = {}          # ip -> dict(status fields + last_us)
         # Held across snapshot -> render -> write-back of the text table. Two
         # overlapping rebuilds would otherwise revert each other's field, and
@@ -406,6 +499,13 @@ class State:
         # where block gaps reach 300-600 ms and every scope rebuffers.
         # Ordering: take this BEFORE self.lock, never the other way round.
         self.rebuild_lock = threading.Lock()
+        # Written by stream_loop's bind_egress transition, read by snapshot.
+        # None = not probed yet; False = no interface holds net_iface, which
+        # means no AP, which means no slave can ever appear. The dashboard
+        # says so out loud -- an empty slave list looks identical whether the
+        # AP is down or the slaves are simply off.
+        self.net_iface = ""
+        self.net_egress = None
 
     def pattern_params(self):
         with self.lock:
@@ -413,6 +513,15 @@ class State:
                     self.ratio_a, self.ratio_b, self.text_tbl, self.text_rmax,
                     self.pulse_rate, self.pulse_depth, self.rot_speed,
                     self.flip_x, self.flip_y)
+
+    def live_snapshot(self):
+        """Just the persisted subset, taken under the lock."""
+        with self.lock:
+            return {"kind": self.kind, "freq": self.freq, "amp": self.amp,
+                    "a": self.ratio_a, "b": self.ratio_b, "text": self.text,
+                    "font": self.font, "pulse_rate": self.pulse_rate,
+                    "pulse_depth": self.pulse_depth, "rot": self.rot_speed,
+                    "flip_x": self.flip_x, "flip_y": self.flip_y}
 
     def snapshot(self):
         now = mono_us()
@@ -431,6 +540,7 @@ class State:
                 "stream_on": self.stream_on,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
                            for s in self.slaves.values()],
+                "net": {"iface": self.net_iface, "egress": self.net_egress},
             }
 
 
@@ -607,6 +717,8 @@ button.danger:hover { border-color:var(--bad); color:var(--bad); }
 .badge.mic { color:var(--warn); border-color:var(--warn); }
 .stale { opacity:.35; }
 #none { color:var(--dim); padding:24px; text-align:center; }
+#none.down { color:var(--bad); line-height:1.7; }
+#none.down code { color:var(--fg); background:#000; padding:1px 6px; }
 #offbanner { display:none; color:var(--bad); border:1px solid var(--bad);
              border-radius:6px; padding:6px 12px; margin-bottom:12px; }
 details { margin-top:16px; color:var(--dim); font-size:13px; }
@@ -971,7 +1083,14 @@ function render() {
   for (const s of S.slaves) rr[s.ip] = rates(s);
   const div = document.getElementById("slaves");
   if (!S.slaves.length) {
-    div.innerHTML = '<div id="none">no slaves discovered yet…</div>';
+    // An empty list has two very different causes and they look identical.
+    const n = S.net || {};
+    div.innerHTML = n.egress === false
+      ? '<div id="none" class="down"><b>Wi-Fi AP is DOWN</b> — no interface holds '
+        + n.iface + ', so no slave can associate and no audio is leaving this box.'
+        + '<br>on the controller: <code>sudo nmcli c up hyperosci-ap</code>'
+        + '<br>(this panel recovers on its own within a second — no restart needed)</div>'
+      : '<div id="none">no slaves discovered yet…</div>';
   } else if (!(act && div.contains(act))) {  // keep gain sliders draggable
     div.innerHTML =
         S.slaves.sort((a,b)=>a.id-b.id).map(s => card(s, rr[s.ip])).join("");
@@ -1093,6 +1212,7 @@ def make_http_handler(state, cmds):
                         state.font = new_tbl[1]
                     state.text_tbl, state.text_rmax = new_tbl[2], new_tbl[3]
                     state.text_ver += 1
+            state.dirty = True   # persist_loop writes it within ~3 s
 
         def _preset(self, state, body):
             op = body.get("op")
@@ -1151,6 +1271,7 @@ def make_http_handler(state, cmds):
                     state.text, state.font = p["text"], p["font"]
                     state.text_tbl, state.text_rmax = tbl, rmax
                     state.text_ver += 1
+                state.dirty = True   # tapping a preset survives a reboot too
             return self._json({"ok": True})
 
     return Handler
@@ -1213,6 +1334,8 @@ def stream_loop(state, iface_ip):
             ok = bind_egress(ctrl)
             if ok is not egress:
                 egress = ok
+                with state.lock:
+                    state.net_egress = ok
                 print(f"[net] multicast egress {iface_ip}: "
                       + ("bound" if ok else
                          "UNAVAILABLE — beacons follow the default route"),
@@ -1328,19 +1451,28 @@ def main():
     ap.add_argument("--iface-ip", default="192.168.50.1",
                     help="local IP of the AP interface (multicast egress)")
     ap.add_argument("--pattern", default="circle",
-                    choices=["circle", "lissajous", "rose"])
+                    choices=["circle", "lissajous", "rose", "text"],
+                    help="first-boot pattern only; a saved ~/hype_state.json "
+                         "wins over this")
     ap.add_argument("--http-port", type=int, default=8080)
     args = ap.parse_args()
 
     state = State(args.pattern)
+    state.net_iface = args.iface_ip
     cmds = CmdSender(state)
 
     httpd = ThreadingHTTPServer(("0.0.0.0", args.http_port),
                                 make_http_handler(state, cmds))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    threading.Thread(target=persist_loop, args=(state,), daemon=True).start()
 
     print(f"[controller] web on :{args.http_port}, iface={args.iface_ip}, "
           f"lead={LEAD_US/1000:.0f}ms", flush=True)
+    shown = (f"text {state.text!r} {state.font}" if state.kind == "text"
+             else state.kind)
+    print(f"[controller] pattern {shown} {state.freq:g} Hz amp {state.amp:.2f}"
+          + ("" if load_live() else "  (defaults — no saved state yet)"),
+          flush=True)
     stream_loop(state, args.iface_ip)
 
 
