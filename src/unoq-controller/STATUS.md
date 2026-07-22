@@ -1,6 +1,6 @@
 # UNO-Q status — board access, controller daemon & change log
 
-_Last verified: 2026-07-19. Scope: the physical Arduino UNO-Q board, the deployed
+_Last verified: 2026-07-22. Scope: the physical Arduino UNO-Q board, the deployed
 controller daemon, and the (rejected) osci-render route. The controller app itself is
 documented in [README.md](README.md)._
 
@@ -9,8 +9,9 @@ documented in [README.md](README.md)._
 `tools/hype_controller.py` (deployed at `/home/arduino/hype_controller.py`) streams
 test patterns to the slaves and serves the web control panel:
 
-- **Web UI:** <http://10.42.0.128:8080> (USB tether) or <http://192.168.50.1:8080>
-  (on `HYPEROSCI_AP`). Pattern/freq/amp controls, stream on/off, per-slave and
+- **Web UI:** <http://192.168.50.1:8080> (on `HYPEROSCI_AP` — the address that
+  never moves, use this one) or <http://10.42.0.5:8080> (USB tether).
+  Pattern/freq/amp controls, stream on/off, per-slave and
   all-slave mode toggles (network / mic / hybrid), identify, gain, reboot.
 - **Runs as a systemd service**, starts on boot:
   `sudo systemctl {status,restart,stop} hyperosci-controller`, logs via
@@ -21,9 +22,16 @@ test patterns to the slaves and serves the web control panel:
 
 ## How to get on the board
 
-- **SSH:** `ssh arduino@10.42.0.128` — password `arduino`. Host is `uno-q`, Debian 13 (trixie), **aarch64**, 4 cores / 3.6 GB RAM.
+- **SSH:** `ssh arduino@10.42.0.5` — password `arduino`. Host is `uno-q`, Debian 13 (trixie), **aarch64**, 4 cores / 3.6 GB RAM.
 - **ADB:** `adb shell` also works (USB).
 - **sudo:** passwordless (`arduino` has NOPASSWD); account password is still `arduino`.
+- **Tether addressing (fixed 2026-07-22):** `usb-tether` was pure DHCP off the
+  laptop's shared 10.42.0.0/24, whose pool is `10.42.0.10–254` — so the board's
+  address wandered (`.128` one day, `.127` the next) and every bookmark rotted.
+  It now carries a **static `10.42.0.5` in addition to** the DHCP lease
+  (`nmcli c mod usb-tether +ipv4.addresses 10.42.0.5/24`, method still `auto`).
+  `.5` is below the pool so it can never collide, and keeping DHCP means the
+  board still works when tethered to a different host.
 - IP note: `192.168.2.170` is also availible but its from the current WiFi lease (profile `jdv`). so please use the USB reverse-tether path.
 
 ## What's compiled
@@ -47,6 +55,122 @@ test patterns to the slaves and serves the web control panel:
 - **It's a GUI/OpenGL app — no display on the board.** It only ran above because `xvfb` gave it a virtual display. There is no headless "just stream the audio" mode yet. For the HYPEROSCI plan (UNO-Q streams X/Y audio to the ESP32 slaves) we still need either a headless audio-only render path or to host the VST3 — **this is the open question, not solved.**
 - **Free variant only.** Premium features are gated behind `OSCI_PREMIUM=1` and may need premium assets not in the public repo — untried.
 - Launching prints `ALSA … /dev/snd/seq … No such file` — harmless (no hardware MIDI sequencer), not a failure.
+
+## The AP did not start on boot — "no slaves discovered yet…" (fixed 2026-07-22)
+
+**Symptom:** after rebooting board + slaves, the dashboard sat on
+`no slaves discovered yet…` forever. Everything else looked healthy.
+
+**Cause:** `hyperosci-ap` had `connection.autoconnect: no`, so NetworkManager
+never brought it up at boot. `wlan0` stayed `disconnected` (NM even rotated its
+MAC for scanning), nothing held `192.168.50.1`, and no slave could associate.
+The controller was blameless and was in fact reporting it correctly the whole
+time — `journalctl -u hyperosci-controller` showed
+`[net] multicast egress 192.168.50.1: UNAVAILABLE` — but nobody reads the
+journal mid-show, and the dashboard's empty-list message looked identical to
+"the slaves are switched off".
+
+**Fix, three parts:**
+
+```bash
+sudo nmcli c mod hyperosci-ap connection.autoconnect yes \
+     connection.autoconnect-priority 10 connection.autoconnect-retries 0
+```
+
+`autoconnect-retries 0` means *retry forever* — the AP comes back on its own
+after a radio wedge instead of giving up after NM's default 4 tries.
+
+Second, the dashboard now says which of the two it is: `/api/state` carries
+`net: {iface, egress}`, and when `egress` is false the slaves panel shows
+**"Wi-Fi AP is DOWN"** in red with the `nmcli c up` command, instead of the
+ambiguous "no slaves discovered yet…". Slaves are evicted after 5 s of silence,
+so this covers a mid-show AP loss as well as a cold boot.
+
+Third, nothing needs restarting to recover: `bind_egress()` (the §1.5 fix)
+re-applies `IP_MULTICAST_IF` every 500 ms beacon. Observed live — the daemon had
+been running 90 minutes with the AP down and bound itself the moment the AP
+appeared.
+
+**Verified by an actual reboot**, no manual steps: service start 18:55:28 →
+`egress bound` 18:55:40 → `[discovered] slave id=121` 18:55:46. **18 s cold boot
+to streaming.** The 7 `UNAVAILABLE` lines in between are the expected
+boot-order window, and they stop on their own.
+
+## Unattended operation: pattern persistence + netwatch (2026-07-22)
+
+Goal: the rig comes back from a power cut **on its own**, with no laptop and
+nothing to SSH into.
+
+**The live pattern now persists** to `~/hype_state.json`. It is restored in
+`State.__init__` *before* the text table is built, so the first 5 ms block is
+already correct — no flash of a default circle on stage. `--pattern` now only
+decides the very first boot, before a state file exists (and it can finally
+name `text`).
+
+- Written by `persist_loop`, a 3 s debounced writer on **its own thread**:
+  `os.replace` on the eMMC can block for tens of ms, which on the stream
+  thread would be several missed blocks. Measured: **120 POSTs → 4 disk
+  writes**, so dragging a slider does not chew the flash.
+- Every field goes through the same `clean_preset()` as a preset, so a
+  truncated, hand-edited or older-build file can never stop the daemon
+  booting. Verified against `{ truncated`, `[]`, `null`, `''`, an unknown font
+  name and `{"freq":1e9,"amp":-5,"a":999}` — all boot clamped and sane.
+- **`stream_on` is deliberately NOT persisted.** The failure modes are not
+  symmetric: a rig that boots silent after a power blip, because someone muted
+  it during setup, is far worse than one that boots drawing when you wanted
+  quiet.
+
+**`hyperosci-netwatch`** (`deploy/`, installed at `/usr/local/sbin/`, oneshot
+service + 30 s timer, runs as root because there is no one to answer a polkit
+prompt) covers the two faults that take the rig off the air and that you
+cannot fix from the phone, because both break the phone's own path in:
+
+1. `192.168.50.1` is not on `wlan0` → `nmcli c up hyperosci-ap`.
+2. The documented ath10k rate-control wedge → `nmcli c down/up`, after 3
+   consecutive bad checks, with a 300 s cooldown.
+
+It is a separate process on purpose: the controller paces 48 kHz audio and
+must never fork.
+
+**The subtle part — why "all slaves on mic" is NOT sufficient to act on.**
+Measured on 2026-07-22: with ~6.5 % air loss the slave's `source` field
+flickers to 0 **~50 times in 4 minutes** while the audio is completely fine
+(`under` did not move once in 30 minutes; jitter buffer sawtooths 450 ms →
+140 ms and refills, never empties). Striking on `source` alone would have
+bounced a healthy AP mid-show. So a strike also requires the slave's **`rx`
+counter to have stopped advancing** (< 200 packets in a ~30 s tick against
+~5700 healthy) — that is the actual wedge signature and it does not flicker.
+A *negative* delta means the slave rebooted and zeroed its counter, which is
+exactly when it must be left alone. 13 unit tests in
+`scratchpad/test_netwatch.py`; live soak = 240 s, 50 flickers, **0 strikes**.
+
+**Presets now keep one generation of undo.** `save_presets()` copies the
+current file to `~/hype_presets.json.bak` before every write. Every path into
+that function is destructive — a delete, or anything that empties the
+in-memory list, overwrites the file with `[]` and leaves nothing to recover
+from. Restore with:
+
+```bash
+cp ~/hype_presets.json.bak ~/hype_presets.json
+sudo systemctl restart hyperosci-controller
+```
+
+One generation covers a single bad write, **not** a run of deletes: delete
+five presets one at a time and the backup holds only the fourth. The `.bak` is
+never refreshed from an empty or `[]` file, so a clobber cannot shadow a good
+backup.
+
+**2.4 GHz channel moved 6 → 11.** A scan found **7 other APs sitting on
+channel 6** (Odido 77, Cookies&Cream 69, Dragonsreach 64, Ziggo8922244 64,
+Casa JoSe 60, TMNL-9AF9D1 57, Ziggo9878968 55) against 3 on channel 11.
+Measured better but not dramatically: loss 14.6 → 13.0 pkt/s. RSSI read 9 dB
+lower on 11, so re-scan and re-pick **at the venue** rather than trusting this:
+
+```bash
+sudo nmcli -f SSID,CHAN,SIGNAL d wifi list --rescan yes   # look at CHAN
+sudo nmcli c mod hyperosci-ap 802-11-wireless.channel 6   # or 1 / 11
+sudo nmcli c down hyperosci-ap && sudo nmcli c up hyperosci-ap
+```
 
 ## Rebuilding
 
@@ -103,7 +227,7 @@ unit's grounds (vbat still reads 6-10 mV noise, GPIO1 divider ground suspect).
 
 ## Perf Tier 1+2 landed + NEW show-day risk: ath10k AP rate-control wedge (2026-07-18, night)
 
-Implemented the "small cheap" tier of PERFORMANCE_HEAT_ANALYSIS.md (§7 items 1-5;
+Implemented the "small cheap" tier of [performance-heat-analysis.md](../../docs/performance-heat-analysis.md) (§7 items 1-5;
 commits d192b3a controller, d0e23ae firmware):
 
 1. `LEAD_US` 350 → **450 ms** — verified: slave settles at `depth=21600` frames (450 ms).

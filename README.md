@@ -45,6 +45,7 @@ Sync target ±5 ms via 500 ms beacons; the stream deliberately runs ~450 ms ahea
 | [docs/hardware/power-budget.md](docs/hardware/power-budget.md) | Current draw, battery life, low-battery policy derivation |
 | [docs/firmware/esp32-architecture.md](docs/firmware/esp32-architecture.md) | Slave firmware architecture (tasks, drivers, buffers) |
 | [docs/osci-render-feature-port-feasibility.md](docs/osci-render-feature-port-feasibility.md) | What else is worth porting from osci-render (fonts, SVG, effects), measured on the board — and the 6 bugs found while looking, all now fixed (§1) |
+| [docs/performance-heat-analysis.md](docs/performance-heat-analysis.md) | Why the slave runs hot and why streaming dropped (2026-07-18), with the prioritized fix plan |
 | [FURTHER_CLARIFICATION_NEEDED.md](FURTHER_CLARIFICATION_NEEDED.md) | Open questions for Finn |
 | [docs/research/](docs/research/) | Historical planning docs — superseded where they conflict with DESIGN.md |
 
@@ -73,6 +74,8 @@ Controls per unit: power switch, mode button (NETWORK / LOCAL / HYBRID), filter-
 - [x] Slave firmware (`src/esp32-slave/`): full audio/network/mode stack — AsyncUDP audio RX, 512 ms jitter buffer + concealment, local mic/pattern renderers, console; unit #1 on breadboard streams end-to-end
 - [x] UNO-Q controller app **deployed** (`hyperosci-controller` systemd service): streamer + web UI + patterns/Hershey-font text (accents composed from the face's own strokes)/effects/presets — [src/unoq-controller/README.md](src/unoq-controller/README.md). osci-render was built for aarch64 but deliberately **not** integrated (no headless entry point — [docs/text-rendering-findings.md](docs/text-rendering-findings.md))
 - [x] Six controller bugs found by the feature-port study fixed and deployed 2026-07-22, including the one that had the daemon beaconing out of the USB tether instead of the AP — slave 121 now receives audio ([docs/…feasibility.md §1](docs/osci-render-feature-port-feasibility.md))
+- [x] Boots unattended 2026-07-22: `hyperosci-ap` now autoconnects (it never did — that, not the controller, was the real "no slaves discovered yet…"), the USB tether holds a fixed `10.42.0.5` alongside DHCP, and the dashboard names the AP-down case instead of showing an empty list. Cold boot to streaming: 18 s ([src/unoq-controller/STATUS.md](src/unoq-controller/STATUS.md))
+- [x] Survives a power cut with no laptop 2026-07-22: the live pattern persists to `~/hype_state.json` and is restored before the first audio block, presets keep one generation of undo, and a root `hyperosci-netwatch` timer re-ups the AP (and bounces it on the documented ath10k wedge). Regression checks in [src/unoq-controller/tests/](src/unoq-controller/tests/) — run them **on the board**
 - [ ] Carrier PCB designed & ordered (order gate ~Aug 1 — see [docs/PLAN.md](docs/PLAN.md))
 - [ ] 4-slave sync demo (slaves 2–4 not yet on breadboards; 3 built slaves need reflashing for the lost-packets counter)
 - [ ] Assembly + venue rehearsal (show 2026-08-21)

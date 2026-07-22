@@ -34,11 +34,22 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    and **not** integrated (no headless entry point — same doc).
 3. **Web UI** — single embedded page (stdlib `http.server`, port 8080,
    no external assets so it works on the AP without internet):
-   <http://192.168.50.1:8080> (on `HYPEROSCI_AP`) or <http://10.42.0.128:8080>
+   <http://192.168.50.1:8080> (on `HYPEROSCI_AP`) or <http://10.42.0.5:8080>
    (USB tether). Pattern/text/effect controls with live canvas preview,
    stream on/off, per-slave draw mode (stream/hybrid/mic/local patterns),
    identify/gain/reboot, per-second health rates (rx/drop/lost/under).
-4. **Presets** — up to 10 named snapshots of the whole streamed-pattern panel
+   When no slave is listed the panel distinguishes the two causes: if
+   `/api/state`'s `net.egress` is false, nothing holds `192.168.50.1`, so the
+   AP is down and no slave *can* appear — it says so in red rather than
+   "no slaves discovered yet…". See [STATUS.md](STATUS.md).
+4. **Persistence** — the live pattern is saved to `~/hype_state.json` (3 s
+   debounced, on its own thread, atomic replace) and restored before the text
+   table is built, so a reboot comes back drawing what was on the scopes
+   rather than a default circle. It is validated by the same `clean_preset()`
+   as a preset, so a corrupt file degrades to defaults instead of stopping
+   the daemon. `stream_on` is deliberately not persisted — a rig that boots
+   silent is worse than one that boots drawing.
+5. **Presets** — up to 10 named snapshots of the whole streamed-pattern panel
    (artist names for stage changeovers), persisted at
    `~/hype_presets.json` across restarts. Every field is optional on load and
    filled from `PRESET_DEFAULTS`, so adding a field to a later build cannot
@@ -48,15 +59,23 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
 HTTP API: `GET /api/state`, `GET /api/textpreview`; `POST /api/pattern`,
 `POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete).
 
+`deploy/hyperosci-netwatch` (+ `.service`/`.timer`) is a separate root-owned
+watchdog that every 30 s re-activates `hyperosci-ap` if nothing holds
+192.168.50.1, and bounces it if no slave has *received a packet* for three
+consecutive checks. It is not part of this process on purpose — the stream
+loop must never fork. See [STATUS.md](STATUS.md) for why "every slave is on
+its mic" alone is not a safe trigger.
+
 `tools/hype_sender.py` is the original minimal streamer, kept only as a
 protocol reference — never run both (they fight over port 5002).
 
 ## Deviations from the original plan (kept deliberately)
 
 - **AP** is a NetworkManager connection `hyperosci-ap` (SSID `HYPEROSCI_AP`,
-  2.4 GHz channel 6, controller at **192.168.50.1/24**) — not hostapd+dnsmasq
-  and not 192.168.4.1 (10.42.x and .4.x collided with the USB tether; see
-  STATUS.md).
+  2.4 GHz **channel 11**, autoconnect on with unlimited retries, controller at
+  **192.168.50.1/24**) — not hostapd+dnsmasq and not 192.168.4.1 (10.42.x and
+  .4.x collided with the USB tether; see STATUS.md). Channel was 6 until
+  2026-07-22; re-pick it at the venue, STATUS.md has the one-liner.
 - **Single-file app**, not the `hyperosci/{streamer,renderer,web}` package
   layout once sketched here — at this size the one file is easier to deploy
   (scp + restart) and to keep in lockstep with the firmware.
