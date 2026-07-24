@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "HYPEROSCI")(type "KiCad")(uri "${KIPRJMOD}/HYPEROSCI.pretty")(options "")(descr "HYPEROSCI carrier custom footprints"))
+)

@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "HY")(type "KiCad")(uri "${KIPRJMOD}/HYPEROSCI.kicad_sym")(options "")(descr "HYPEROSCI generated symbols"))
+)
