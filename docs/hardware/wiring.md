@@ -108,7 +108,7 @@ on-board footprint.
 
 | # | From | To | Notes |
 |---|------|----|-------|
-| U1 | Pot pin 3 (CW end) | `3V3` rail | 10 kΩ pot = **RV097NS-B10K** (5-pin, metal shaft turned by hand — no knob) |
+| U1 | Pot pin 3 (CW end) | `3V3` rail | 10 kΩ pot = **RV097NS-B10K** (5-pin **mono with switch**, right-angle; metal shaft turned by hand — no knob). Pins 4/5 are the SPST, not lugs: both to GND, unused |
 | U2 | Pot pin 1 (CCW end) | `GND` rail | this orientation ⇒ clockwise = higher voltage = higher Y-filter cutoff |
 | U3 | Pot pin 2 (wiper) | SM `GPIO3` | `PIN_POT_ADC`, ADC1_CH3 |
 | U4 | Mode button, leg A | SM `GPIO7` | `PIN_BTN_MODE`; internal pull-up in firmware — **no external resistor** |

@@ -29,6 +29,19 @@ BUILD-TIME WARNINGS that live with the netlist, not only in the doc:
     no CC/CV, in either SW1 position. JP1 fallback = bridge JP1, omit
     Q1/Q2/U1/D1/D2 -- and R7/R8 with them, since JP1 puts that divider straight
     across the cell for 231 uA with no comparator left to feed. See pcb.md 4.4.
+  - RV1 PADS 4/5 ARE A SWITCH, NOT BRACKET LUGS (corrected 2026-07-27). The
+    RV097NS 5-pin is "mono with switch": an SPST that makes at one end of
+    rotation, on the same 1.0mm holes as the pot terminals. The part has no
+    bracket lugs. Both switch ends are parked on GND here, deliberately:
+      * there is no safe spare GPIO to give it -- GPIO0 is MIC_OUT, GPIO8/9
+        are strapping pins that must be high at reset (a switch that closes at
+        full-CCW would hold one low and block boot), GPIO21 is the console
+        UART TX and shorting an output to GND is contention, not an input;
+      * the part's only rear anchoring is these two 0.8mm pins, so soldering
+        them into the GND pour is what stops a hand-turned shaft levering the
+        pot off the board.
+    Closing the switch therefore shorts GND to GND and nothing happens. To use
+    it in a later revision, re-net pad 5 and re-run the generators.
 """
 
 # ref: (value, symbol, footprint, {pad: net}, dnp)
@@ -126,9 +139,9 @@ COMPONENTS = {
     # --- strap pull-up, controls, LEDs ---
     "R3": ("10k", "R", STOCK["r"], {"1": "3V3", "2": "GPIO2_PU"}),
     "SW2": ("MODE 6x6", "SW_PUSH", STOCK["push"], {"1": "BTN_MODE", "2": "GND"}),
-    "RV1": ("RV097NS B10K", "POT5", "HYPEROSCI:RV097NS_Vertical", {
+    "RV1": ("RV097NS B10K +SW", "POT5", "HYPEROSCI:RV097NS_Horizontal_Switch", {
         "1": "GND", "2": "POT_WIPER", "3": "3V3",     # CCW wiper CW
-        "4": "GND", "5": "GND"}),                     # bracket lugs (deviation 3)
+        "4": "GND", "5": "GND"}),                     # SPST switch -- see below
     "R4": ("2.2k", "R", STOCK["r"], {"1": "LED_NET_A", "2": "D4_A"}),
     "R5": ("2.2k", "R", STOCK["r"], {"1": "LED_MODE_A", "2": "D5_A"}),
     "D4": ("LED green NET", "LED", STOCK["led3"], {"1": "GND", "2": "D4_A"}),

@@ -67,7 +67,7 @@ Reference designators used throughout this doc and to be used in KiCad:
 | X, Y | 2× RCA flying-lead solder pad-pair (signal + AGND) | Scope X (=DAC L), Scope Y (=DAC R). Finn solders the reused ~50 cm RCA cables here — no connector part on the board. Silk `X` / `Y`. |
 | SW1 | 1 A-rated SS12D00-class SPDT slide switch (e.g. SK12D07) | Power switch (in VSW→VLOAD path, §4); 1 A rating chosen because WiFi TX peaks ≈ 0.35 A |
 | SW2 | 6×6 mm THT tactile | MODE button → GPIO7 |
-| RV1 | **RV097NS** 9 mm 10 kΩ linear pot (B10K), 5-pin, body 27.3 × 9.5 × 11.3 mm. **Metal shaft turned directly — no knob.** | Filter-cutoff → GPIO3 |
+| RV1 | **RV097NS** 9 mm 10 kΩ linear pot (B10K), **5-pin mono *with switch*, right-angle**, body 27.3 × 9.5 × 11.3 mm. **Metal shaft turned directly — no knob.** Pads 4/5 are the SPST, not bracket lugs (the part has none) — both parked on GND, see §5. The **mounting surface sits on the board's south edge**; the M7×0.75 bushing and 15 mm shaft hang off it. | Filter-cutoff → GPIO3 |
 
 **SuperMini socket pin functions** (net names; physical position per module silk —
 ✅ confirmed 2026-07-18 against the owned TENSTAR ROBOT modules, `5V G 3.3 4 3 2 1 0` /
@@ -96,7 +96,7 @@ Every net on the board. Pin numbers match `config.h` exactly.
 |---|---|
 | **BAT+** | J8.1 (JST +) → **J6.1** `B+`. Also top of battery divider R1. On this USB-C TP4056 module, `B+` and `OUT+` are the same copper (protection is low-side) — ✅ measured 0 Ω 2026-07-18. |
 | **BAT−** | J8.2 (JST −) → **J5.2** `B−` **only**. ⚠️ **B− must NOT join GND** — the DW01/FS8205 protection switches the low side between B− and OUT−. Shorting them defeats protection (✅ measured open 2026-07-18). Silk warning next to J5. |
-| **GND** | **J5.1** `OUT−` = system ground: SuperMini GND, J2 GND, J2 SCK (see below), C1−, C2, C3, C5, R2, R6, R8, U1 anode, SW2 pin B, RV1 CCW end **and RV1's two bracket lugs (pads 4/5)**, LED cathodes, TP4056 `IN−` (same node module-internally), mounting-hole pads (fenced, see §6). Because the protection FET is in the **cell-negative** leg, every carrier load — including the R1/R2 divider — returns through it and is genuinely cut at the DW01's 2.4 V trip. |
+| **GND** | **J5.1** `OUT−` = system ground: SuperMini GND, J2 GND, J2 SCK (see below), C1−, C2, C3, C5, R2, R6, R8, U1 anode, SW2 pin B, RV1 CCW end **and both ends of RV1's integrated SPST (pads 4/5 — see §5)**, LED cathodes, TP4056 `IN−` (same node module-internally), mounting-hole pads (fenced, see §6). Because the protection FET is in the **cell-negative** leg, every carrier load — including the R1/R2 divider — returns through it and is genuinely cut at the DW01's 2.4 V trip. |
 | **VBAT_OUT** | J6.2 `OUT+` → Q1 **drain** + **JP1 pin 1** (the §4.4 escape hatch). |
 | **VSW** | Q1 **source** + D2 cathode + sense divider top (R7) + **R12** + **Q2 emitter** + **JP1 pin 2** + SW1 pin 1 + testpoint TP2. Note this node is **upstream of SW1**: it is live off the cell through Q1 whenever a battery is connected, whatever position the switch is in (§4.3 state 6). |
 | **VLOAD** | SW1 pin 2 → SuperMini `5V` pin, C1 (220 µF) +, C2 (100 nF), **D3 anode (DNP)**. |
@@ -413,7 +413,7 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 | C3 | 1 | 100 nF X7R | generic | 2.54 mm radial | across R2 (ADC filter) |
 | SW1 | 1 | SPDT slide, **1 A-rated** | **SK12D07**-class (1 A); the base SS12D00G4 is only 0.3 A and WiFi TX peaks ≈ 0.35 A, so the 1 A part is required | THT | power |
 | SW2 | 1 | Tactile 6×6 mm | **TS-1102** / Omron B3F-1000 style | THT 6×6, 4-pin | MODE |
-| RV1 | 1 | 10 k linear pot, 9 mm (B10K) | **RV097NS-B10K** (5-pin, metal shaft, body 27.3 × 9.5 × 11.3 mm) | RV097NS THT (5-pin) | shaft turned directly — **no knob** (enclosure needs only a shaft hole) |
+| RV1 | 1 | 10 k linear pot, 9 mm (B10K) | **RV097NS-B10K, "5-pin mono *with switch*", right-angle** (metal shaft, body 27.3 × 9.5 × 11.3 mm) | RV097NS THT (5-pin, ⌀1.0 holes) | shaft turned directly — **no knob** (enclosure needs only a shaft hole). ⚠️ **Do not substitute the 3-pin or the vertical variant** — see the box below |
 | X, Y | — | RCA output landings (signal + AGND solder pads) | no connector part — reuse the ~50 cm RCA cables from the old sigma-delta units | 2× pad-pair | Finn solders the RCA cable leads directly; scope side uses a BNC→RCA adapter |
 | J8 | 1 | JST-PH 2-pin side entry | **S2B-PH-K-S** (JST) | THT | battery socket; cell = EEMB LP103454 2000 mAh (off-board, pre-fitted JST-PH lead) |
 | J1A/J1B | 2 | Female header 1×8 | generic 2.54 female | THT | SuperMini |
@@ -441,6 +441,32 @@ guess is answered, and the answer is no), so fit **four individual machined pins
 > C-B-E and E-B-C both exist in TO-92 across vendors. Read the lead order off the datasheet
 > of the part you actually bought and confirm **REF lands on the pad wired to VSW_SENSE**
 > (ohm it out against R7/R8 before powering up). This applies equally to the TLV431A option.
+
+> **⚠️ RV1 — buy the right one of the three RV097NS variants.** Sellers list "RV097NS"
+> against at least three different parts, and only one fits this board:
+>
+> | variant | pins | row 2 | fits? |
+> |---|---|---|---|
+> | **5-pin mono *with switch*, right-angle** | 5 | SPST, ⌀1.0 holes **5.0 mm apart, 6.25 mm behind** the pot row | ✅ **this one** |
+> | 5-pin vertical, with bracket lugs | 3 + 2 lugs | oval lug slots ~9.5 mm apart, ~7 mm behind | ❌ shaft points up; lug slots miss |
+> | 3-pin (no switch, no lugs) | 3 | — | ⚠️ pot works, two holes stay empty, and the part loses its only rear anchoring |
+>
+> The board expects the first. Its **mounting surface is 5.0 mm in front of the pot row and
+> lands exactly on the board's south edge**, so the M7×0.75 bushing and the 15 mm ⌀6 shaft
+> hang off the edge and through the enclosure wall. Identify it by the cross-section:
+> **9.5 mm wide × ~11.35 mm tall** (calipers 2026-07-18 read 9.5 × 11.3).
+>
+> **Pads 4/5 are the switch and both go to GND.** That is deliberate, not a leftover: there
+> is no safe spare GPIO to give it (GPIO0 is `MIC_OUT`; GPIO8/9 are strapping pins that must
+> be high at reset, and a switch that makes at full-CCW would hold one low and block boot;
+> GPIO21 is the console UART TX, an output). Parking both ends in the GND pour also gives
+> the part its only rear mechanical anchoring — these two 0.8 mm pins plus the panel nut are
+> all that resist the torque of a bare shaft turned by hand, because **this variant has no
+> bracket lugs**. Closing the switch shorts GND to GND and nothing happens.
+>
+> *Corrected 2026-07-27. Before that the footprint drew row 2 as two oval bracket-lug slots
+> 9.5 mm apart and 7.0 mm back — every row-2 pad 2.25 mm out in X and 0.75 mm in Y, and the
+> mounting surface 3.8 mm out. The part would not have gone into the board.*
 
 `IN+` connects via a short soldered wire from the module pad to J6b. Size it for the **whole
 board load, not a sense current**: in §4.3 state 2 the entire load runs charger → D2 → VSW
@@ -497,6 +523,13 @@ Hard placement rules:
    (`PWR`, `CUTOFF`, `MODE SW`, `NET`, `MODE`) — the button is the one that carries the
    qualifier, because `MODE` on the button and `MODE` on its LED landed side by side and
    read as one part labelled `MODE MODE`.
+   **RV1's Y is fixed by the part, not chosen** (2026-07-27): it is a right-angle pot whose
+   **mounting surface is 5.0 mm south of its wiper pad**, and that surface must land on the
+   board's south edge (y = 50) so the M7×0.75 bushing and 15 mm shaft hang off it and pass
+   through the enclosure wall. Hence the anchor at **y = 45.0**, and hence the pot body
+   reaching **8.0 mm north** of its pin row — which is what keeps it clear of R12 (1.7 mm)
+   and off the TP4056's south-west corner. Pushing RV1 further south would leave the body
+   overhanging the edge, supported by five 0.8 mm pins. Do not "tidy" this coordinate.
 3. **SuperMini at the west short edge, antenna end outboard.**
    The antenna is **flush with the module's own board edge** — it does not overhang
    anything (measured 2026-07-18, 0 mm). What does the work is a **copper/parts keep-out**
@@ -664,8 +697,8 @@ Five boxes below are still open, and they are marked ⬜ **OPEN**.
 **Bought parts**
 - [x] RCA output pads (X/Y): design item, nothing to measure — simple signal+AGND pad-pairs (~2 mm) for the reused ~50 cm RCA cable leads
 - ⬜ **OPEN** SW1 slide-switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — **switch not in hand**, so not resolvable before the order. Mitigated: the footprint carries **both** 2.0 and 2.54 mm slots, so the residual risk is body/lever fit only.
-- ⬜ **OPEN** RV1 bracket-lug geometry — the least-certain footprint on the board. *10-minute 1:1 paper-doll check with the pot in hand; **this one gates the order**.*
-- [x] RV1 = **RV097NS-B10K**, 5-pin, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — 5-pin RV097NS footprint drawn (2026-07-18)
+- [x] RV1 row-2 geometry — **was** the least-certain footprint on the board, and it **was wrong**. Redrawn 2026-07-27 from the seller's mechanical drawing + KiCad's ALPS RK097 stock footprint: SPST at ⌀1.0, 5.0 mm apart, 6.25 mm behind the pot row; mounting surface 5.0 mm in front of it, on the board edge. *A 1:1 paper-doll check with the pot in hand is still worth ten minutes — but it is now confirming a drawing, not a guess.*
+- [x] RV1 = **RV097NS-B10K**, 5-pin **mono with switch**, right-angle, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — footprint drawn 2026-07-18, **corrected 2026-07-27** (§5 box)
 
 ---
 
@@ -693,7 +726,7 @@ hand-soldered) so JLCPCB's SMT ecosystem isn't a factor either way. Total expect
 | Date | Milestone |
 |---|---|
 | ~~≤ Jul 27~~ | ✅ Caliper session (§7) done Jul 18; photogrammetry Jul 26. **§4.4 is not an order gate and has moved** to the assembled carrier (Aug 11–16) — it cannot run on the current bench (no battery or TP4056 in circuit, Q1 is SOT-23). |
-| **Jul 27–28** | The two paper-doll items that *do* gate the order: **RV1 bracket lugs** and the **TP4056 pad-row-to-edge offset** (§7). Both are 10-minute checks with parts in hand. Place the parts order with the **amended BOM** (§5: R7 8.2 k, R8 10 k, R9 1 k, D1 BAT85, U1 TL431A, 4× machined single pins). |
+| **Jul 27–28** | **RV1 row 2 is closed** — it was wrong, and the corrected geometry is in the board (§5 box); a paper-doll pass now only confirms a drawing. That leaves one order-gating item: the **TP4056 pad-row-to-edge offset** (§7), a 10-minute check with the module in hand. Place the parts order with the **amended BOM** (§5: R7 8.2 k, R8 10 k, R9 1 k, D1 BAT85, U1 TL431A, 4× machined single pins, and RV1 = the **5-pin *with switch*** variant, not the vertical/lug one). |
 | ~~Jul 28–30~~ | ✅ Layout complete Jul 26 — v1.1, 0 DRC violations at every severity. The order can go out ~5 days early. |
 | **Jul 31 – Aug 1** | **Upload gerbers, pay, DHL express** ← hard order-by date |
 | Aug 2–4 | Fab (24–48 h + weekend slack) |
@@ -747,7 +780,18 @@ cd hw/carrier
 # re-export the human-readable wiring diagram (wiring.md §3 embeds the SVG):
 kicad-cli sch export svg -o /tmp/schsvg carrier.kicad_sch && cp /tmp/schsvg/carrier.svg carrier-schematic.svg
 kicad-cli sch export pdf -o carrier-schematic.pdf carrier.kicad_sch
+# and the visual artifacts (these were previously undocumented — regenerate them
+# whenever copper, silk or a footprint moves, or they quietly go stale):
+kicad-cli pcb render --side top    -w 1544 -h 1152 --quality high -o render-top.png    carrier.kicad_pcb
+kicad-cli pcb render --side bottom -w 1544 -h 1152 --quality high -o render-bottom.png carrier.kicad_pcb
+kicad-cli pcb export pdf --layers F.Cu,F.Silkscreen,F.Fab,Edge.Cuts -o paper-doll-1to1.pdf carrier.kicad_pcb
 ```
+
+> **The renders show 3D bodies only for parts that have a model.** The seven custom
+> `HYPEROSCI.pretty` footprints (RV1, SW1, D2, J5, J6, J9, JP1 and the testpoints) carry
+> none, so they appear as bare pads and a silk outline. That is cosmetic — but it is also
+> why RV1 looked wrong in the render long before anyone noticed its *pads* were wrong, so
+> do not treat "it renders" as a footprint check. The paper doll is the footprint check.
 
 `gen_schematic.py` (v2, 2026-07-26) emits a properly-drawn wiring diagram — placed
 functional blocks, drawn power-path wiring, per-connector pin names, safety annotations —
@@ -755,9 +799,16 @@ not a netlist dump. Presentation lives in the generator; connectivity still come
 `design.py`, and the generator refuses to emit a wire whose endpoints disagree with it.
 
 Use **`/usr/bin/python3`** — `pcbnew` is only importable from KiCad's own interpreter, and a
-conda `python3` on `PATH` will fail to import it. Routing takes ~5–6 min and needs ~31 seeded
-attempts to reach zero failures with the default `ROUTE_SEED=77`; attempts 1–30 reporting
-failures is normal, do not abort early.
+conda `python3` on `PATH` will fail to import it. Routing takes ~5–6 min and needs many seeded
+attempts to reach zero failures; attempts reporting failures is normal, do not abort early.
+
+> **`ROUTE_SEED` is board-specific and goes stale.** The default is **11** (2026-07-27);
+> it was 77 until RV1's corrected footprint moved five pads and slid the part 2.5 mm north.
+> That alone was enough: with seed 77 the router's phase D ended `STUCK — 3 clusters left`
+> and DRC reported two unconnected `GND_main` islands. **A stale seed does not fail loudly —
+> it fails as a severed ground pour.** Whenever copper moves, re-sweep with
+> `/usr/bin/python3 tools/search.py --stage router` and adopt the winner, rather than
+> assuming the old seed still holds.
 
 The three gates, all of which must be clean before plotting gerbers:
 

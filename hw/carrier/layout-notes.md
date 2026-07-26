@@ -1,16 +1,19 @@
-# carrier layout notes (v1.1, 2026-07-26)
+# carrier layout notes (board v1.1, notes updated 2026-07-27)
 
 Fully routed and clean: `kicad-cli pcb drc --severity-all` reports **0 violations
-of any severity** and **0 unconnected items**. 1267 track segments, 45 GND vias,
+of any severity** and **0 unconnected items**. 1228 track segments, 50 GND vias,
 30 GND through-hole pads. Worst GND stitch gap anywhere outside the antenna
 keep-out: **7.8 mm** (gate: 12 mm).
 
-**Zero 90° track corners.** Of the 1165 two-way track vertices, **1154 are true
-135° mitres**; 5 are collinear, 5 obtuse, and the single acute one (45°) is two
-traces fanning out from R1's pad — wide copper, no notch, not a routed corner.
-(There are also 154 track endpoints and 13 tees, which have no interior angle.
-An earlier version of this line said "1174 of 1194", which does not reproduce
-under any counting rule — these are the measured numbers.)
+**Zero 90° track corners.** Of the 1146 two-way track vertices, **1133 are true
+135° mitres**; 4 are collinear and 7 otherwise obtuse. The 2 acute ones are
+traces fanning out from a pad — SW2 pad 1 (`BTN_MODE`) and Q1 pad 3
+(`VBAT_OUT`) — wide copper, no notch, not routed corners. (There are also 150
+track endpoints and 4 tees, which have no interior angle.)
+
+*v1.1's counts were 1267/45/1154-of-1165 with one acute corner; they moved
+because RV1's corrected footprint forced a fresh route on a new seed — see
+"What the 2026-07-27 pot correction changed".*
 
 **On schematic parity:** this used to claim "0 schematic-parity items". That was
 never measured — `kicad-cli pcb drc` only reports parity when passed
@@ -140,6 +143,75 @@ Two things were tried and rejected, recorded so they are not retried blind:
   8.6 mm against a 12 mm gate) and is one command away:
   `ROUTE_WIDTH_FLOOR='{"VLOAD": 0.6, "VSW": 0.6}' /usr/bin/python3 tools/route.py`.
   Left as a v1.2 decision rather than taken unilaterally.
+
+## What the 2026-07-27 pot correction changed
+
+This one *did* touch copper, and it is the only change so far that would have
+scrapped the boards.
+
+**RV1's footprint was a drawing of the wrong part.** `RV097NS_Vertical` had row 2
+as two oval bracket-lug slots 9.5 mm apart and 7.0 mm behind the pot row, taken
+"from the common RV09 drawing" and flagged as unverified since the first commit.
+The actual part is **5-pin mono *with switch*, right-angle**: row 2 is a plain
+SPST on ⌀1.0 holes **5.0 mm apart, 6.25 mm behind** the pot row, and the
+**mounting surface is 5.0 mm in front of** it, not 1.2 mm. Every row-2 pad was
+2.25 mm out in X and 0.75 mm in Y. The part would not have gone in.
+
+Settled by the seller's mechanical drawing, which agrees to the decimal with
+KiCad's stock `Potentiometer_Alps_RK097_Single_Horizontal_Switch` (from ALPS
+`rk097.pdf`) — and, independently, by the drawing's 9.5 × 11.35 mm cross-section
+matching the 2026-07-18 calipers' 9.5 × 11.3.
+
+Consequences that were not obvious:
+
+- **RV1's Y stopped being a free parameter.** The mounting surface has to land
+  on the board's south edge, so the anchor (the wiper pad) is pinned at
+  **y = 45.0**, 2.5 mm north of where it sat. `gen_board.py` says so in a
+  comment; do not "tidy" it.
+- **Seed 77 died with it.** Moving five pads was enough to break the routing
+  seed: phase D ended `STUCK — 3 clusters left, no legal bridge spot`, and DRC
+  reported 2 unconnected `GND_main` zone islands. This is the same pour-severing
+  failure the VLOAD width sweep hit above. **A stale seed does not fail loudly —
+  it fails as a severed pour**, so re-sweep whenever copper moves.
+
+  A 24-variant sweep (6 seeds × 4 halo settings, `tools/search.py --spec`) put
+  the damage in context — only **3 of 24** came back fully clean:
+
+  | variant | unconn | unrouted | gap | segments | |
+  |---|---|---|---|---|---|
+  | halo-off, **seed 11** | 0 | 0 | **7.81** | **1227** | ✅ adopted |
+  | halo-off, seed 33 | 0 | 0 | 7.81 | 1349 | ✅ |
+  | halo 1.0×1.5, seed 33 | 0 | 0 | 7.81 | 1522 | ✅ |
+  | halo-off, **seed 77** | **2** | 0 | 8.6 | 1189 | ❌ the old default |
+  | halo 1.3×4.0, any seed | 0 | 0 | 8.6 | 1672 | ⚠️ identical for all 6 seeds, and all 6 carried the mitre bug below |
+
+  Seed 11 is now `route.py`'s default, with 77 recorded beside it. ("halo-off"
+  is `ROUTE_GND_HALO_MM=0`; the repo default of 1.3 mm behaves the same, because
+  the halo's *cost* is 0 and that is what gates it.)
+- **A latent router bug surfaced.** Five of the 24 variants carried one
+  `track_dangling`: `mitre_board` was building a zero-length "mitre" at a
+  degenerate vertex — two legs leaving the same point in the *same* direction, a
+  doubled-back spike rather than a corner, which the dot-product filter lets
+  through whenever the spike is under 0.5 mm. Fixed at the source (skip before
+  mutating), plus a phase F sweep that drops any zero-length track before the
+  pour is filled.
+- **A neighbour's designator was sitting inside RV1's body.** `find_spot`
+  seeded its occupancy map with the bounding box of each individual silk
+  *stroke*, and a rectangle's four strokes are slivers — so the enclosed area
+  read as free and `SW2`'s designator, walked ~9 mm east by the outward ring,
+  landed inside the pot's outline where it reads as the pot's label. (Same
+  family as the `MODE MODE` collision §6.1 rule 2 already records.) Fixed by
+  filling the hull of any footprint whose silk spans more than `BODY_MM` = 8 mm
+  in both axes — swept, not guessed: at 4 mm and 6 mm the small outlines fill
+  too and R8's designator runs out of room. `SW2` then wants TP3's gap, so TP3
+  gained a `REF_PREFER` entry, which places it first. `SILK_UNPLACED` stays 0.
+- **The switch is real, and it is parked.** Pads 4/5 are an SPST, not lugs, and
+  both go to GND — deliberately. There is no safe spare GPIO (GPIO0 is
+  `MIC_OUT`; GPIO8/9 are strapping pins that must be high at reset, and this
+  switch makes at one end of rotation; GPIO21 is the console UART TX, an
+  output), and this variant has **no bracket lugs**, so soldering both pins into
+  the pour is the part's only rear anchoring against a bare shaft turned by
+  hand. Closing the switch shorts GND to GND.
 
 ## Module fit — measured, not assumed
 
@@ -359,8 +431,18 @@ floorplan room, not just a bigger number.
    `paper-doll-1to1.pdf` is current.
 2. **SW1 pitch unknown** until the part arrives — footprint is dual-pitch
    (slots accept 2.0 AND 2.54 mm), but verify the body/lever fits.
-3. **RV1 (RV097NS) bracket lug geometry** is from the generic RV09 drawing —
-   least-certain footprint on the board; check on the paper doll.
+3. ~~**RV1 (RV097NS) bracket lug geometry** is from the generic RV09 drawing —
+   least-certain footprint on the board~~ — **RESOLVED 2026-07-27, and it was
+   wrong.** The part is *5-pin mono with switch*, right-angle: row 2 is an SPST
+   on ⌀1.0 holes 5.0 mm apart and 6.25 mm behind the pot row, not two oval lug
+   slots 9.5 mm apart and 7.0 mm behind. Every row-2 pad was 2.25 mm out in X
+   and 0.75 mm in Y, and the mounting surface 3.8 mm out — the part would not
+   have gone in. Redrawn from the seller's mechanical drawing, which matches
+   KiCad's stock `Potentiometer_Alps_RK097_Single_Horizontal_Switch` exactly.
+   **RV1's Y is now constrained, not chosen:** the mounting surface is 5.0 mm
+   south of the anchor (the wiper pad), so y=45.0 lands it on the board's south
+   edge with the bushing and shaft overhanging. A paper-doll pass is still
+   worth doing, but it now confirms a drawing rather than a guess.
 4. **TP4056 pad-row edge offset**: the pad *pitches* are now measured, but how
    far the row sits from the module's short edge is not, so the module may sit
    shifted N/S on J5/J6. Region y 24–41 has margin; check.

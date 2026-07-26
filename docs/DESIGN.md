@@ -37,7 +37,7 @@ UNO-Q (WiFi AP, 2.4 GHz) ──UDP──▶ 4× [ESP32-C3 ──I2S──▶ PCM
 | 5 | LiPo 3.7 V — **selected: EEMB LP103454, 2000 mAh** (34×56×11 mm, ~40 g, pre-fitted JST) | power | — | mounted off-board (loose in the enclosure, velcro/pocket); 1000 mAh is a smaller-cell reference only |
 | 6 | Carrier PCB (this project) | ties it all together | ~€1–2/board | v1.1 laid out; THT except Q1 (SOT-23) + D2 (SMA) |
 
-Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (1 A-rated, SS12D00-class — WiFi TX peaks ~0.35 A), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff; **RV097NS** 9 mm PCB-mount, B10K, 5-pin, metal shaft turned directly — no knob), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
+Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (1 A-rated, SS12D00-class — WiFi TX peaks ~0.35 A), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff; **RV097NS** 9 mm PCB-mount, B10K, 5-pin **mono with switch**, right-angle, metal shaft turned directly — no knob; the switch is unused, both ends on GND), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
 
 ## 4. Canonical pin map (ESP32-C3 SuperMini)
 
@@ -186,7 +186,7 @@ Target carrier PCB: **70 × 50 mm**, 2-layer, through-hole **except Q1 (SOT-23) 
 
 **Enclosure:** 3D-printed case; the carrier keeps its 4× M3 mounting holes and its JST-PH battery socket. The 2000 mAh LiPo (34 × 56 × 11 mm) rides **off-board**, loose in the enclosure (velcro/pocket), since it is large relative to the 70 × 50 mm carrier.
 
-**Panel controls:** power = **1 A-rated slide switch** (SS12D00-class, for the ~0.35 A WiFi TX peak). Filter-cutoff pot = **RV097NS** 9 mm PCB-mount (B10K, 5-pin, body 27.3 × 9.5 × 11.3 mm); its **metal shaft is turned directly — no knob**, so the enclosure needs only a shaft hole (resolved 2026-07-18).
+**Panel controls:** power = **1 A-rated slide switch** (SS12D00-class, for the ~0.35 A WiFi TX peak). Filter-cutoff pot = **RV097NS** 9 mm PCB-mount (B10K, **5-pin mono *with switch*, right-angle**, body 27.3 × 9.5 × 11.3 mm); its **metal shaft is turned directly — no knob**, so the enclosure needs only a shaft hole (resolved 2026-07-18). The pot's **mounting surface sits on the board's south edge** and its M7×0.75 bushing + 15 mm shaft protrude through the enclosure wall — the panel nut is structural, since a bare shaft turned by hand puts torque into a part with no bracket lugs (geometry corrected 2026-07-27, [hardware/pcb.md](hardware/pcb.md) §5).
 
 ## 12. Verification checklist
 

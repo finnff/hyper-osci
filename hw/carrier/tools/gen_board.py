@@ -112,11 +112,15 @@ P = {
     "R10": (55.88, 6.35, 0), "R11": (44.45, 4.06, 180),
     "C4": (60.5, 9.5, 270), "C5": (31.5, 25.5, 0),
     # controls along the south edge (H3 court..H4 court = x 7.5..62.5).
-    # RV1 is 11.3mm tall and had to slide west: its body reaches 9.2mm north
+    # RV1 is 11.3mm tall and had to slide west: its body reaches 8.0mm north
     # of its pins and was fouling the TP4056 module's south-west corner.
+    # RV1's Y is NOT free: the anchor is the wiper pad, and the pot's mounting
+    # surface is 5.0mm south of it, so 45.0 puts that surface exactly on the
+    # board's south edge (y=50) with the bushing and shaft hanging off it.
+    # Moving RV1 south again would leave the body overhanging unsupported.
     "D4": (9.9, 46.99, 0), "D5": (15.5, 46.99, 0),
     "SW2": (21.5, 43.0, 0),           # anchor = pad1 corner (pads +x/+y)
-    "RV1": (36.8, 47.5, 0), "SW1": (49.98, 46.0, 0),
+    "RV1": (36.8, 45.0, 0), "SW1": (49.98, 46.0, 0),
     "R4": (8.9, 40.9, 0), "R5": (14.5, 41.28, 0),
     "TP1": (67.31, 21.59, 0), "TP2": (39.0, 30.0, 0),
     "TP3": (21.0, 37.5, 0), "TP4": (37.5, 28.0, 0),
@@ -296,12 +300,31 @@ def _free(b):
 
 # Seed the occupancy map: exposed copper (silk over a pad is a real defect),
 # then every graphic the footprints themselves put on the front silk.
+#
+# A body OUTLINE needs its interior occupied too, not just the four strokes.
+# Each stroke's own bounding box is a sliver, so the enclosed area read as free
+# and a neighbour's designator could land inside another part's outline —
+# which is how "SW2" ended up sitting inside RV1's body, reading as the pot's
+# label. Anything whose silk spans more than BODY_MM in both axes is a body
+# outline rather than a mark (a polarity tick, a pin-1 dot, a "+"), so fill it.
+# 8.0 is swept, not guessed: at 4.0 and 6.0 the small part outlines fill too and
+# R8's designator has nowhere left to go.  At 8.0, RV1 is currently the only
+# footprint that qualifies -- the rule is general, its bite today is not.
+BODY_MM = 8.0
 for _fp in board.GetFootprints():
     for _p in _fp.Pads():
         occupied.append(_box_of(_p))
+    _silk = []
     for _g in _fp.GraphicalItems():
         if _g.GetLayer() == pcbnew.F_SilkS:
-            occupied.append(_box_of(_g))
+            _b = _box_of(_g)
+            occupied.append(_b)
+            _silk.append(_b)
+    if _silk:
+        _hull = (min(b[0] for b in _silk), min(b[1] for b in _silk),
+                 max(b[2] for b in _silk), max(b[3] for b in _silk))
+        if _hull[2] - _hull[0] > BODY_MM and _hull[3] - _hull[1] > BODY_MM:
+            occupied.append(_hull)
 
 # Candidate directions, nearest-first: the four cardinals, then the diagonals,
 # then half-diagonals so a designator can slide along the long side of a part
@@ -554,6 +577,13 @@ REF_PREFER = {
     "JB1": ((0, -1),), "JA1": ((0, 1),), "J2": ((-1, 0),), "J3": ((0, -1),),
     "J5": ((-1, 0),), "J6": ((-1, 0),), "J4": ((1, 0),),
     "R10": ((0, -1),), "R11": ((0, -1),),
+    # TP3 goes early and westward, because SW2's designator wants the same gap.
+    # SW2 is boxed in by D5/R5/TP3 and the board edge, and before the body-fill
+    # above its designator walked ~9 mm east, landing INSIDE RV1's outline where
+    # it read as the pot's label. With the fill it settles at SW2's north-east
+    # corner instead -- but it gets there by taking TP3's spot, so TP3 is placed
+    # first (REF_PREFER members go before everything else). Both then fit.
+    "TP3": ((-1, 0), (0, -1)),
 }
 for ref in sorted(fps, key=lambda r: (r not in REF_PREFER, r)):
     r = fps[ref].Reference()

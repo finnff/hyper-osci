@@ -120,21 +120,60 @@ footprint("SW_Slide_SPDT_DualPitch",
            rect(-5.0, -2.5, 5.0, 2.5, "F.CrtYd", 0.05),
            text("dual-pitch 2.0/2.54", 0, 3.5, "F.Fab", 0.8)])
 
-# --- 3. RV097NS 9mm pot, 5-pin (measurements.md: body 27.3x9.5x11.3, metal
-# shaft, no knob). Terminals P2.5mm; bracket lugs from the common RV09 drawing
-# -- lug positions are the least-certain numbers here => paper-doll VERIFY. ---
-footprint("RV097NS_Vertical",
-          "RV097NS 9mm pot B10K 5-pin: 1=CCW 2=wiper 3=CW + 2 bracket lugs. Lug geometry from RV09 drawing - VERIFY paper-doll",
+# --- 3. RV097NS 9mm pot, 5-pin "MONO (with Switch)" -- RIGHT-ANGLE, side-adjust.
+#
+# CORRECTED 2026-07-27.  Everything drawn here before that date was a VERTICAL
+# pot with two mechanical bracket lugs (pads at +/-4.75, -7.0, oval 1.2x2.0
+# slots) copied from "the common RV09 drawing".  The real part has NO bracket
+# lugs at all: row 2 is a genuine SPST switch on the same 1.0mm drill as the
+# rest, 2.25mm further in and 0.75mm further south than we had it.  The part
+# would not have gone into the board.  gen_footprints had flagged those lug
+# numbers as the least-certain on the board since the first commit, and pcb.md
+# listed the paper-doll check as order-gating; this is that check, done.
+#
+# Source: the seller's mechanical drawing ("5Pin Mono (with Switch)",
+# https://i.ebayimg.com/images/g/3KIAAOSwd9VjM8EZ/s-l1600.webp), cross-checked
+# against KiCad's stock Potentiometer_Alps_RK097_Single_Horizontal_Switch
+# (drawn from ALPS rk097.pdf).  The two agree to the last decimal.
+#
+# MOUNTING HOLE DETAIL, walking back from the mounting surface:
+#     mounting surface --5.00--> pot row   (1,2,3 @ 2.5 pitch, 5.0 span)
+#                      --6.25--> switch row (S1,S2 5.0 apart, in line with 1/3)
+#     5 holes dia 1.0 +0.2/-0.0, for 0.8mm flat pins.
+# Body 9.5 wide x 13.0 deep x ~11.35 tall (6.5 shaft axis + 4.85); shaft dia 6.0
+# on an M7x0.75 bushing, 15mm proud of the mounting surface.  The 9.5 x 11.35
+# cross-section is exactly the 2026-07-18 calipers (9.5 x 11.3), which is the
+# independent confirmation that this drawing is our part.
+#
+# ORIENTATION HERE: pot row on y=0, body extends NORTH (-y), mounting surface
+# at y=+5.0.  gen_board puts that surface ON the board's south edge (y=50), so
+# the bushing and shaft hang off the edge and RV1's pot row sits at y=45.0.
+# Pads 4/5 are the switch, both parked on GND -- see design.py for why.
+_MNT = 5.0                                  # mounting surface, south of the pot row
+footprint("RV097NS_Horizontal_Switch",
+          "RV097NS 9mm pot B10K, 5-pin mono WITH SWITCH, right-angle. 1=CCW 2=wiper 3=CW, 4/5=SPST. Mounting surface +5.0mm south of the pot row - put it ON the board edge",
           [pad_tht(1, -2.5, 0, 2.0, 1.0, "rect"),
            pad_tht(2, 0, 0, 2.0, 1.0),
            pad_tht(3, 2.5, 0, 2.0, 1.0),
-           pad_tht(4, -4.75, -7.0, (2.4, 3.2), (1.2, 2.0), "oval"),
-           pad_tht(5, 4.75, -7.0, (2.4, 3.2), (1.2, 2.0), "oval"),
-           # body outline stands 0.45mm clear of the bracket-lug pads; at the
-           # old +/-6.0 x -8.7 it grazed them (silk-over-copper)
-           rect(-6.4, -9.1, 6.4, 1.2),
-           text("shaft", 0, -10.4, "F.Fab", 0.8),
-           rect(-6.9, -9.6, 6.9, 1.7, "F.CrtYd", 0.05)])
+           pad_tht(4, -2.5, -6.25, 2.0, 1.0),
+           pad_tht(5, 2.5, -6.25, 2.0, 1.0),
+           # Silk: three sides only.  The fourth side IS the mounting surface,
+           # which lands on Edge.Cuts -- silk there would be a plot violation,
+           # so it stops 0.4mm short and the board edge draws the face.
+           line(-4.75, -8.0, 4.75, -8.0),
+           line(-4.75, -8.0, -4.75, _MNT - 0.4),
+           line(4.75, -8.0, 4.75, _MNT - 0.4),
+           text("SW", 0, -7.1, "F.SilkS", 0.8),   # 0.8 is the board minimum
+           # F.Fab carries the true body plus the bushing and shaft, which are
+           # off-board.  Fab is documentation only (not in the JLCPCB set) and
+           # is what the 1:1 paper doll plots, so the shaft belongs here.
+           rect(-4.75, -8.0, 4.75, _MNT, "F.Fab", 0.1),
+           rect(-3.5, _MNT, 3.5, _MNT + 5.0, "F.Fab", 0.1),      # M7x0.75 bushing
+           rect(-3.0, _MNT + 5.0, 3.0, _MNT + 15.0, "F.Fab", 0.1),  # dia 6 shaft
+           text("shaft 15mm, off-board", 0, _MNT + 16.2, "F.Fab", 0.8),
+           # Courtyard covers the on-board body only; the shaft overhangs the
+           # board edge where nothing can collide with it.
+           rect(-5.0, -8.3, 5.0, _MNT + 0.3, "F.CrtYd", 0.05)])
 
 # --- 4. JP1 power-path escape hatch (pcb.md §4.4): 2.54mm 0R/solder jumper ---
 footprint("SolderJumper_P2.54",

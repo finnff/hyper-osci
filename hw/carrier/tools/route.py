@@ -35,12 +35,20 @@ board = pcbnew.LoadBoard(PCB)
 # Search knobs.  Net order decides whether the board routes at all and the GND
 # halo decides whether the pour survives it, and neither has an analytic best
 # value — tools/search.py sweeps them in parallel.  Defaults = shipped board.
-# Seed 77, not an arbitrary one: tools/search.py swept ten seeds in parallel and
-# this is the only one whose pour comes out whole with NO repair at all — phase
-# D finds a single cluster in round 0 and places zero bridging vias.  It also
-# stitches denser (45 GND vias, worst gap 7.8mm) and routes shorter (1267
-# segments) than the runner-up.  Reproducibility, not luck: same seed, same board.
-SEED = int(os.environ.get("ROUTE_SEED", "77"))
+# The seed is chosen, not arbitrary: tools/search.py sweeps seeds in parallel
+# and the winner is the one whose GND pour comes out whole with no repair, then
+# stitches densest and routes shortest.  It is board-geometry-specific, so it
+# has to be re-swept whenever copper moves.
+#
+#   seed 77  — chosen 2026-07-26, correct for the board as it stood then.
+#   seed 11  — chosen 2026-07-27, after RV1's footprint was corrected (its five
+#              pads moved and it slid 2.5 mm north).  That was enough to break
+#              77: phase D ended STUCK with 3 unbridgeable pour clusters and
+#              DRC reported 2 unconnected zone islands.  A 24-variant sweep
+#              (6 seeds x 4 halo settings) found 11 clean at the default halo —
+#              1227 segments, worst stitch gap 7.81 mm, zero repair.
+#              A stale seed does not fail loudly, it fails as a severed pour.
+SEED = int(os.environ.get("ROUTE_SEED", "11"))
 # The GND halo makes it expensive to route through the ring around a GND
 # through-hole, on the theory that a signal hugging one walls the pad off into
 # its own fill fragment.  Swept: it costs routability (1-2 nets left unrouted)
@@ -554,14 +562,21 @@ def mitre_board(board, rounds=8, max_cut=0.6):
             d = min(max_cut, w, legs[0][4], legs[1][4], pad_limit(p))
             if d < 0.02:
                 continue
-            pts = []
-            for t, which, ux, uy, n in legs:
-                q = VECTOR2I(p[0] + int(ux * d * 1e6), p[1] + int(uy * d * 1e6))
+            pts = [VECTOR2I(p[0] + int(lg[2] * d * 1e6), p[1] + int(lg[3] * d * 1e6))
+                   for lg in legs]
+            # A degenerate vertex — two legs leaving p in the *same* direction,
+            # i.e. a doubled-back spike rather than a corner — puts both cut
+            # points on the same spot, and the "mitre" comes out zero-length.
+            # DRC reports that as track_dangling. The dot filter above lets
+            # these through when the spike is shorter than 0.5 mm, so catch it
+            # here, before anything is mutated.
+            if pts[0].x == pts[1].x and pts[0].y == pts[1].y:
+                continue
+            for (t, which, _ux, _uy, n), q in zip(legs, pts):
                 if n - d < 1e-4:                  # leg fully consumed
                     dead.append(t)
                 else:
                     (t.SetStart if which == 0 else t.SetEnd)(q)
-                pts.append(q)
             nt = pcbnew.PCB_TRACK(board)
             nt.SetStart(pts[0]); nt.SetEnd(pts[1])
             nt.SetWidth(int(w * 1e6))
@@ -953,6 +968,16 @@ for rnd in range(6):
         break
 print(f"phase D: {nD} cluster-bridging vias")
 print(f"phase E: pruned {nE} dangling GND vias (folded into the D rounds)")
+
+# Safety net: any zero-length track, whatever produced it, is a
+# `track_dangling` DRC hit and never carries current. Drop them before the
+# fill, so the pour sees the same copper DRC will.
+_degenerate = [t for t in board.GetTracks()
+               if t.Type() == pcbnew.PCB_TRACE_T
+               and t.GetStart() == t.GetEnd()]
+for t in _degenerate:
+    board.Remove(t)
+print(f"phase F: pruned {len(_degenerate)} zero-length tracks")
 
 filler = pcbnew.ZONE_FILLER(board)
 filler.Fill(board.Zones())

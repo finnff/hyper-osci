@@ -172,16 +172,21 @@ defsym("SW_PUSH", [("1", "~", -4, 0, 0, 2), ("2", "~", 4, 0, 180, 2)],
         SL([(-2.54, 1.27), (2.54, 1.27)], w=0.3),
         SL([(0, 1.27), (0, 2.54)], w=0.3)])
 
-# --- potentiometer, 5-pin (RV097NS): CW top, CCW bottom, wiper right,
-#     bracket lugs (mechanical, grounded) exit left ---
+# --- potentiometer, 5-pin (RV097NS "mono with switch"): CW top, CCW bottom,
+#     wiper right.  Pins 4/5 exit left and are an SPST that makes at one end of
+#     rotation -- NOT bracket lugs (that was wrong until 2026-07-27; the part
+#     has none).  Drawn DETACHED from the resistor body, because it is: the
+#     switch shares only the package, no copper.  See design.py on why both
+#     ends sit on GND. ---
 defsym("POT5", [("1", "CCW", 0, -4, 90, 2), ("2", "W", 4, 0, 180, 2),
-                ("3", "CW", 0, 4, 270, 2), ("4", "LUG", -4, 1, 0, 2),
-                ("5", "LUG", -4, -1, 0, 2)],
+                ("3", "CW", 0, 4, 270, 2), ("4", "S1", -4, 1, 0, 2),
+                ("5", "S2", -4, -1, 0, 2)],
        [SR(-1.016, -2.54, 1.016, 2.54),
         SL([(2.54, 0), (1.7, 0)]),
         arrowhead((2.54, 0), (1.016, 0), 1.0, 0.4, 0.9),
-        SL([(-2.54, 1.27), (-1.016, 1.27)]),
-        SL([(-2.54, -1.27), (-1.016, -1.27)])],
+        SL([(-2.0, 0.7), (-2.0, 1.3)]),      # S1 contact
+        SL([(-2.0, -1.3), (-2.0, -0.7)]),    # S2 contact
+        SL([(-2.0, -1.0), (-1.35, 1.35)])],  # blade, hinged on S2
        hide_nums=False, hide_names=True, num_size=0.7)
 
 # --- solder jumper (open) ---
@@ -583,6 +588,8 @@ PS("GND", 104, 136)
 W("POT_WIPER", ("RV1", 2), (112, 130))
 L("POT_WIPER", 112, 130)
 T("CW = higher cutoff", 110, 135, 0.9)
+T("pins 4/5 = end-of-travel SPST, unused:", 90, 138.5, 0.9)
+T("both ends on GND (see design.py)", 90, 140.5, 0.9)
 
 place("SW2", 104, 148, refpos=(100, 143.5, "left"), valpos=(108, 143.5, "left"))
 LP("SW2", 1, 180)
