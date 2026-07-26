@@ -46,7 +46,7 @@ Sync target ±5 ms via 500 ms beacons; the stream deliberately runs ~450 ms ahea
 | [docs/firmware/esp32-architecture.md](docs/firmware/esp32-architecture.md) | Slave firmware architecture (tasks, drivers, buffers) |
 | [docs/osci-render-feature-port-feasibility.md](docs/osci-render-feature-port-feasibility.md) | What else is worth porting from osci-render (fonts, SVG, effects), measured on the board — and the 6 bugs found while looking, all now fixed (§1) |
 | [docs/performance-heat-analysis.md](docs/performance-heat-analysis.md) | Why the slave runs hot and why streaming dropped (2026-07-18), with the prioritized fix plan |
-| [FURTHER_CLARIFICATION_NEEDED.md](FURTHER_CLARIFICATION_NEEDED.md) | Open questions for Finn |
+| [docs/hardware/pcb-review-findings.md](docs/hardware/pcb-review-findings.md) | 2026-07-26 adversarial design review of the carrier's §4 power path (findings + verdicts) |
 | [docs/research/](docs/research/) | Historical planning docs — superseded where they conflict with DESIGN.md |
 
 Research index: [v3.md](docs/research/v3.md) (feasibility) · [v3.1-requirements.md](docs/research/v3.1-requirements.md) (confirmed requirements) · [v3.2-dual-dac.md](docs/research/v3.2-dual-dac.md) (DAC selection) · [UNO-Q_controller.md](docs/research/UNO-Q_controller.md) (controller architecture — note: its whole software stack is illustrative and was NOT built as described: no FastAPI/WebSocket/hostapd, and its 5 GHz AP config is wrong — see DESIGN.md §2 and src/unoq-controller/README.md for what exists) · [esp32-c3-vs-s3.md](docs/research/esp32-c3-vs-s3.md) · [arduino-uno-r4-option.md](docs/research/arduino-uno-r4-option.md) · [README-original.md](docs/research/README-original.md)
@@ -91,7 +91,7 @@ docs/                 all documentation (DESIGN.md = canon)
   PLAN.md             5-week execution plan
 src/esp32-slave/      PlatformIO project — slave firmware
 src/unoq-controller/  UNO-Q controller app (streamer + renderer + web UI, deployed)
-FURTHER_CLARIFICATION_NEEDED.md
+hw/carrier/           KiCad carrier PCB — generated end-to-end by tools/*.py
 ```
 
 The repo root also carries two gitignored third-party binaries: `arduino-flasher-cli` (UNO-Q Debian flasher) and `osci-render-premium-linux.zip` (x86-64 only — does not run on the aarch64 UNO-Q; kept for desktop reference. The controller renders natively instead, see [docs/text-rendering-findings.md](docs/text-rendering-findings.md)).
@@ -100,4 +100,4 @@ The repo root also carries two gitignored third-party binaries: `arduino-flasher
 
 Slave firmware build/flash instructions: **[src/esp32-slave/README.md](src/esp32-slave/README.md)** (PlatformIO + pioarduino platform, USB-C CDC console).
 
-One rule worth repeating from DESIGN.md §9: **during breadboard bring-up, never plug in USB-C while the battery power switch is ON** — SuperMini clones tie VBUS to the 5 V pin (meter-confirmed 2026-07-18) and would back-feed the battery. Flash with the switch OFF. The carrier PCB's load-sharing power path removes this rule on final boards.
+One rule worth repeating from DESIGN.md §9: **during breadboard bring-up, never plug in USB-C while the battery power switch is ON** — SuperMini clones tie VBUS to the 5 V pin (meter-confirmed 2026-07-18) and would back-feed the battery. Flash with the switch OFF. The carrier PCB's load-sharing power path is *intended* to remove this rule, but design review (2026-07-26) found the SuperMini-side detection unreliable against a sagging laptop port — so treat the rule as permanent until `docs/hardware/pcb.md` §4.4 passes on an assembled board.

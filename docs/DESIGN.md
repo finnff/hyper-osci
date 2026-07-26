@@ -35,7 +35,7 @@ UNO-Q (WiFi AP, 2.4 GHz) ──UDP──▶ 4× [ESP32-C3 ──I2S──▶ PCM
 | 3 | MAX4466 electret mic module | fallback/hybrid audio input | €1.50 | already owned ×4 |
 | 4 | TP4056 charger module (**USB-C variant**, blue PCB 17×27 mm, **with** DW01+FS8205 protection) | LiPo charging + protection | €0.50 | 1 A default charge kept (RPROG swap to 0.5 A optional); **mandate 5 V / 2 A wall chargers** so 1 A (~0.5C, full ~2.5–3 h) is safe |
 | 5 | LiPo 3.7 V — **selected: EEMB LP103454, 2000 mAh** (34×56×11 mm, ~40 g, pre-fitted JST) | power | — | mounted off-board (loose in the enclosure, velcro/pocket); 1000 mAh is a smaller-cell reference only |
-| 6 | Carrier PCB (this project) | ties it all together | ~€1–2/board | to design, THT only |
+| 6 | Carrier PCB (this project) | ties it all together | ~€1–2/board | v1.1 laid out; THT except Q1 (SOT-23) + D2 (SMA) |
 
 Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (1 A-rated, SS12D00-class — WiFi TX peaks ~0.35 A), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff; **RV097NS** 9 mm PCB-mount, B10K, 5-pin, metal shaft turned directly — no knob), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
 
@@ -96,6 +96,11 @@ Key electrical facts (⚠️ VERIFY items covered in verification checklist §12
 
 **Modes:** `LOCAL` (mic only), `NETWORK` (stream only, auto-falls-back to local if stream lost >1 s), `HYBRID` (stream + mic mixed 50 %). Boot default: NETWORK with auto-fallback (i.e. power-on with no controller ⇒ behaves like the old mic units within ~6 s: 5 s WiFi timeout + 1 s stream timeout).
 
+> **Open (not blocking anything):** HYBRID mixes each slave's *own* mic (`HYBRID_MIC_GAIN` 50 %,
+> saturating add — see [firmware/esp32-architecture.md](firmware/esp32-architecture.md)). The
+> alternative — one mic into the UNO-Q, mixed centrally into all four streams — is a possible v2.
+> Per-slave local mixing is canon until Finn says otherwise.
+
 **LED semantics:**
 
 | LED | Pattern | Meaning |
@@ -144,7 +149,9 @@ LiPo ──▶ TP4056 module (charge via its own USB; DW01 protection) ──▶
      LiPo+ ──▶ 100k/100k divider ──▶ GPIO1 (always connected, 21 µA)
 ```
 
-**Breadboard/bring-up rule:** never have the power switch ON while the SuperMini USB-C is plugged in (most SuperMini clones tie VBUS straight to the 5 V pin — USB would back-feed the battery). Flash/debug on USB with switch OFF. The carrier PCB adds a proper load-sharing power path (P-FET + Schottky, both VBUS sources diode-ORed into the gate) so this rule disappears on the final boards — see [hardware/pcb.md](hardware/pcb.md).
+**Breadboard/bring-up rule:** never have the power switch ON while the SuperMini USB-C is plugged in (most SuperMini clones tie VBUS straight to the 5 V pin — meter-confirmed on ours — so USB would back-feed the battery). Flash/debug on USB with switch OFF.
+
+**On the carrier PCB the rule is *conditionally* retired, not deleted.** The load-sharing path is a P-FET + Schottky, but the two OR terms are not symmetric: the charger's VBUS is a real diode into the gate, while the SuperMini's VBUS **cannot** be — it *is* the load node, so a diode there self-biases the gate. That term is a voltage threshold on the load node instead (pcb.md §4.1). Design review (2026-07-26) found that threshold cannot reliably distinguish a sagging USB port from a charged cell, so **the rule stands unless the block is populated and passes the amended bench test**; a JP1-bridged board keeps it permanently. See [hardware/pcb.md](hardware/pcb.md) §4.
 
 **Budget (estimates, to be measured in week 1):** the **selected cell is 2000 mAh** (EEMB LP103454) — plan around **~13 h NETWORK / ~30 h LOCAL**, comfortably clearing the ~10 h runtime target. The 1000 mAh column is retained as a smaller-cell reference only.
 
@@ -166,14 +173,14 @@ Details/derivation: [hardware/power-budget.md](hardware/power-budget.md).
 
 ## 11. Mechanical / size
 
-Target carrier PCB: **~70 × 50 mm**, 2-layer, all through-hole, modules socketed on female headers. Module footprints (⚠️ measure real modules before layout — see checklist):
+Target carrier PCB: **70 × 50 mm**, 2-layer, through-hole **except Q1 (SOT-23) and D2 (SMA)**, both on enlarged hand-solder pads. Modules are socketed on female headers — **except the TP4056**, whose four pads are not on a 2.54 grid and take four machined single pins or soldered wires (pcb.md §2). Module footprints (✅ measured 2026-07-18, pin positions from photogrammetry 2026-07-26):
 
 | Module | Approx. size | Mounting |
 |--------|--------------|----------|
 | ESP32-C3 SuperMini | 22.5 × 18 mm | 2× 1×8 header, 2.54 mm |
-| GY-PCM5102A | **~31.8 × 17 mm** (measured 2026-07-18) | 1×6 I2S header (SCK BCK DIN LCK GND VIN) on a short edge + **1×9 analog/config header** on the long edge (⊥); analog out on **LROUT / ROUT / AGND** (X = LROUT, Y = ROUT) |
+| GY-PCM5102A | **32.0 × 17.4 mm** (photogrammetry 2026-07-26; calipers said ~31.8 × 17) | 1×6 I2S header (SCK BCK DIN LCK GND VIN) on a short edge + **1×9 analog/config header** on the long edge (⊥); analog out on **LROUT / ROUT / AGND** (X = LROUT, Y = ROUT) |
 | MAX4466 | ~20 × 13 mm | on a ~10 cm 3-pin pigtail (VCC GND OUT), exits the enclosure aimed at the PA so its gain trimpot stays screwdriver-reachable — not flat on the carrier |
-| TP4056 (USB-C variant) | blue PCB ~17 × 27 mm (USB-C jack overhangs ~2 mm → ~29 mm effective depth) | 4 pads (B+/B−/OUT+/OUT−) via header or wire, **USB-C** charge-port cutout on the board edge |
+| TP4056 (USB-C variant) | blue PCB **26.9 × 17.3 mm** measured (USB-C jack overhangs **1.4 mm** → **28.3 mm** effective depth) | 4 pads (B+/B−/OUT+/OUT−) at 0 / 3.526 / 10.960 / 14.066 mm — **four machined single pins or soldered wires, not a 2.54 header**; **USB-C** charge-port cutout on the board edge |
 
 **Scope connection (resolved):** no BNC or TRS on the carrier. The board exposes **2× RCA flying-lead solder pad-pairs** (signal + ground): X = PCM5102A L, Y = PCM5102A R, each fed through its 100 Ω series resistor (R10/R11). Signal chain: board RCA pad → reused ~50 cm RCA cable (RCA male, salvaged from the old sigma-delta units) → BNC→RCA adapter already fitted on each scope → scope CH. This frees ~25 mm of board edge and ~€2/board vs the old BNC plan.
 
@@ -181,7 +188,9 @@ Target carrier PCB: **~70 × 50 mm**, 2-layer, all through-hole, modules sockete
 
 **Panel controls:** power = **1 A-rated slide switch** (SS12D00-class, for the ~0.35 A WiFi TX peak). Filter-cutoff pot = **RV097NS** 9 mm PCB-mount (B10K, 5-pin, body 27.3 × 9.5 × 11.3 mm); its **metal shaft is turned directly — no knob**, so the enclosure needs only a shaft hole (resolved 2026-07-18).
 
-## 12. Verification checklist (must close before PCB order)
+## 12. Verification checklist
+
+*(Status 2026-07-26: the mechanical items are closed — see `hardware/measurements.md`. What is left is bench-electrical and moves to the assembled carrier; per `hardware/pcb.md` §8.2 none of it gates the fab order, which the board survives either way thanks to JP1.)*
 
 - [ ] PCM5102A output truly passes DC on the actual purple modules (drive a slow ramp, watch scope) — datasheet says ground-centered/DC-capable. *Measured 2026-07-18:* the module carries a ~470 Ω "471" output filter but is ground-centered (no DC-blocking cap) — confirm the ramp passes DC and decide R10/R11 = 0 Ω vs 100 Ω.
 - [ ] PCM5102A PLL locks at 32× fs BCK (16-bit stereo, SCK grounded) — verify tone output.
@@ -190,7 +199,7 @@ Target carrier PCB: **~70 × 50 mm**, 2-layer, all through-hole, modules sockete
 - [ ] `adc_continuous` stable at 72 kHz total across 3 channels on C3/Arduino core 3.x.
 - [ ] Measured currents per mode vs §9 table.
 - [ ] DAC output amplitude/offset during battery rundown to 3.05 V (double-LDO undervoltage check, §5 caveat).
-- [ ] Measure all four module outlines/pin positions with calipers before PCB layout.
+- [x] Measure all four module outlines/pin positions before PCB layout — **done 2026-07-18 (calipers) and superseded 2026-07-26 by photogrammetry** (`hw/pin_locs` → `measured.py`); the two numbers calipers guessed at were both wrong and both were wrong in the v1.0 board.
 - [ ] WiFi robustness: 4 unicast streams from hostapd AP, RSSI at 10 m, packet-loss stats from slave status packets.
 
 ## 13. Repository layout
@@ -204,5 +213,10 @@ docs/            all documentation (this file = canon)
   PLAN.md        ~5-week execution plan
 src/esp32-slave/     PlatformIO project (slave firmware)
 src/unoq-controller/ UNO-Q controller app (deployed — see its README.md)
-FURTHER_CLARIFICATION_NEEDED.md   open questions for Finn
+hw/carrier/          KiCad carrier PCB, generated by tools/*.py (see layout-notes.md)
 ```
+
+Open questions used to live in a root `FURTHER_CLARIFICATION_NEEDED.md`; every PCB- and
+order-blocking one closed by 2026-07-18, so the file was folded into the specs it fed —
+hardware questions into [hardware/pcb.md](hardware/pcb.md) §10, and the HYBRID mic-mix
+question into §7's mode table above.

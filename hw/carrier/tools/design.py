@@ -13,19 +13,22 @@ Conventions:
     listed in AGND_ISLAND_PINS for the layout script.
   - Diode/LED pad 1 = cathode (KiCad footprint convention).
 
-DEVIATIONS from pcb.md (to fold back into the doc):
-  1. J5/J6: the measured TP4056 pad row is OUT- B- B+ OUT+ (north->south,
-     measurements.md), so the two 1x2 sockets split as J5=(OUT-,B-) and
-     J6=(B+,OUT+) — not the doc's J5=batt-end/J6=out-end grouping. J6b -> J9 (KiCad refs must end in a digit; ditto J1A/J1B -> JA1/JB1 — silk keeps the doc names).
-     1a. Those four pads are NOT on a 2.54 grid (measurements.md's "~2.54 grid"
-     was a guess): photogrammetry gives 0 / 3.53 / 10.96 / 14.07 mm across the
-     module's 17.3 mm edge. J5/J6 therefore use generated HYPEROSCI footprints
-     at the measured pitches, not stock 1x2 sockets — see gen_footprints.py.
-  2. D3 (DNP) anode is on VLOAD per §4.2's netlist table; §3.1's VSW row
-     ("D3 anode") is the stale line. §4.1's text agrees with §4.2: the naive
-     OR term senses the load node.
-  3. RV1 bracket lugs (pads 4/5) are tied to GND (bracket grounding); doc is
-     silent on them.
+RENAMES vs pcb.md (KiCad refs must end in a digit; the silk keeps the doc names):
+  J1A/J1B -> JA1/JB1, J6b -> J9.
+
+BUILD-TIME WARNINGS that live with the netlist, not only in the doc:
+  - TO-92 PINOUT (U1, Q2): the pad map below is pad1=REF, pad2=ANODE,
+    pad3=CATHODE for U1 -- the onsemi TO-92 numbering. TI numbers the same
+    package the other way round (pin1=K, pin2=A, pin3=REF), and ANODE is the
+    centre lead in both, so a TI-branded part drops into the footprint
+    perfectly while sitting backwards. Same class of trap for Q2 (BC557
+    C-B-E vs E-B-C across vendors). Check the lead order on the datasheet of
+    the part actually bought -- see pcb.md 5 "TO-92 orientation".
+  - D2 IS NOT FITTED IN THE JP1 FALLBACK. Bridging JP1 with D2 in place puts
+    VBUS_CHG -> D2 -> VSW -> JP1 -> VBAT_OUT = B+ straight onto the cell with
+    no CC/CV, in either SW1 position. JP1 fallback = bridge JP1, omit
+    Q1/Q2/U1/D1/D2 -- and R7/R8 with them, since JP1 puts that divider straight
+    across the cell for 231 uA with no comparator left to feed. See pcb.md 4.4.
 """
 
 # ref: (value, symbol, footprint, {pad: net}, dnp)
@@ -50,7 +53,10 @@ STOCK = {
 }
 
 COMPONENTS = {
-    # --- SuperMini socket rows (pcb.md §2 table; row A = 5V-side/north) ---
+    # --- SuperMini socket rows (pcb.md §2 table; row A = 5V-side, and with the
+    #     antenna west (§6.1 rule 3) that row lands SOUTH — JA1 south, JB1 north.
+    #     Getting this backwards is the mirror bug v1.0 shipped; measured.py
+    #     now refuses to generate it. ---
     "JA1": ("SuperMini row A (J1A)", "CONN8", STOCK["socket8"], {
         "1": "VLOAD", "2": "GND", "3": "3V3", "4": "I2S_BCK",
         "5": "POT_WIPER", "6": "GPIO2_PU", "7": "VBAT_SENSE", "8": "MIC_OUT"}),
@@ -87,16 +93,25 @@ COMPONENTS = {
         "1": "GATE", "2": "VSW", "3": "VBAT_OUT"}),          # G S D
     "Q2": ("BC557", "QPNP", STOCK["to92"], {
         "1": "GATE", "2": "Q2_B", "3": "VSW"}),              # C B E
-    "U1": ("TL431", "TL431", STOCK["to92"], {
-        "1": "VSW_SENSE", "2": "GND", "3": "TL431_K"}),      # REF A K
-    "D1": ("1N4148", "D", STOCK["do35"], {"1": "GATE", "2": "VBUS_CHG"}),
+    # c[1] is the SCHEMATIC SYMBOL KEY, not the part number — leave it "TL431"
+    # even though the value says TL431A, or gen_schematic.py raises KeyError.
+    "U1": ("TL431A", "TL431", STOCK["to92"], {
+        "1": "VSW_SENSE", "2": "GND", "3": "TL431_K"}),      # REF A K (onsemi numbering)
+    # Schottky, not 1N4148: D1 carries only R6's pull-down current, so its Vf
+    # sits BELOW D2's and Vgs(Q1) lands at 0..+0.1 V — hard off — instead of
+    # -0.10..-0.22 V against a -0.3 V min threshold. pcb.md §4.3 states 2/3.
+    "D1": ("BAT85", "D", STOCK["do35"], {"1": "GATE", "2": "VBUS_CHG"}),
+    # NOT FITTED when JP1 is bridged — see the module docstring.
     "D2": ("SS34/1N5817", "D", "HYPEROSCI:D_Dual_SMA_DO41", {
         "1": "VSW", "2": "VBUS_CHG"}),
     "D3": ("BAT85 DNP", "D", STOCK["do35"], {"1": "GATE", "2": "VLOAD"}, True),
     "R6": ("100k", "R", STOCK["r"], {"1": "GATE", "2": "GND"}),
-    "R7": ("82k 1%", "R", STOCK["r"], {"1": "VSW", "2": "VSW_SENSE"}),
-    "R8": ("100k 1%", "R", STOCK["r"], {"1": "VSW_SENSE", "2": "GND"}),
-    "R9": ("2.2k", "R", STOCK["r"], {"1": "TL431_K", "2": "Q2_B"}),
+    # Sense divider. Ratio 1.82 as before, but ~10x lower impedance so the
+    # TL431's REF bias current stops moving the trip: I_ref*R7 falls from
+    # 164 mV to 16 mV. Costs standby drain — see pcb.md §4.2 divider table.
+    "R7": ("8.2k 1%", "R", STOCK["r"], {"1": "VSW", "2": "VSW_SENSE"}),
+    "R8": ("10k 1%", "R", STOCK["r"], {"1": "VSW_SENSE", "2": "GND"}),
+    "R9": ("1k", "R", STOCK["r"], {"1": "TL431_K", "2": "Q2_B"}),  # >=1 mA I_KA(min)
     "R12": ("100k", "R", STOCK["r"], {"1": "Q2_B", "2": "VSW"}),
     "JP1": ("escape hatch", "JP2", "HYPEROSCI:SolderJumper_P2.54", {
         "1": "VBAT_OUT", "2": "VSW"}),
@@ -135,6 +150,20 @@ COMPONENTS = {
     "H3": ("M3", "HOLE", STOCK["m3"], {"1": "GND"}),
     "H4": ("M3", "HOLE", STOCK["m3"], {"1": "GND"}),
 }
+
+# Per-part footprint overrides — vertical (standing) axials wherever the
+# horizontal 10.16mm span doesn't fit. NOT under modules (9mm standing height).
+# This lives here rather than in gen_board.py because the SCHEMATIC has to agree:
+# when it only existed layout-side, eleven resistors were standing on the board
+# while the schematic still said P10.16mm_Horizontal, and
+# `kicad-cli pcb drc --schematic-parity` reported every one of them.
+VERT_R = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P2.54mm_Vertical"
+FP_OVERRIDE = {r: VERT_R for r in
+               ["R1", "R2", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"]}
+
+def footprint_of(ref):
+    """The footprint actually used — apply this in every generator."""
+    return FP_OVERRIDE.get(ref, norm(COMPONENTS[ref])[2])
 
 # Pads whose copper belongs on the AGND island (layout only — same GND net):
 AGND_ISLAND_PINS = [("J3", "2"), ("J3", "4"), ("X1", "2"), ("Y1", "2"),

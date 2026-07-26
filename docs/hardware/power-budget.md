@@ -12,7 +12,7 @@ Every number tagged *est.* below gets replaced by a measured value in week 1. Nu
 LiPo 3.0–4.2 V ──▶ TP4056 module (DW01 + FS8205 protection FETs, ~50 mΩ)
                       OUT+ ──▶ slide switch ──▶ ≥220 µF bulk ──▶ SuperMini "5V" pin
                                                                     │
-                                                              onboard LDO (ME6211C33, ⚠️ VERIFY per board)
+                                                              onboard LDO (marking read as **`S2LC`** 2026-07-18 — neither the feared 250 mA LLVB nor the verified 500 mA S2QB; still undecoded, and carrier v1.1 has **no fallback LDO footprint**)
                                                                     │
                                                               3V3 rail ──▶ ESP32-C3, PCM5102A VIN,
                                                                            MAX4466, pot, LEDs, pull-ups
@@ -48,7 +48,7 @@ All values in mA unless noted. LED math: 3 mm LED at Vf ≈ 2.0–2.1 V through 
 Notes:
 
 - **HYBRID ≈ NETWORK.** The mic ADC runs in every mode (vbat/pot share the same `adc_continuous` scan), so mixing it in costs nothing extra.
-- **Deep sleep is ~1 mA, not µA**, because the 3V3 rail stays up: the PCM5102A no-clock standby (~0.5–0.8 mA) dominates, then the pot (330 µA), LDO Iq (40 µA), mic (24 µA), divider (21 µA). That is fine — deep sleep only needs to protect the cell for days-to-weeks until recharge, not months. From `VBAT_SLEEP_MV` (3050) down to the DW01 cutoff there is roughly 60–100 mAh left in the selected 2000 mAh cell (the old 1000 mAh reference cell had half that, ~30–50 mAh) → **~3–6 weeks of margin. Charge promptly after any low-battery shutdown.** (A future carrier-PCB rev could add a peripheral-power gate FET; out of scope for v1.)
+- **Deep sleep is ~1 mA, not µA**, because the 3V3 rail stays up: the PCM5102A no-clock standby (~0.5–0.8 mA) dominates, then the pot (330 µA), LDO Iq (40 µA), mic (24 µA), divider (21 µA). Deep sleep only needs to protect the cell until recharge — but do the division: from `VBAT_SLEEP_MV` (3050) down to the DW01 cutoff there is roughly 60–100 mAh left in the selected 2000 mAh cell, and at the 0.9–1.3 mA this table just derived that is **~2–4 days, not weeks** (~1–2 days on a legacy 1000 mAh cell, and less again on the carrier, where R7/R8 add ~221 µA upstream of the switch). An earlier revision of this line said "~3–6 weeks", which would need a ~10 µA sleep current — it contradicted the table directly above it. **Charge within a day or two of any low-battery shutdown; a unit left sleeping over a long weekend can reach the DW01 cutoff.** (A future carrier rev could add a peripheral-power gate FET; out of scope for v1.)
 
 ### Worst-case TX bursts
 
@@ -89,7 +89,9 @@ Planning guidance:
 
 Documented SuperMini designs carry a **ME6211C33M5G** (SOT-23-5): 500 mA max output (spec'd at VIN = 4.3 V), **dropout 100 mV @ 100 mA** (datasheet), Iq 40 µA, VIN 2–6 V. However, cheap clones have been observed with a **250 mA-rated part marked "LLVB"** instead — a real risk for our 345 mA bursts.
 
-**⚠️ VERIFY: read the SOT-23-5 marking on all four owned SuperMinis with a loupe before the PCB order** (week-1 checklist item, also DESIGN §12). If any board carries the 250 mA part, either (a) confirm by measurement that sub-ms 345 mA bursts survive (peak vs continuous rating), or (b) fit a known LDO (e.g. ME6211/HT7833) on the carrier PCB and feed the SuperMini's 3V3 pin directly, bypassing its LDO.
+**⚠️ VERIFY: read the SOT-23-5 marking on all four owned SuperMinis with a loupe before the PCB order** (week-1 checklist item, also DESIGN §12). The marking was read on 2026-07-18 and is **`S2LC`** — not the feared 250 mA LLVB, not the verified 500 mA S2QB, and still undecoded.
+
+**Remedy (b) is not available on carrier v1.1:** there is no LDO footprint anywhere in `design.py`, so if `S2LC` turns out to be a ~250 mA part there is no board-level fix without a respin. That leaves remedy (a), which is **testable now on the USB-only rig**: run NETWORK streaming with `WiFi.setSleep(false)` and watch for resets or rail sag — that exercises the burst current through the LDO, and USB input is the worst case for its dissipation. If sustained streaming already runs without resets, the current-rating half of this question is closed; record it in `measurements.md`. The low-VBAT dropout half still needs a battery or a bench supply.
 
 ### 4.2 Dropout margin at low battery
 
@@ -121,9 +123,9 @@ The SuperMini and its LDO carry only small ceramics (~1–10 µF). A 300+ mA TX 
 
 ## 5. TP4056 / DW01 behavior and the firmware threshold ladder
 
-The 03962A module combines a TP4056 linear charger with DW01 + FS8205 protection.
+The owned modules are the **USB-C blue variant** — ICs marked `CSM4056T` (TP4056-equivalent), `8205LA` (FS8205 dual FET) and a DW01-type protection IC (measured 2026-07-18). Behaviour is per the nominal TP4056 + DW01 + FS8205 spec. (`03962A` is the older micro-USB part number.)
 
-**Charging (TP4056):** CC/CV profile, CV = **4.2 V ±1 %**, charge current set by RPROG — the module default is 1.2 kΩ → **1 A** (⚠️ VERIFY the actual RPROG on the owned modules). Termination at C/10 (~100 mA), auto-recharge when the cell relaxes ~150 mV below 4.2 V. 1 A into the selected 2000 mAh cell is **~0.5C** — comfortable, so **keep the TP4056 default 1 A**; full charge takes **~2.5–3 h**. Swapping RPROG to 2.4 kΩ (≈ 0.5 A) is fiddly to solder and **optional, not mandated**. Instead, **mandate 5 V / 2 A wall chargers** so the module can pull its full 1 A charge current safely — a 1 A supply would sag under the charge load. (A legacy 1000 mAh cell at 1 A is 1C — warm but acceptable, ~1.5 h.)
+**Charging (TP4056):** CC/CV profile, CV = **4.2 V ±1 %**, charge current set by RPROG — the module default is 1.2 kΩ → **1 A** (✅ measured 1.19 kΩ on the owned modules, 2026-07-18). Termination at C/10 (~100 mA), auto-recharge when the cell relaxes ~150 mV below 4.2 V. 1 A into the selected 2000 mAh cell is **~0.5C** — comfortable, so **keep the TP4056 default 1 A**; full charge takes **~2.5–3 h**. Swapping RPROG to 2.4 kΩ (≈ 0.5 A) is fiddly to solder and **optional, not mandated**. Instead, **mandate 5 V / 2 A wall chargers** so the module can pull its full 1 A charge current safely — a 1 A supply would sag under the charge load. (A legacy 1000 mAh cell at 1 A is 1C — warm but acceptable, ~1.5 h.)
 
 **Protection (DW01):** overcharge cut ~4.3 V; overcurrent ~3 A (150 mV across the FS8205's ~50 mΩ) — irrelevant at our loads; over-discharge cutoff **~2.40 V**.
 
@@ -133,7 +135,7 @@ The 03962A module combines a TP4056 linear charger with DW01 + FS8205 protection
 |---|---|---|
 | `VBAT_WARN_MV` | 3450 mV | ≈ 15–20 % SoC under load; coincides with LDO-dropout onset in NETWORK (§4.2); operator sees the blue-LED 3-blink pattern with ~90–120 min of NETWORK runtime left on the selected 2000 mAh cell (~45–60 min on a legacy 1000 mAh) |
 | `VBAT_WIFI_OFF_MV` | 3300 mV | ≈ 5–10 % SoC; eliminates TX-burst brownout risk (§4.2); current drops ~60 %, stretching what remains; show degrades gracefully to LOCAL instead of dying |
-| `VBAT_SLEEP_MV` | 3050 mV | knee of the discharge curve — below this, voltage falls off a cliff anyway; deep sleep (~1 mA, §2) lets the cell rest and recover to ~3.1 V, leaving ~3–6 weeks of margin above the DW01's 2.4 V on the selected 2000 mAh cell (~1.5–3 weeks on a legacy 1000 mAh) |
+| `VBAT_SLEEP_MV` | 3050 mV | knee of the discharge curve — below this, voltage falls off a cliff anyway; deep sleep (~1 mA, §2) lets the cell rest and recover to ~3.1 V, leaving only **~2–4 days** of margin above the DW01's 2.4 V on the selected 2000 mAh cell (~1–2 days on a legacy 1000 mAh) — recharge promptly, this is not a storage state |
 | `VBAT_HYSTERESIS_MV` | 50 mV | load release (e.g. WiFi turning off) lifts VBAT by I·R ≈ 30–60 mV; without hysteresis the state machine would oscillate across a threshold |
 
 ---
@@ -143,8 +145,8 @@ The 03962A module combines a TP4056 linear charger with DW01 + FS8205 protection
 - **Breadboard / bring-up: charge ONLY with the power switch OFF.** Two independent reasons:
   1. The TP4056 terminates on charge *current*. With the system drawing 45–125 mA through OUT+ during charge, current never falls to C/10 → the charger holds the cell at 4.2 V indefinitely (stress) or cycles falsely; WiFi bursts additionally make the CV loop unstable.
   2. Most SuperMini clones tie USB VBUS straight to the 5V pin (DESIGN §9) — never have the switch ON with the SuperMini's own USB-C plugged in either, or VBUS back-feeds the battery rail. Flash/debug on USB with the switch OFF.
-- **Carrier PCB: the rule disappears.** The board adds a load-sharing power path (P-FET + Schottky, both VBUS sources diode-ORed into the gate) so USB powers the load directly while the TP4056 sees only the cell. Circuit detail lives in [pcb.md](pcb.md) — the rule stated here is the requirement it must satisfy.
-- **Off-state drain:** the divider (~21 µA) plus TP4056-module leakage (~2–5 µA) totals well under LiPo self-discharge; a switched-off unit keeps its charge for months. Don't store units that went into low-battery deep sleep, though — recharge those within a week or so (§2 note).
+- **Carrier PCB: the rule is retired only on a populated, verified board.** The board adds a load-sharing power path (P-FET + Schottky) intended to let USB power the load directly while the TP4056 sees only the cell. The charger-side OR term is a diode into the gate; the SuperMini-side term is a *voltage threshold on the load node*, because that module ties VBUS to its 5 V pin (pcb.md §4.1). Design review 2026-07-26 showed the threshold cannot reliably tell a sagging USB port from a charged cell, so **rules 1 and 2 above stand** until pcb.md §4.4 passes on an assembled carrier — and permanently on a JP1-bridged board.
+- **Off-state drain:** on the carrier this is **not** just the 21 µA battery divider. The R7/R8 sense divider hangs on VSW, which is *upstream of the power switch*, so it draws whatever its values dictate whether the unit is on or off — 23 µA at the original 82 k/100 k, **~221 µA at the fitted 8.2 k/10 k**. With the DW01 (~3 µA), TP4056 standby (~2.5 µA) and D2's reverse leakage (~5 µA at 25 °C, tens of µA when hot), the total is **~250 µA ⇒ roughly 10 months** from full. For reference the cell's own self-discharge is 40–80 µA equivalent, so below ~50 µA of board drain the cell is the limiting factor, not the board. Don't store units that went into low-battery deep sleep — those have only **days**, not weeks (see §2).
 
 ---
 

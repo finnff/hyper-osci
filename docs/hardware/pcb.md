@@ -1,11 +1,20 @@
-# HYPEROSCI Carrier PCB — v1.0 Specification
+# HYPEROSCI Carrier PCB — v1.1 Specification
 
-**Status:** Ready for KiCad execution. Pin map / constants mirror
+**Status:** layout v1.1 complete and gate-clean (2026-07-26) — see
+[`hw/carrier/layout-notes.md`](../../hw/carrier/layout-notes.md). This document is the spec
+of record for the fab order and the BOM. Pin map / constants mirror
 [`docs/DESIGN.md`](../DESIGN.md) §4 and
 [`src/esp32-slave/include/config.h`](../../src/esp32-slave/include/config.h) — those are law.
-**Goal:** a KiCad 9 session can execute this document start-to-finish without making design
-decisions. Anything genuinely undecided is listed in §10 (open questions) or carried as a
+The board is **generated, not drawn**: `hw/carrier/tools/design.py` is the netlist source of
+truth and the scripts build the schematic, footprints, board and routing from it (§9).
+Anything genuinely undecided is listed in §10 (open questions) or carried as a
 DNP (do-not-populate) footprint so the decision moves to assembly time, not layout time.
+
+> **Review status (2026-07-26).** The load-sharing power path (§4) has been through an
+> adversarial design review — [`pcb-review-findings.md`](pcb-review-findings.md). Two of its
+> conclusions are load-bearing and are folded into the text below: **§4.3 state 4 does not
+> work as originally written**, and the **JP1 fallback recipe was unsafe** because it left D2
+> fitted. The §4 block is therefore an *experiment*, not the plan of record — see §4.5.
 
 ---
 
@@ -19,13 +28,16 @@ DNP (do-not-populate) footprint so the decision moves to assembly time, not layo
 
 | Module | Socket | Notes |
 |---|---|---|
-| ESP32-C3 SuperMini | 2× 1×8 female (J1A/J1B) | antenna end overhangs board edge (§6) |
-| GY-PCM5102A (purple) | 1×6 female (J2) + 1×9 female (J3) | I2S end (short edge) + 9-pin analog/config end on the long edge (⊥ to J2). Module measures **~31.8 × 17 mm** — see §7/measurements.md |
+| ESP32-C3 SuperMini | 2× 1×8 female (J1A/J1B) | antenna end at the west edge. The antenna is **flush** with the module's own board edge (0 mm overhang, measured) — what protects it is the copper keep-out inboard of that edge, §6.1 rule 3 |
+| GY-PCM5102A (purple) | 1×6 female (J2) + 1×9 female (J3) | I2S end (short edge) + 9-pin analog/config end on the long edge (⊥ to J2). Module measures **32.0 × 17.4 mm** (photogrammetry) — see §7/measurements.md |
 | MAX4466 mic | 1×3 header (J4) | off-board on a ~10 cm pigtail (`VCC/GND/OUT`); aimed at the PA |
-| TP4056 USB-C (blue, 17×27 mm, with DW01+FS8205) | 2× 1×2 female (J5 batt end, J6 out end) + 1 pad for IN+ | USB-C end at board edge (jack overhangs ~2 mm) |
+| TP4056 USB-C (blue, **26.9 × 17.3 mm**, with DW01+FS8205) | **4× machined single-pin sockets** (J5 = `OUT−`/`B−` @ 3.526 mm, J6 = `B+`/`OUT+` @ 3.106 mm) + 1 pad for IN+ | USB-C end at board edge (jack overhangs **1.4 mm** → 28.3 mm effective depth). **Not a stock 1×2 socket** — the pads are not on a 2.54 grid, see §2 |
 
-- Passive parts may be placed **under the socketed modules** (sockets give ~8.5 mm clearance) —
-  this is how everything fits in 70 × 50 mm.
+- Passive parts may be placed **under the socketed modules**. The gated figure is
+  **8.3 mm**: that is the SuperMini's own bottom-side component height (measured), and it is
+  what a 2.54 mm socket pair must clear, so `audit_board.py` refuses any part taller than
+  8.3 mm inside a module's measured body outline. As built, nothing is. This is how
+  everything fits in 70 × 50 mm.
 - **Battery (off-board):** EEMB **LP103454** LiPo 3.7 V **2000 mAh**, 34 × 56 × 11 mm, ~40 g,
   with a pre-fitted JST-PH lead (no crimping). It does **not** sit on the PCB — it is mounted
   loose (velcro/pocket) in the 3D-printed enclosure, since 56 × 34 mm is large next to the
@@ -44,9 +56,9 @@ Reference designators used throughout this doc and to be used in KiCad:
 | Ref | Part | Function |
 |---|---|---|
 | J1A, J1B | 1×8 female header, 2.54 mm | SuperMini socket rows. **KiCad refs are `JA1`/`JB1`** (a KiCad reference must end in a digit); the silk keeps the doc names. Row spacing ✅ **measured 15.240 mm** (photogrammetry, worst pin 0.100 mm). `JB1` = the GPIO5-side row and it is the **north** one — see §6.1 rule 3. |
-| J2 | 1×6 female header | PCM5102A I2S end: `SCK BCK DIN LCK GND VIN` (order per module silk ⚠️ VERIFY) |
+| J2 | 1×6 female header | PCM5102A I2S end: `SCK BCK DIN LCK GND VIN` ✅ order confirmed against the module silk 2026-07-18 |
 | J3 | 1×9 female header | PCM5102A analog/config end (long edge). Silk (jack→digital): `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Carrier nets only the analog pins: **LROUT (=X), ROUT (=Y), AGND**; FLT/DEMP/XSMT/FMT are set by the module's own H1L–H4L back-side bridges (DESIGN §5), so they are **NC** on the carrier — the rest of the 1×9 is mechanical support. |
-| J4 | 1×3 header (pigtail landing) | MAX4466 on a ~10 cm 3-wire pigtail: `VCC GND OUT` (order ⚠️ VERIFY — clones differ). Mic exits the enclosure, aimed at the PA. |
+| J4 | 1×3 header (pigtail landing) | MAX4466 on a ~10 cm 3-wire pigtail: `VCC GND OUT` ✅ confirmed on the back silk 2026-07-18. Mic exits the enclosure, aimed at the PA. |
 | J5 | 1×2 pad pair, **3.526 mm** pitch | TP4056 north pair: `OUT− B−`. ⚠️ **Not a stock socket and not a 2.54 grid** — the module's four pads measure 0 / 3.526 / 10.960 / 14.066 mm down its short edge (photogrammetry, 2026-07-26), so the grouping is `(OUT−,B−)` + `(B+,OUT+)`, *not* the battery-end/output-end split this table used to claim. Generated footprint `HYPEROSCI:TP4056_Pads_OUTminus_Bminus`. |
 | J6 | 1×2 pad pair, **3.106 mm** pitch | TP4056 south pair: `B+ OUT+`, 10.960 mm south of J5.1. Generated footprint `HYPEROSCI:TP4056_Pads_Bplus_OUTplus`. Fit four machined single sockets, or solder wires and give up removability. |
 | J6b | 1 plated pad + short wire | TP4056 `IN+` (VBUS_CHG sense — see §4; pad drilled 1.0 mm). **KiCad ref is `J9`.** |
@@ -58,10 +70,10 @@ Reference designators used throughout this doc and to be used in KiCad:
 | RV1 | **RV097NS** 9 mm 10 kΩ linear pot (B10K), 5-pin, body 27.3 × 9.5 × 11.3 mm. **Metal shaft turned directly — no knob.** | Filter-cutoff → GPIO3 |
 
 **SuperMini socket pin functions** (net names; physical position per module silk —
-⚠️ VERIFY silk against your actual modules before finalizing the footprint, clone revisions
-differ):
+✅ confirmed 2026-07-18 against the owned TENSTAR ROBOT modules, `5V G 3.3 4 3 2 1 0` /
+`5 6 7 8 9 10 20 21`. Re-check if a future batch is a different clone revision):
 
-| J1A (expected: 5V-side row) | Net | J1B (expected: GPIO5-side row) | Net |
+| J1A (5V-side row, **south**) | Net | J1B (GPIO5-side row, **north**) | Net |
 |---|---|---|---|
 | 5V | VLOAD | GPIO5 | I2S_LRCK |
 | GND | GND | GPIO6 | I2S_DOUT |
@@ -82,12 +94,12 @@ Every net on the board. Pin numbers match `config.h` exactly.
 
 | Net | Connects |
 |---|---|
-| **BAT+** | J8.1 (JST +) → J5 `B+`. Also top of battery divider R1. On this USB-C TP4056 module, `B+` and `OUT+` are the same copper (protection is low-side) ⚠️ VERIFY on your modules. |
-| **BAT−** | J8.2 (JST −) → J5 `B−` **only**. ⚠️ **B− must NOT join GND** — the DW01/FS8205 protection switches the low side between B− and OUT−. Shorting them defeats protection. Silk warning next to J5. |
-| **GND** | J6 `OUT−` = system ground: SuperMini GND, J2 GND, J2 SCK (see below), C1−, C2, C3, C5, R2, R6, R8, U1 anode, SW2 pin B, RV1 CCW end, LED cathodes, TP4056 `IN−` (same node module-internally), mounting-hole pads (fenced, see §6). |
-| **VBAT_OUT** | J6 `OUT+` → Q1 **drain** (and nothing else). |
-| **VSW** | Q1 **source** + D2 cathode + D3 anode (DNP) + sense divider top (R7) + SW1 pin 1 + testpoint TP2. |
-| **VLOAD** | SW1 pin 2 → SuperMini `5V` pin, C1 (220 µF) +, C2 (100 nF). |
+| **BAT+** | J8.1 (JST +) → **J6.1** `B+`. Also top of battery divider R1. On this USB-C TP4056 module, `B+` and `OUT+` are the same copper (protection is low-side) — ✅ measured 0 Ω 2026-07-18. |
+| **BAT−** | J8.2 (JST −) → **J5.2** `B−` **only**. ⚠️ **B− must NOT join GND** — the DW01/FS8205 protection switches the low side between B− and OUT−. Shorting them defeats protection (✅ measured open 2026-07-18). Silk warning next to J5. |
+| **GND** | **J5.1** `OUT−` = system ground: SuperMini GND, J2 GND, J2 SCK (see below), C1−, C2, C3, C5, R2, R6, R8, U1 anode, SW2 pin B, RV1 CCW end **and RV1's two bracket lugs (pads 4/5)**, LED cathodes, TP4056 `IN−` (same node module-internally), mounting-hole pads (fenced, see §6). Because the protection FET is in the **cell-negative** leg, every carrier load — including the R1/R2 divider — returns through it and is genuinely cut at the DW01's 2.4 V trip. |
+| **VBAT_OUT** | J6.2 `OUT+` → Q1 **drain** + **JP1 pin 1** (the §4.4 escape hatch). |
+| **VSW** | Q1 **source** + D2 cathode + sense divider top (R7) + **R12** + **Q2 emitter** + **JP1 pin 2** + SW1 pin 1 + testpoint TP2. Note this node is **upstream of SW1**: it is live off the cell through Q1 whenever a battery is connected, whatever position the switch is in (§4.3 state 6). |
+| **VLOAD** | SW1 pin 2 → SuperMini `5V` pin, C1 (220 µF) +, C2 (100 nF), **D3 anode (DNP)**. |
 | **3V3** | SuperMini `3V3` pin → J2 `VIN` (PCM5102A), J4 `VCC` (mic, with C4 100 nF at the socket), R3 (GPIO2 pull-up), RV1 CW end, C5 (100 nF near J2). Per DESIGN §5 the DAC's VIN runs from 3V3 (double-LDO cascade is fine). |
 | **VBUS_CHG** | J6b (TP4056 `IN+`) → D1 anode, D2 anode, testpoint TP1. |
 | **GATE** | Q1 gate + R6 (100 k → GND) + D1 cathode + D3 cathode (DNP) + Q2 collector + TP3. |
@@ -137,7 +149,8 @@ CC/CV + termination) and USB can never back-feed the cell; (c) load runs from US
 
 ### 4.1 The one hard constraint discovered during design
 
-DESIGN §9 sketches "P-FET + Schottky, both VBUS sources diode-ORed into the gate". The
+DESIGN §9 originally sketched "P-FET + Schottky, both VBUS sources diode-ORed into the gate"
+(that file now carries the corrected description). The
 TP4056's VBUS is directly accessible (`IN+` pad). **The SuperMini's VBUS is not**: on these
 clone modules USB VBUS is tied straight to the `5V` pin (**meter-confirmed 2026-07-18**,
 measurements.md — VBUS↔5V continuous) — i.e.
@@ -151,32 +164,53 @@ below keeps the DESIGN §9 architecture (both VBUS sources drive the gate) with 
 term implemented as a TL431 comparator. A DNP diode footprint (D3) is kept for breadboard
 experiments.
 
+> **⚠️ That logic does not survive review, and §4.3 state 4 is where it fails.** Two things
+> are wrong with "`VLOAD > 4.5 V` can only mean USB":
+>
+> 1. **The band is far narrower than it looks.** USB 2.0 permits **4.40 V at the device end**,
+>    and a laptop port through a thin cable routinely reads 4.4–4.6 V at the SuperMini
+>    connector. The usable window is therefore roughly 4.24 V (a full cell at the charger's
+>    CV max) to ~4.5 V — about **200–300 mV**, most of which is eaten by the reference
+>    tolerance, the divider tolerance and the REF bias current (§4.2).
+> 2. **Worse, the threshold is often unreachable.** You enter state 4 *from battery mode*,
+>    where Q1 is already on. The cell then clamps VSW to roughly `V_OCV + I·R_path` with
+>    `R_path ≈ 0.2–0.3 Ω` (Q1 + FS8205 + JST/leads + cell IR). Lifting that node to the
+>    4.46 V low corner from a 3.7–4.0 V cell needs **≈1.5–3.8 A** through the cell branch —
+>    beyond a 0.5 A legacy port at any state of charge, and beyond a 1.5 A BC.1.2
+>    port below roughly a 4.0 V cell. (A 3 A Type-C port on a nearly-full cell *can* reach
+>    it — the failure is worst exactly when the cell is emptiest.) So the "Q1 on" state is
+>    largely self-reinforcing: closer to a latch than a trip point, and a stiff 5 V bench
+>    supply does not reveal it.
+>
+> The consequence is that **no choice of divider values fixes state 4** — the defect is in
+> sensing an absolute threshold on the load node, not in the numbers. Sensing the *drop
+> across Q1* instead (an ideal-diode controller such as the LTC4412) has no threshold to
+> mis-set and cannot fail this way; that is the v1.2 answer. See §4.5 for what to actually
+> do for the show.
+
 ### 4.2 Circuit
 
-```
-                          D2 SS34
-  TP4056 IN+ (VBUS_CHG) ──▶|────────────┐
-        │                               │
-        │  D1 1N4148                    │
-        └────▶|───────────┐             │
-                          │ GATE        │
-  TP4056 OUT+ ──┬─────────┼──────┐      │
-  (VBAT_OUT)    │        ─┴─     │      │
-                │   R6   100k    │G     │
-                │        ─┬─   ┌─┴─┐    │              SW1          SuperMini
-                │        GND   │Q1 │    │  VSW        (power)        5V pin
-                └──────────────┤ P ├────┴────┬─────────o o──────┬─────────── VLOAD
-                          D    │FET│   S     │                  │
-                               └───┘         │                 ─┴─ C1 220µF
-              DMG3415U, body diode D→S       │                 ─┬─ + C2 100nF
-                                             │                 GND
-              ┌──────────────────────────────┤
-              │ R7 82k                       │
-              ├───────── U1 TL431 REF        │ R9 2.2k      Q2 BC557 (PNP)
-              │ R8 100k  (trips VSW>4.54V)   ├──[R12 100k]──┬── E
-             GND         K──[R9 2.2k]── B ───┘         B ───┤
-                         A──GND                        C ───┴──▶ GATE
-```
+The block is drawn, wire by wire, in the generated schematic — see the **"LOAD-SHARING
+POWER PATH"** block of
+[`hw/carrier/carrier-schematic.svg`](../../hw/carrier/carrier-schematic.svg)
+(printable A3: [`carrier-schematic.pdf`](../../hw/carrier/carrier-schematic.pdf)). It
+replaced the ASCII art that used to live here after two successive revisions of that art
+drew the Q2 corner wrong; the schematic is generated from `design.py` and netlist-gated,
+so it cannot make that class of error. The Q2 corner in words, matching `design.py`
+exactly:
+
+| Node | Connects to |
+|---|---|
+| Q2 emitter | VSW |
+| Q2 base | R9 (to the TL431 cathode) **and** R12 |
+| Q2 collector | GATE |
+| R12 | base ↔ emitter, i.e. **across** the base–emitter junction, holding Q2 off until the TL431 sinks current through R9 |
+
+So R12 is a base–emitter hold-off resistor in *parallel* with the junction, **not** in series
+with anything. An earlier ASCII revision of this section drew it in series between the R9
+node and the emitter, which is a different and nonsensical circuit; a later attempt to fix
+it in ASCII instead implied base, emitter and collector were shorted. The table above,
+`design.py` and the generated schematic agree; the ASCII attempts are gone.
 
 Netlist form:
 
@@ -184,53 +218,170 @@ Netlist form:
 |---|---|---|
 | Q1 | DMG3415U (P-ch, −20 V, −4 A, Vgs(th) −0.3…−1.0 V, Rds(on) 42 mΩ @ −4.5 V) | D = VBAT_OUT, S = VSW, G = GATE |
 | R6 | 100 k | GATE → GND (default: FET on) |
-| D1 | 1N4148 | VBUS_CHG → GATE (charger-USB OR term) |
-| D2 | SS34 (or THT 1N5817/1N5822, dual footprint) | VBUS_CHG → VSW (feeds load while charging) |
-| R7/R8 | 82 k / 100 k, 1 % | VSW divider → U1 REF. Trip = 2.495 × 182/100 ≈ **4.54 V** |
-| U1 | TL431 (TO-92) | REF = divider, A = GND, K = via R9 to Q2 base |
-| R9 | 2.2 k | Q2 base → U1 cathode (~1 mA cathode current when tripped — only when USB present) |
+| D1 | **BAT85** Schottky (DO-35) | VBUS_CHG → GATE (charger-USB OR term). D1 carries only R6's ~45 µA, so its Vf (≤ 0.24 V) sits *below* D2's — see §4.3 state 2/3 for why that matters |
+| D2 | SS34 (or THT 1N5817/1N5822, dual footprint) | VBUS_CHG → VSW (feeds load while charging). **Not fitted when JP1 is bridged** (§4.4) |
+| R7/R8 | **8.2 k / 10 k, 1 %** | VSW divider → U1 REF. Trip = `Vref·(1+R7/R8) + I_ref·R7` = 2.495 × 1.82 + 2 µA × 8.2 k ≈ **4.56 V typ**, window **4.46–4.66 V** at 25 °C with a TL431A. See the divider table below |
+| U1 | **TL431A** (±1 %, TO-92) | REF = divider, A = GND, K = via R9 to Q2 base. ⚠️ **check the TO-92 lead order of the part you buy** — see §5 |
+| R9 | **1 k** | Q2 base → U1 cathode (~2 mA cathode current when tripped, clear of onsemi's 1 mA `I_KA(min)` maximum — TI specs its A grade at 0.6–0.7 mA, so the old 2.2 k's ~0.93 mA was marginal rather than universally out of spec. The consequence of going under is a soft, ill-defined trip, not a dead circuit.) |
 | R12 | 100 k | Q2 base–emitter (holds Q2 off) |
 | Q2 | BC557 (PNP, TO-92) | E = VSW, C = GATE. When on, pulls GATE to VSW ⇒ Vgs ≈ 0 ⇒ Q1 off |
 | D3 | BAT85 — **DNP** | VLOAD → GATE. Experimental "naive OR" term; see §4.1 why it's not fitted |
 | SW1 | slide switch | VSW → VLOAD. Downstream of FET/Schottky on purpose (see states) |
 | C1/C2 | 220 µF electro + 100 nF | on VLOAD (bulk for WiFi TX bursts, per DESIGN §3) |
 
+**The divider is a populate-time choice, not a fab-time one.** R7/R8/U1 are through-hole
+parts fitted at assembly, so the board does not commit you to any row of this table. What the
+original 82 k/100 k gets wrong is that `V_trip = Vref·(1+R7/R8)` **omits the TL431's REF input
+bias current** flowing in R7, which at 82 k adds 164 mV typ / 328 mV max. Every trip number
+published before 2026-07-26 was low by that much.
+
+| Option | U1 | R7 / R8 | Trip typ | 25 °C window | Standby (VSW divider) | Shelf life¹ |
+|---|---|---|---|---|---|---|
+| as built v1.0 | TL431 (±2.2 %) | 82 k / 100 k | 4.70 V | 4.40–5.01 V | 23 µA | ~4.2 yr |
+| **fitted default** | **TL431A (±1 %)** | **8.2 k / 10 k** | **4.56 V** | **4.46–4.66 V** | **231 µA** | **~10 months** |
+| middle | TL431A | 18 k / 22 k | 4.57 V | 4.45–4.70 V | 105 µA | ~1.7 yr |
+| best electrically | TLV431A (Vref 1.24 V) | 100 k / 38.3 k | 4.49 V | 4.37–4.64 V | 30 µA | ~3.7 yr |
+
+¹ Drain-only, 2000 mAh, everything else in §4.3 state 6 included. The cell's own
+self-discharge (order 1.5–3 %/month, ≈40–80 µA equivalent) is comparable to or larger than the
+board in every row except the 8.2 k/10 k one, so treat these as "the board stops being the
+limiting factor below ~50 µA", not as literal shelf life.
+
+The **TLV431A** row is the electrically correct answer — its REF bias current is ≤0.5 µA
+instead of 4 µA, so it buys the accuracy at *no* standby cost, and its TO-92 (LP) pinout is
+pin-for-pin identical to the TL431's. It is not the default only because TI's A-grade TO-92
+parts are NRND/obsolete (onsemi `TLV431ALPRAG` is the live source) and this is a 6-day order
+window. If you can source it, fit it — R7/R8 change with it, and note Vref is 1.24 V, so the
+divider ratio is completely different.
+
+None of these fix §4.3 state 4 (see the box in §4.1). They fix the *accuracy* of a threshold
+that is looking at the wrong node.
+
 ### 4.3 Operation state-by-state
 
 | # | State | What happens |
 |---|---|---|
 | 1 | **Battery only, SW1 ON** | VBUS_CHG = 0 ⇒ D1 inert. VSW bootstraps through Q1's body diode, TL431 sees < 4.2 V ⇒ off ⇒ GATE = 0 V via R6 ⇒ Vgs = −VBAT (−3.0…−4.2 V) ⇒ Q1 fully on. Drop at 125 mA ≈ **5 mV**. Load runs from battery. |
-| 2 | **Charging (TP4056 USB in), SW1 ON** | GATE pulled to ≈ 4.5 V by D1 *and* TL431 trips (VSW ≈ 4.7 V via D2) ⇒ Q1 off ⇒ battery sees only the charger: clean CC/CV, correct termination. Load runs from VBUS_CHG through D2 (VSW ≈ 4.7 V → SuperMini LDO). Unit fully operational while charging. Use a **5 V / 2 A** wall charger (mandatory): charge current (1 A default Rprog) + load (~150 mA) share one port; 2000 mAh at 1 A ≈ 0.5C ⇒ full charge ~2.5–3 h. Reprogramming Rprog to 2.4 k (500 mA) is **optional** (fiddly 0402/0603 rework) — the 2 A charger makes the 1 A default safe, so it is not required. |
-| 3 | **Charging, SW1 OFF** | Same as #2 but load disconnected — unit off, battery charges clean. TL431 burns ~1 mA from the charger (irrelevant). |
-| 4 | **Flashing (SuperMini USB in), SW1 ON, battery in** | SuperMini VBUS drives VLOAD = 5.0 V hard → through SW1 → VSW = 5.0 V ⇒ TL431 trips ⇒ Q1 off. Body diode blocked (drain 4.2 V < source 5.0 V). **No back-feed into the cell.** Whole board (DAC, mic, LEDs) runs from the flashing USB. |
-| 5 | **Flashing, SW1 OFF** | SuperMini + 3V3 loads (DAC, mic) powered from its USB; VLOAD isolated from VSW by open switch; battery idles behind Q1. Also fine. |
-| 6 | **SW1 OFF, no USB (storage)** | Q1 is on (gate 0, source floats to VBAT) so VSW sits at VBAT with no load. Standby drain = R7+R8 (23 µA) + battery divider R1+R2 (21 µA) ≈ **45 µA** ⇒ ~5 years on the 2000 mAh cell. DW01 protects the cell long before that. |
-| 7 | **Race: plugging charger while SW1 OFF** | For the µs–ms before TL431 trips, Q1 is still on and D2 could push a current blip into the cell. D1 yanks the gate high in nanoseconds, closing the race. This is why D1 stays fitted even though TL431 covers the steady state. |
+| 2 | **Charging (TP4056 USB in), SW1 ON** | **D1 is what holds Q1 off here** — VSW ≈ 4.68 V (5.0 − D2's drop at ~150 mA) sits right on the trip, so the TL431 may or may not fire; do not rely on it. With D1 a **Schottky**, Vgs = Vf(D2) − Vf(D1) ≈ 0.32 − 0.24 = **+0.08 V** ⇒ hard off. Battery then sees only the charger: clean CC/CV, correct termination. Load runs from VBUS_CHG through D2 → SuperMini LDO; unit fully operational while charging. Use a **5 V / 2 A** wall charger (mandatory): charge current (1 A default Rprog) + load (~150 mA) share one port; 2000 mAh at 1 A ≈ 0.5C ⇒ full charge ~2.5–3 h. Reprogramming Rprog to 2.4 k (500 mA) is **optional** (fiddly 0402/0603 rework) — the 2 A charger makes the 1 A default safe. |
+| 3 | **Charging, SW1 OFF** | Same as #2 but load disconnected — unit off, battery charges clean. This is the **worst case for the D1 term**: with the load gone, D2 carries only the sense divider (~230 µA at 8.2 k/10 k, plus ~2 mA once the TL431 fires), so its Vf falls to ~0.15–0.25 V. With a silicon D1 that leaves Vgs ≈ −0.15…−0.25 V — *below* the DMG3415U's −0.3 V minimum threshold, so Q1 is nominally off, but only by 50–150 mV of a parameter that drifts ~2 mV/°C in the TP4056's 1–1.4 W heat plume. That is sub-threshold, not hard-off, and it leaks. The Schottky D1 is what turns this into ≈ 0 V with margin. TL431 burns ~2 mA from the charger (irrelevant). |
+| 4 | **Flashing (SuperMini USB in), SW1 ON, battery in** | ⚠️ **This state does not work as designed — see the box in §4.1.** The intent was: VBUS drives VLOAD → SW1 → VSW ⇒ TL431 trips ⇒ Q1 off. In reality you arrive here from battery mode with Q1 *already on*, and the cell clamps VSW; reaching the trip would need 2–4 A. A laptop port loaded to 4.4–4.6 V leaves **Vgs ≈ −4.5 V, Q1 fully enhanced at 42 mΩ**, and the port back-feeds the cell at whatever its limiter allows (0.5 A legacy / 1.5 A BC1.2 / up to 3 A Type-C) with **no CC/CV and no termination**. D1 cannot help — its anode (VBUS_CHG) is at 0 V with the charger unplugged. The only backstop is the DW01's ~4.3 V overcharge cut, tens of minutes away at mid SoC. There is no visible symptom. **Until §4.4 says otherwise, keep the manual rule: switch OFF before plugging the SuperMini's USB.** |
+| 5 | **Flashing, SW1 OFF** | SuperMini + 3V3 loads (DAC, mic) powered from its USB; VLOAD isolated from VSW by the open switch; battery idles behind Q1. **This one genuinely is safe** — it is the state the manual rule tells you to flash in. |
+| 6 | **SW1 OFF, no USB (storage)** | **SW1 does not disconnect the sense divider.** SW1 cuts VLOAD only; R7/R8 hang on VSW, which the cell reaches through Q1 (on, and through its body diode even if it were off). What the switch *does* remove is C1/C2 and the whole 3V3 rail including RV1's 330 µA — which is why it is worth having. Standby at 4.2 V = R7+R8 (**231 µA** at 8.2 k/10 k, was 23 µA) + R1/R2 divider (21 µA) + DW01 (~3 µA) + TP4056 standby (~2.5 µA) + D2 reverse leakage (a *typical*, not a datasheet limit: ~5 µA at 25 °C, climbing steeply to tens of µA by 50–60 °C; the SS34's specified maximum is far higher) ≈ **262 µA at 4.2 V ⇒ roughly 10.5 months** on the 2000 mAh cell (the §4.2 table's standby column uses the same 4.2 V basis throughout). **Note this is the standby of a fully-populated block** — on the §4.5 plan-A board, with R7/R8 omitted, it drops back to ~30 µA. The old "~5 years" figure was wrong twice over: it omitted the REF bias current *and* it is unreachable at **any** divider value, because the cell's own self-discharge alone is 40–80 µA equivalent. Recharge on a calendar; do not rely on the DW01 cutoff, which is a fire fuse, not a storage strategy. |
+| 7 | **Race: plugging charger while SW1 OFF** | For the µs–ms before TL431 trips, Q1 is still on and D2 could push a current blip into the cell. D1 yanks the gate high in nanoseconds, closing the race. This is why D1 stays fitted — and per states 2/3 it is the *primary* isolation while charging, not merely a race-closer. |
 
-Margins (with DMG3415U Vgs(th) min −0.3 V per [Diodes datasheet](https://www.diodes.com/datasheet/download/DMG3415U.pdf)):
-- State 4: TL431 trip 4.54 V vs VLOAD ≥ 4.75 V (worst-case USB) → 0.21 V margin; vs battery max 4.2 V → 0.34 V margin.
-- State 2 with a sagging charger (4.75 V USB − 0.35 V D2 = 4.40 V < trip): TL431 alone would fail to trip, but D1 holds Vgs ≈ −0.15 V, above the −0.3 V minimum threshold ⇒ Q1 stays off. The two mechanisms deliberately overlap.
+Margins (with DMG3415U Vgs(th) min −0.3 V per [Diodes datasheet](https://www.diodes.com/datasheet/download/DMG3415U.pdf)).
+**Both margin claims printed here before 2026-07-26 were void** — they used the
+bias-free trip of 4.54 V. Corrected, for the fitted 8.2 k/10 k + TL431A:
 
-### 4.4 ⚠️ VERIFY — breadboard-test the whole block before committing the PCB order
+- **Battery side (the one that must hold):** trip window low corner **4.46 V at 25 °C** vs a
+  full cell at the charger's CV max **4.242 V** ⇒ **≈0.22 V**. Over temperature the low
+  corner falls to ~4.41 V ⇒ ~0.17 V — still safe, but note that means the fitted values only
+  satisfy the "never below ~4.45 V" rule in §4.4 item 5 *at 25 °C*. Safe: no false trip in battery mode, and
+  WiFi-burst ripple on VSW is downward, i.e. away from the threshold. On the old 82 k/100 k
+  the low corner was 4.40 V — still safe, so this was never the failing end.
+- **Load side (the one that does not hold):** the window's high corner is 4.66 V at 25 °C
+  (4.73 V over temperature) against a *connector* voltage that is legally as low as 4.40 V.
+  There is **no guaranteed margin**, and per §4.1 the threshold is usually unreachable in
+  state 4 anyway. Do not quote a load-side margin figure.
+- **States 2/3 rest on D1, not on the comparator** — VSW sits within tens of mV of the trip
+  while charging. That is why D1 is a Schottky: it makes Vgs ≈ 0…+0.1 V in both charging
+  states instead of −0.10…−0.22 V against a −0.3 V minimum threshold. The two mechanisms were
+  described as "deliberately overlapping"; in practice, in states 2 and 3, there is only one.
 
-Non-negotiable, ~1 evening, do it in week 1–2 with real modules and a bench meter:
+**Hot-enclosure note (found 2026-07-26, not yet bench-checked).** D2's reverse leakage in
+storage returns through `D2 → VBUS_CHG → D1 → GATE → R6`, so it develops `I·R6` on the gate:
+harmless 0.5 V at 5 µA, but at the tens of µA a 50–60 °C enclosure produces, GATE climbs
+toward 2–3 V and Vgs enters the −0.3…−1.0 V threshold band. Q1 then un-enhances and the load
+falls onto its body diode (~0.4–0.6 V at 125 mA), eating LDO headroom. It is self-limiting
+and recovers when it cools, but it means the gate node's leakage headroom is only ~30 µA
+(30 µA × R6 = 3 V on GATE ⇒ Vgs ≈ −1 V, the worst-case threshold limit). If
+this shows up on the bench, the fixes are a lower-leakage D2 (SS14 in the same SMA footprint)
+and/or a smaller R6 — both value-only.
 
-1. State 1: measure VBAT→VLOAD drop at 150 mA (expect < 20 mV). If you see ~0.7 V, the FET
-   isn't turning on — check gate.
+### 4.4 ⚠️ VERIFY — bench-test the block on the assembled carrier
+
+**This moved.** It was written as a breadboard evening gating the PCB order. It cannot run
+there: the current bench rig has no battery and no TP4056 in circuit, and Q1 is SOT-23 —
+unbreadboardable without an adapter. It is also not an order gate, because the board carries
+both topologies (JP1). So: **order on schedule, run this on an assembled carrier** in the
+Aug 11–16 window, where TP1 (VBUS_CHG) / TP2 (VSW) / TP3 (GATE) exist for exactly this and
+every module lifts out of its socket. Until it passes unambiguously, ship on §4.5's plan A.
+
+1. State 1: measure the drop **across Q1 alone** (TP2 vs the cell +) at 150 mA — expect
+   < 20 mV. Do *not* measure cell→5V-pin and apply that number: the VLOAD copper adds a
+   measured 152 mΩ (§6.4), i.e. ~23 mV at 150 mA on top. If you see ~0.7 V across Q1, the
+   FET is not turning on — check the gate.
 2. State 2: scope the cell current while charging with load running — must show clean CC/CV,
    LED on TP4056 must reach "charged" (termination works only if load is truly disconnected).
-3. State 4: ammeter in series with the cell while SuperMini USB is plugged, SW1 ON —
-   must read ≤ µA (leakage), never mA into the cell.
+3. **State 4 — the one that matters, and the one the old procedure would have passed.**
+   Cell current with the SuperMini USB plugged and SW1 ON. Three amendments, all load-bearing:
+   - **Source:** not a stiff 5.0 V bench supply. Feed it from a supply deliberately sagged to
+     **4.4 / 4.5 / 4.6 V** (bench supply + ~0.5 Ω series), *and* at 4.75 and 5.0 V. The
+     failure is specific to a real laptop port through a thin cable.
+   - **Instrument:** a **milliohm-class shunt**, not a DMM in current mode. A DMM's 0.1–0.25 Ω
+     burden roughly doubles the path resistance, which lets the circuit trip and read µA —
+     the meter makes it pass. Remove the meter and the fault returns.
+   - **Criterion:** **≤ 1 mA**, not "≤ µA" — a sub-threshold trickle through Q1 is normal and
+     the old criterion would send you chasing a phantom. Repeat across cell SoC 3.6–4.0 V.
 4. State 7: plug/unplug charger 20× with SW1 in both positions; watch cell current for blips.
-5. Sweep a bench supply 4.2→5.0 V on VLOAD and log the TL431 trip point; adjust R7 if your
-   USB sources measure < 4.8 V loaded (75 k → ≈4.37 V; 77 k for 4.42 V — only if needed).
+5. Sweep a bench supply 4.2→5.0 V on VLOAD and log the trip point. **Expect ≈4.56 V** with the
+   fitted 8.2 k/10 k + TL431A (≈4.7 V if you built the old 82 k/100 k) — a correct measurement
+   at 4.7 V is not a build error. *Do not retune R7 downward:* the old advice here (75 k →
+   "4.37 V", 77 k → "4.42 V") was doubly wrong — those values actually trip at ~4.52 / 4.57 V,
+   and a low corner near 4.24 V collides with a full cell, giving battery-mode relaxation
+   oscillation. Never set the low corner below ~4.45 V.
 6. Optionally fit D3 (BAT85) and confirm the §4.1 failure yourself (battery-mode drop jumps
    to ~0.7 V) — then remove it.
+7. Record the trip point and the state-4 current in `measurements.md`. There is currently no
+   power-path row in that file at all, which is why every number in §4.3 is paper.
 
-**Escape hatch (already on the board):** if the block misbehaves and time runs out, bridge a
-2.54 mm solder-jumper/0 Ω footprint **JP1 (VBAT_OUT → VSW)**, leave Q1/U1/Q2/D1 unfitted, and
-you are back to the proven plain-switch topology plus the old "switch OFF while USB plugged"
-rule. Place JP1 next to Q1. This removes all schedule risk from the power path.
+**Escape hatch (already on the board):** bridge the 2.54 mm solder-jumper **JP1
+(VBAT_OUT → VSW)** and leave **Q1, U1, Q2, D1 and D2** unfitted — *and take R7/R8 off too*.
+Those five are the safety-critical ones (they carry current or can inject into the cell), but
+R7/R8 sit across VSW, which JP1 ties straight to the battery: leaving them fitted burns
+**231 µA** off the cell for a divider whose comparator is not even populated, which is the
+entire shelf-life budget §4.2 argues about. R6/R9/R12 do nothing with Q1/Q2/U1 absent — fit
+them or not. You are then back to the
+proven plain-switch topology plus the old "switch OFF while USB plugged" rule.
+
+> **⚠️ D2 must come off — this is not optional hygiene.** With JP1 bridged and D2 still
+> fitted, plugging the charger gives `VBUS_CHG → D2 → VSW → JP1 → VBAT_OUT = OUT+ = B+`, i.e.
+> the raw USB input lands on the cell at ~4.6 V with the TP4056's CC/CV loop bypassed
+> entirely — an initial demand of several amps, limited only by the adapter. The TP4056 sees
+> an IR-inflated B+ and lights "charged" while D2 keeps feeding. The only stop is the DW01
+> hiccupping between 4.10 and 4.30 V for as long as the charger is plugged in. And because
+> the injection point is **upstream of SW1**, switching the unit off does not protect it. D2
+> is a default-fit BOM part, so this is the state you get unless you act.
+
+**Access cost, so it is not a surprise:** JP1 and Q1 sit under the socketed TP4056, while
+**D1 and D2 sit under the PCM5102A**. Executing the fallback means lifting *both* modules.
+Decide fit-or-DNP for the power path **before** the TP4056 is wired down — if J5/J6 end up
+soldered rather than socketed, JP1 becomes a desoldering job.
+
+### 4.5 What to actually build for the show
+
+The review's conclusion, and the default this document now takes:
+
+- **Plan A — JP1 + the manual rule.** Bridge JP1 and omit the power-path parts. **The
+  load-bearing five are Q1, Q2, U1, D1 and D2** — those carry current or can inject into the
+  cell. **R7/R8 must come off too**, not for safety but because JP1 ties them across the
+  battery: 231 µA for a divider with no comparator behind it, which is the whole shelf-life
+  budget §4.2 argues about. R6, R9 and R12 do nothing with Q1/Q2/U1 absent — fit them or
+  don't. Just never leave **D2** in. Keep "switch OFF before plugging any USB" as permanent
+  operating procedure. This is the topology that has been running on the breadboard for
+  weeks. The hazard needs a human to plug USB with the switch ON; charging is a
+  between-shows activity and flashing is bench-only, so show-time exposure is near zero.
+  Add a silk-legend habit: *switch off, then plug in.*
+- **Plan B — populate the block** only if the amended §4.4 passes unambiguously on an
+  assembled carrier. Its headline benefit (run while charging) is not show-critical:
+  ~13 h of NETWORK runtime against a ≤5 h show means mid-show charging never happens.
+- **v1.2 — do it properly.** Replace the whole block with an ideal-diode controller that
+  senses the drop across Q1 rather than an absolute voltage on the load node
+  (**LTC4412**, SOT-23-6, hand-solderable), or move to a charger with a real power path
+  (BQ24074 / MCP73871 breakout). Either deletes §4.1's hard constraint instead of working
+  around it.
+
+The PCB is identical under all three — that is what JP1 buys.
 
 ---
 
@@ -243,9 +394,9 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 |---|---|---|---|---|---|
 | Q1 | 1 | P-FET −20 V | **DMG3415U-7** (Diodes) | SOT-23 (SMD) | hand-solder pads; THT fallback: none good at low Vgs — keep SOT-23 |
 | Q2 | 1 | PNP BJT | **BC557B** | TO-92 | any small PNP works |
-| U1 | 1 | Shunt ref | **TL431** (TO-92, any brand) | TO-92 | comparator duty only |
-| D1 | 1 | Si diode | **1N4148** | DO-35 | gate OR |
-| D2 | 1 | Schottky 3 A | **SS34** (LCSC C8678 ⚠️ VERIFY) or THT **1N5817**/**1N5822** | SMA / DO-41 | draw a dual THT+SMA footprint |
+| U1 | 1 | Shunt ref | **TL431A** (±1 %, TO-92) — the **grade** sets the trip window, the **brand** sets the TO-92 lead order (see the boxed note below; check both). Better if you can source it: **TLV431A** (onsemi `TLV431ALPRAG`) with R7/R8 → 100 k/38.3 k | TO-92 | comparator duty only |
+| D1 | 1 | **Schottky** | **BAT85S** (DO-35) — or BAT54 if you prefer SOT-23 | DO-35 | gate OR. **Not** a 1N4148: the silicon drop is on the wrong side of D2's and leaves Q1 only partly off while charging (§4.3 states 2/3) |
+| D2 | 1 | Schottky 3 A | **SS34** (LCSC C8678 ⚠️ VERIFY) or THT **1N5817**/**1N5822** | SMA / DO-41 | dual THT+SMA footprint. ⚠️ **Omit entirely if JP1 is bridged** (§4.4) |
 | D3 | (1) | Schottky small | **BAT85** | DO-35 | **DNP** — experiment only (§4.1) |
 | D4 | 1 | LED 3 mm green | e.g. Hongli 3 mm green | THT | NET status |
 | D5 | 1 | LED 3 mm amber/yellow | e.g. Hongli 3 mm yellow | THT | MODE status |
@@ -253,9 +404,9 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 | R3 | 1 | 10 k | generic 1/4 W | axial | GPIO2 strap pull-up |
 | R4, R5 | 2 | 2.2 k | generic 1/4 W | axial | LED series (per config.h "~2.2k") |
 | R6, R12 | 2 | 100 k | generic 1/4 W | axial | gate pull-down / PNP B-E |
-| R7 | 1 | 82 k 1 % | metal film | axial | sense divider top |
-| R8 | 1 | 100 k 1 % | metal film | axial | sense divider bottom |
-| R9 | 1 | 2.2 k | generic | axial | TL431 cathode drive |
+| R7 | 1 | **8.2 k 1 %** | metal film | axial | sense divider top — see the §4.2 divider table before committing |
+| R8 | 1 | **10 k 1 %** | metal film | axial | sense divider bottom |
+| R9 | 1 | **1 k** | generic | axial | TL431 cathode drive (2.2 k left the part below its 1 mA `I_KA(min)`) |
 | R10, R11 | 2 | 100 Ω | generic | axial | DAC → RCA-pad series |
 | C1 | 1 | 220 µF ≥ 10 V electrolytic | e.g. Rubycon/Chang 220 µF 16 V | radial 6.3 mm | VLOAD bulk |
 | C2, C4, C5 | 3 | 100 nF X7R | generic | 2.54 mm radial | decoupling |
@@ -269,19 +420,32 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 | J2 | 1 | Female header 1×6 | generic | THT | DAC I2S |
 | J3 | 1 | Female header 1×9 | generic | THT | DAC analog/config end (only LROUT/ROUT/AGND netted; rest mechanical/NC) |
 | J4 | 1 | Female header 1×3 | generic | THT | mic pigtail (`VCC GND OUT`) |
-| J5, J6 | 2 | Female header 1×2 | generic | THT | TP4056 |
+| J5, J6 | **4** | **Machined single-pin socket** (turned-pin, e.g. a Mill-Max 0305 series single, or singles broken off a machined DIP socket) | — | THT | TP4056. **A stock 1×2 female header cannot mate** — the module's pads are at 3.526 / 3.106 mm, not 2.54 (§2). Alternative: solder wires and give up removability |
 | J7 | 1 | Male header 1×2 | generic | THT | debug TX |
-| JP1 | 1 | 0 Ω / solder jumper | — | 2.54 mm | power-path escape hatch (open by default) |
+| JP1 | 1 | 0 Ω / solder jumper | — | 2.54 mm | power-path escape hatch (open by default). ⚠️ **If bridged, D2 must be omitted** — and Q1/U1/Q2/D1 with it (§4.4) |
 | TP1–TP5 | 5 | testpoint pad | — | 1.5 mm pad | no part |
 | — | 4 | M3 screw + standoff | — | — | mounting (§6) |
 
-Order **fixed-size** female headers (1×8, 1×6, 1×9, 1×3, 1×2) — female strips do not snap cleanly;
-each cut destroys one position. Male pin headers for the TP4056 pads: solder standard 2.54 mm
-male pins into the module's drilled B+/B−/OUT+/OUT− pads so it plugs into J5/J6.
-⚠️ VERIFY: pad spacing on this USB-C TP4056 module is close to but not guaranteed 2.54 mm-grid — measure
-(§7) and place J5/J6 at the measured positions (custom footprint), not on an assumed grid.
-`IN+` connects via a short soldered wire from the module pad to J6b — it only carries the
-D1/D2 sense/feed current (≤ 200 mA), a 5 cm wire is fine.
+Order **fixed-size** female headers (1×8, 1×6, 1×9, 1×3) — female strips do not snap cleanly;
+each cut destroys one position. **The TP4056 is the exception:** its four pads are at
+0 / 3.526 / 10.960 / 14.066 mm (photogrammetry 2026-07-26 — the old "close to 2.54 grid"
+guess is answered, and the answer is no), so fit **four individual machined pins**, not a
+2.54 mm strip, which cannot span them.
+
+> **⚠️ TO-92 orientation — check before you solder U1 and Q2.** `design.py` assigns
+> **pad 1 = REF, pad 2 = ANODE, pad 3 = CATHODE** for U1, which is the *onsemi* numbering.
+> **TI numbers the same TO-92 package the other way round** (pin 1 = K, pin 2 = A,
+> pin 3 = REF), and since the **anode is the centre lead in both**, a TI-branded TL431 drops
+> into the footprint perfectly while sitting backwards. The footprint is an inline 3-pad
+> strip, so the silk outline will not save you. Q2 (BC557) carries the same class of trap —
+> C-B-E and E-B-C both exist in TO-92 across vendors. Read the lead order off the datasheet
+> of the part you actually bought and confirm **REF lands on the pad wired to VSW_SENSE**
+> (ohm it out against R7/R8 before powering up). This applies equally to the TLV431A option.
+
+`IN+` connects via a short soldered wire from the module pad to J6b. Size it for the **whole
+board load, not a sense current**: in §4.3 state 2 the entire load runs charger → D2 → VSW
+through this wire — ~150 mA average, ~350 mA on WiFi TX bursts, plus a ~4 A/<100 µs inrush
+blip into C1 at plug-in. A 5 cm wire is still fine; the old "≤ 200 mA" note was not.
 
 ---
 
@@ -295,25 +459,31 @@ D1/D2 sense/feed current (≤ 200 mA), a 5 cm wire is fine.
   │            X RCA pad ▲            Y RCA pad ▲               │   │
   │            └─R10─┐                └─R11─┐  ┌──────────────┐  │   │
  ~~~ antenna   ┌─────┴──[J3 9pin ]──────────┴─┐│  J4 mic hdr  │  │   │
- ~~~ overhang  │  GY-PCM5102A ~32mm (J2⊥J3)   ││ → MAX4466 on │  │   │
- ~~~ (keep-out)│  ┌───────────────────────────┘│ ~10cm pigtail│  │  50mm
+ ~~~ keep-out  │  GY-PCM5102A ~32mm (J2⊥J3)   ││ → MAX4466 on │  │   │
+ ~~~ (no pour) │  ┌──────────────────────────┘│ ~10cm pigtail│  │  50mm
   │  ┌─────────┴──┐│      ANALOG ZONE          └──────────────┘  │   │
   │  │ ESP32-C3   ││  ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐  ┌──────────────┐ │   │
   │  │ SuperMini  ││    AGND island (§6.3)      │TP4056 USB-C  │ │   │
   │  │ (J1A/J1B)  ││  └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘  │ (J5/J6/J6b)  │═╪══ USB-C
-  │  │ USB ▼ edge?│└──[J2: SCK BCK DIN LCK…]    │ Q1 D1 D2 U1  │ │edge│
-  │  └────────────┘   POWER PATH under/near ───▶│ Q2 JP1 C1    │ │   │
+  │  │ USB-C ▶ east│└─[J2: SCK BCK DIN LCK…]   │ Q1 + JP1     │ │edge│
+  │  └────────────┘                             │  under here  │ │   │
   │   [J7][TP…]                                 └──────[J8 JST]┘ │   │
   │  D4●  D5●   [SW2 btn]   (RV1 pot)◎   [SW1 slide]             │   │
   └─(M3)────────────────────────────────────────────────────(M3)─┘   ▼
         CONTROL EDGE: LEDs, button, pot, power switch
 ```
 
-> **⚠️ DAC module footprint (measured 2026-07-18):** the purple GY-PCM5102A is **~31.8 mm**
-> long (not the old ~27 mm nominal) with two **perpendicular** sockets — J2 (1×6 I2S) on a
-> short edge, J3 (1×9 analog/config) on the long edge. Draw the footprint `GY-PCM5102A_6+9`
-> from measured header spacing and re-confirm the 70 × 50 mm fit with the 1:1 paper-doll
-> check (§9) before routing — this is the tightest module on the board.
+Only **Q1 and JP1** hide under the TP4056. **D1 and D2 sit under the PCM5102A**; D3 (DNP) is
+north of the TP4056 and outside every module outline so it can be retrofitted; and the TL431
+arm (U1, Q2, R7–R9) plus C1 live west/centre, not in the power corner. That matters for §4.4:
+the JP1 fallback means lifting **both** socketed modules.
+
+> **✅ DAC module footprint (photogrammetry 2026-07-26):** the purple GY-PCM5102A is
+> **32.0 × 17.4 mm** (not the old ~27 mm nominal) with two **perpendicular** sockets — J2
+> (1×6 I2S) on a short edge, J3 (1×9 analog/config) on the long edge, J2 pin 1 at
+> (−26.917, +0.583) mm from J3 pin 1. It is the tightest module on the board and the one
+> v1.0 got wrong. The footprint is generated from `hw/pin_locs`; `audit_board.py` re-checks
+> the fit every build (worst pin 0.180 mm against a 0.25 mm gate).
 
 Hard placement rules:
 
@@ -327,10 +497,13 @@ Hard placement rules:
    (`PWR`, `CUTOFF`, `MODE SW`, `NET`, `MODE`) — the button is the one that carries the
    qualifier, because `MODE` on the button and `MODE` on its LED landed side by side and
    read as one part labelled `MODE MODE`.
-3. **SuperMini at the west short edge, antenna end overhanging the board outline.**
-   The antenna end must extend past the PCB edge, and a **copper/parts keep-out** inboard
-   of that edge on both layers (no pour, no traces) covers the case where the overhang
-   ends up smaller than planned. ✅ RESOLVED (2026-07-26): antenna and USB-C are at
+3. **SuperMini at the west short edge, antenna end outboard.**
+   The antenna is **flush with the module's own board edge** — it does not overhang
+   anything (measured 2026-07-18, 0 mm). What does the work is a **copper/parts keep-out**
+   inboard of that edge on both layers: **no pour and no stitching vias**. A few thin
+   signal traces are allowed to clip the region (the router soft-penalises it rather than
+   forbidding it) — the pour and the via field are what matter for the antenna.
+   ✅ RESOLVED (2026-07-26): antenna and USB-C are at
    **opposite** ends of the module, so the old second sentence here — "orient so the
    module's USB-C faces the same west edge" — contradicted the first and could not be
    satisfied. **Antenna west wins** (RF clearance beats flashing convenience; the module
@@ -339,10 +512,13 @@ Hard placement rules:
    its board edge rather than overhanging (measurements.md), that keep-out is what
    actually does the work. Consequence: the 5V row lands **south** ⇒ `JA1` south, `JB1`
    north, which is the mirror-image bug v1.0 shipped and `measured.py` now refuses.
-4. **TP4056 (USB-C, blue 17 × 27 mm) at the east short edge**, its USB-C jack overhanging the
-   board edge by ~2 mm (~29 mm effective module depth). Size the board-edge cutout / charge-port
-   opening to clear the USB-C connector. Power-path parts (Q1, Q2, U1, D1, D2, R6–R9, R12, JP1,
-   C1) cluster next to it — they can hide under the socketed module.
+4. **TP4056 (USB-C, blue, measured 26.9 × 17.3 mm) at the east short edge**, its USB-C jack
+   overhanging the board edge by **1.4 mm** (28.3 mm effective module depth). Size the
+   board-edge cutout / charge-port opening to clear the USB-C connector. As built, only
+   **Q1 and JP1** hide under this module; **D1 and D2 sit under the PCM5102A**, D3 is north
+   of the TP4056 body and outside every module outline, and the TL431 arm (U1, Q2, R7–R9,
+   R12) plus C1 live in the **south-west** quadrant. That matters for §4.4: executing the
+   JP1 fallback means lifting both socketed modules, not just the charger.
 5. **Analog zone** (J3, R10/R11, RCA pads X/Y, mic header J4) in the north-east quadrant —
    the diagonal opposite of the antenna. The MAX4466 is **not** on the carrier: it hangs off a
    ~10 cm 3-wire pigtail from J4 (`VCC/GND/OUT`) and exits the enclosure so it can be aimed at
@@ -369,7 +545,9 @@ Hard placement rules:
 
 ### 6.2 Ground pour
 
-Both layers: GND pour, 0.3 mm clearance. **No pour or traces in the antenna keep-out**
+Both layers: GND pour at the netclass clearance, **0.25 mm** (the router works to 0.26 mm to
+stay off the limit; the 0.127 mm lattice is finer than either). **No pour and no stitching
+vias in the antenna keep-out** (thin signal traces may clip it — see rule 3)
 (rule 3). Bottom layer under the analog zone belongs to the AGND island (§6.3).
 
 Stitching happens in two passes, because one is not enough on a 2-layer board this dense:
@@ -382,8 +560,9 @@ Stitching happens in two passes, because one is not enough on a 2-layer board th
   free *and* both sit on the main pour. (A via in a pour pocket welds an isolated F+B
   scrap together, which island removal then keeps as floating copper.)
 
-As built that gives a **worst stitch gap of 8.6 mm** anywhere on the board outside the
-antenna keep-out; `audit_board.py` gates it at 12 mm. Zone minimum thickness is 0.15 mm,
+As built that gives a **worst stitch gap of 7.8 mm** anywhere on the board outside the
+antenna keep-out, with 45 GND vias; `audit_board.py` gates it at 12 mm. (8.6 mm was the
+`ROUTE_SEED=20260726` variant, which the seed sweep rejected — see layout-notes.) Zone minimum thickness is 0.15 mm,
 not KiCad's 0.25 mm default: the routing chops the pour into ribbons and a 0.25 mm floor
 discards every sliver narrower than that, which is one way a GND pad ends up on a fill
 fragment with no path home. JLCPCB's 1 oz minimum copper width is 0.127 mm, so 0.15 is
@@ -392,37 +571,72 @@ in spec.
 ### 6.3 Star ground (analog)
 
 - The AGND island carries: J3 `G`, the X and Y RCA ground pads, J4 mic GND, C4.
-- It joins the main GND pour at **exactly one neck**, ~3 mm wide, placed next to the J2 `GND`
-  pin (the DAC module's ground reference). DRC trick: make AGND a separate net-tie footprint
-  or a deliberate pour bridge; verify with the DRC that no second join exists.
+- It joins the main GND pour at **exactly one neck**, ~3 mm wide, at **x 32–35, y ≈ 13.5**
+  (east of the J2 `GND` pin at (25.15, 18.36), not immediately beside it — the neck has to
+  clear the DAC socket).
+- **How it is actually built** (this differs from the obvious approach, which was tried and
+  failed): there is **one** `GND_main` zone on both layers, carved into an island by
+  **moat rule-areas**, plus an explicit 1.0 mm F+B strap at x = 33.02 from y 8.9 to 17.5 with
+  three vias. A *separate same-net island zone* does **not** work — KiCad merges same-net
+  zones during fill, so the moat is what enforces the split. Do not "simplify" this into a
+  net-tie footprint.
 - Result: DAC output return currents and mic return currents do not share copper with the
   SuperMini's digital/WiFi return path.
 
 ### 6.4 Trace widths
 
-| Net class | Width |
-|---|---|
-| BAT+/BAT−/VBAT_OUT/VSW/VLOAD (to 350 mA bursts) | 1.0 mm |
-| 3V3 | 0.6 mm |
-| Signals (I2S, ADC, LEDs, buttons) | 0.3 mm |
-| DAC_L/DAC_R to RCA pads | 0.5 mm, over AGND only |
+These are the widths the router *asks* for. On a dense 2-layer board it cannot always get
+them, so it steps down a ladder (1.0 → 0.8 → 0.6 → 0.4 → 0.3) at pinch points. The table
+therefore carries both the target and **what the board actually has** — measured, not assumed:
+
+| Net class | Target | As built (min) | Note |
+|---|---|---|---|
+| BAT+ / BAT− / VBAT_OUT / VBUS_CHG | 1.0 mm | **1.0 mm** ✅ | never narrowed |
+| VSW | 1.0 mm | 0.6 mm | 60 mm at 1.0, 54 mm at 0.6 |
+| **VLOAD** | 1.0 mm | **0.3 mm** ⚠️ | 56 mm at 1.0, **91 mm at 0.3** — see below |
+| 3V3 | 0.6 mm | **0.6 mm** ✅ | never narrowed |
+| Signals (I2S, ADC, LEDs, buttons) | 0.3 mm | 0.3 mm ✅ | |
+| DAC_L/DAC_R, SCOPE_X/Y to RCA pads | 0.5 mm | 0.4 mm | short pad fan-outs only, over AGND |
+
+**The VLOAD narrowing is the one worth understanding**, because §6.4 asks for 1.0 mm on that
+net precisely for the 350 mA WiFi bursts. Measured end to end, **SW1 → SuperMini 5V pin is
+152 mΩ**, i.e. 53 mV at a 350 mA burst and 19 mV at the 125 mA NETWORK average. It is
+acceptable as built, for one specific reason: **C1 sits 6.8 mΩ from the 5V pin**, on the load
+side of the skinny run. The bulk cap — whose entire job is to source the burst locally — is
+therefore *not* behind the 152 mΩ; the thin copper carries only the average current while C1
+recharges between bursts. 19 mV is negligible against the 0.2–1 Ω battery loop already in the
+power budget.
+
+Widening it is a **v1.2 decision, not an order blocker**, and it has been measured rather than
+guessed. `route.py` now takes a `ROUTE_WIDTH_FLOOR` env knob (default off); a 14-variant sweep
+found that flooring VSW and VLOAD at 0.6 mm on the current seed gives **41 mΩ instead of
+152 mΩ** on VLOAD and 8.5 mΩ instead of 24 mΩ on VSW, for +25 track segments and a stitch gap
+of 8.6 mm instead of 7.8 mm (gate: 12 mm). A hard 1.0 mm floor reaches 19.9 mΩ but widens the
+gap to 10.2 mm. Wider power copper crowds the ground pour — only 3 of 12 seeds stayed
+DRC-clean with a floor at all. The full table is in `layout-notes.md`; the as-built board keeps
+the tighter ground stitching.
 
 ---
 
-## 7. ⚠️ VERIFY — caliper session before layout (mandatory, ~45 min)
+## 7. Module measurement record — ✅ DONE (2026-07-18 calipers, 2026-07-26 photogrammetry)
 
-Do this with the four real modules on the bench; write numbers straight into a
-`docs/hardware/measurements.md` scratch table. **No footprint is drawn from internet
-dimensions.** Capture, per module:
+This started as a pre-layout caliper checklist. It is now a **record**, and it has been
+superseded where the two disagree: pin *positions* come from photogrammetry
+(`hw/pin_locs` → `measured.py`), not calipers. That matters, because the two numbers the
+caliper session guessed at — the PCM5102A's row-to-row offset and the TP4056's "~2.54 grid" —
+were both wrong, and both were wrong *in the v1.0 layout*. **No footprint is drawn from
+internet dimensions.** Everything below cites `measurements.md`.
+
+Five boxes below are still open, and they are marked ⬜ **OPEN**.
 
 **ESP32-C3 SuperMini**
-- [ ] Board outline L × W (nominal 22.5 × 18 mm)
-- [ ] Pin row: pitch (2.54?), pins per row (8?), row-to-row spacing (expected 15.24 mm)
-- [ ] First-pin offset from each board edge
-- [ ] Antenna end: which end, overhang length of antenna region from last pin row
-- [ ] USB-C: which end, connector overhang past board edge
-- [ ] Confirm pin silk order of both rows against §2 table
-- [ ] Bottom-side component height (socket clearance check)
+- [x] Board outline L × W — **22.5 × 17.8 mm** (2026-07-18)
+- [x] Pin row: **2.54 mm pitch, 8/row, 15.24 mm row-to-row** (2026-07-18; photogrammetry confirms **15.240 mm**, worst pin 0.100 mm)
+- [x] First-pin offset from each board edge — **1.3 mm USB-C end / 2.8 mm antenna end** (2026-07-18)
+- [x] Antenna end: **the non-USB-C end, and it is flush — 0 mm overhang** (2026-07-18). This is why §6.1 rule 3 relies on a keep-out rather than on overhang.
+- [x] USB-C: **opposite the antenna, ~1.5 mm overhang** (2026-07-18)
+- [x] Pin silk order of both rows vs §2 — **matches** (2026-07-18, TENSTAR ROBOT)
+- [x] Bottom-side component height — **~8.3 mm**, which is the number `audit_board.py` gates against (2026-07-18)
 
 **GY-PCM5102A (purple)** — done 2026-07-18, see measurements.md
 - [x] Outline — **measured ~31.8 × 17 mm** (~5 mm longer than the old ~27 nominal ⚠️)
@@ -430,29 +644,28 @@ dimensions.** Capture, per module:
 - [x] Analog end is a **1×9** header (not 1×3), ⊥ to the 6-pin on the long edge. Silk
   (jack→digital): `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Taps: X=LROUT, Y=ROUT, gnd=AGND
 - [x] 3.5 mm jack overhang ~1.6 mm (hangs off edge — fine)
-- [ ] Output filter present (~470 Ω "471") but ground-centered — confirm DC pass on the ramp test
-- [ ] Confirm solder-bridge state per DESIGN §5 (1=L, 2=L, 3=H, 4=L) — H1L–H4L pads, verify by continuity
+- ⬜ **OPEN** Output filter present (~470 Ω "471") but ground-centered — confirm DC pass on the ramp test, and settle R10/R11 = 0 Ω vs 100 Ω. *Doable now on the USB rig with a scope; not order-blocking (footprint is identical either way).*
+- ⬜ **OPEN** Confirm solder-bridge state per DESIGN §5 (1=L, 2=L, 3=H, 4=L) — H1L–H4L pads, verify by continuity. *Doable now with a DMM; if the rig already outputs audio, XSMT=H is de-facto proven.*
 
 **MAX4466 (off-board on a ~10 cm pigtail — carrier only needs the J4 3-pin header)**
-- [ ] Confirm module pin order silk (`VCC GND OUT`?) so the J4 3-pin header wiring matches
-- [ ] Capsule + gain trimmer stay on the loose module (aimed at the PA, reachable by hand) —
-  nothing about the mic constrains the carrier footprint beyond the J4 pin order
+- [x] Module pin order silk — **`VCC GND OUT`** on the back silk (2026-07-18); J4 matches
+- [x] Capsule + gain trimmer stay on the loose module — trimmer is back-side and screwdriver-reachable on the pigtail (2026-07-18)
 
 **TP4056 (USB-C, blue variant)**
-- [ ] Outline (nominal ~17 × 27 mm, blue USB-C board)
+- [x] Outline — **26.9 × 17.3 mm** (2026-07-18)
 - [x] Positions + drill of B+, B−, OUT+, OUT− pads — ✅ **answered, and the answer is no.**
   Not a 2.54 grid at all: 0 / 3.526 / 10.960 / 14.066 mm from OUT−, holes 2.0 mm
   (±0.55 mm pin slack). See measurements.md §Photogrammetry.
-- [ ] IN+ / IN− pads: drilled or SMD-only? position
-- [ ] USB-C jack overhang past the board edge (~2 mm, ~29 mm effective module depth)
-- [ ] Confirm B+ ↔ OUT+ continuity (0 Ω) and B− ↔ OUT− **non**-continuity (protection FET)
+- [x] IN+ / IN− pads — **drilled**, next to the USB-C jack; IN+ at (+22.358, +13.910) from J5.1 (2026-07-18 / 2026-07-26)
+- [x] USB-C jack overhang past the board edge — **1.4 mm** (28.3 − 26.9), *not* the ~2 mm this doc used to assume (2026-07-18)
+- [x] B+ ↔ OUT+ continuity **0 Ω ✓** and B− ↔ OUT− **open ✓** (protection FET present) (2026-07-18)
+- ⬜ **OPEN** Pad-row-to-board-edge offset — needed to confirm the module's north/south seat against the y = 50 mm control edge. *Doable now with calipers on the module in hand; **this one gates the order**.*
 
 **Bought parts**
-- [ ] RCA output pads (X/Y): nothing to verify — they are simple signal+AGND solder pad-pairs
-  (~2 mm pads) for the reused ~50 cm RCA cable leads; confirm the pad comfortably takes the
-  stripped signal + shield wires
-- [ ] SW1 slide switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — module not in hand yet
-- [x] RV1 = **RV097NS-B10K**, 5-pin, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — draw the 5-pin RV097NS footprint
+- [x] RCA output pads (X/Y): design item, nothing to measure — simple signal+AGND pad-pairs (~2 mm) for the reused ~50 cm RCA cable leads
+- ⬜ **OPEN** SW1 slide-switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — **switch not in hand**, so not resolvable before the order. Mitigated: the footprint carries **both** 2.0 and 2.54 mm slots, so the residual risk is body/lever fit only.
+- ⬜ **OPEN** RV1 bracket-lug geometry — the least-certain footprint on the board. *10-minute 1:1 paper-doll check with the pot in hand; **this one gates the order**.*
+- [x] RV1 = **RV097NS-B10K**, 5-pin, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — 5-pin RV097NS footprint drawn (2026-07-18)
 
 ---
 
@@ -479,8 +692,9 @@ hand-soldered) so JLCPCB's SMT ecosystem isn't a factor either way. Total expect
 
 | Date | Milestone |
 |---|---|
-| ≤ Jul 27 | Breadboard-verify power path (§4.4) + caliper session (§7) |
-| Jul 28–30 | KiCad evenings 1–2 (§9) |
+| ~~≤ Jul 27~~ | ✅ Caliper session (§7) done Jul 18; photogrammetry Jul 26. **§4.4 is not an order gate and has moved** to the assembled carrier (Aug 11–16) — it cannot run on the current bench (no battery or TP4056 in circuit, Q1 is SOT-23). |
+| **Jul 27–28** | The two paper-doll items that *do* gate the order: **RV1 bracket lugs** and the **TP4056 pad-row-to-edge offset** (§7). Both are 10-minute checks with parts in hand. Place the parts order with the **amended BOM** (§5: R7 8.2 k, R8 10 k, R9 1 k, D1 BAT85, U1 TL431A, 4× machined single pins). |
+| ~~Jul 28–30~~ | ✅ Layout complete Jul 26 — v1.1, 0 DRC violations at every severity. The order can go out ~5 days early. |
 | **Jul 31 – Aug 1** | **Upload gerbers, pay, DHL express** ← hard order-by date |
 | Aug 2–4 | Fab (24–48 h + weekend slack) |
 | Aug 5–11 | DHL to NL (3–7 days) |
@@ -489,9 +703,10 @@ hand-soldered) so JLCPCB's SMT ecosystem isn't a factor either way. Total expect
 
 If boards arrive after ~Aug 16, the PLAN W4 battery test and rehearsal run on the breadboard/protoboard units (PLAN Risk 3 posture) and carrier assembly slips past Aug 21 — the PCB never gates the rehearsal.
 
-Buffer is thin: if the §4.4 breadboard test slips past Jul 30, order anyway **with JP1 as
-the committed fallback** — the board supports both topologies, so the PCB order never waits
-on the power-path verdict.
+The PCB order never waits on the power-path verdict — the board supports both topologies. As
+of the 2026-07-26 review, **JP1 is the plan of record, not the fallback** (§4.5): bridge JP1,
+leave Q1/U1/Q2/D1 **and D2** unfitted, keep the "switch OFF before any USB" rule, and populate
+the TL431 block later only if the amended §4.4 passes on an assembled board.
 
 ### 8.3 Order parameters
 
@@ -515,32 +730,55 @@ green mask, white silk · no castellations, no impedance control, no stencil ·
 
 ---
 
-## 9. KiCad 9 execution checklist (~2 evenings)
+## 9. How the board is produced — ✅ DONE (v1.1, 2026-07-26)
 
-### Evening 1 — libraries + schematic (~3 h)
+**This section used to describe two evenings of drawing footprints and routing by hand. That
+is not how this board is made.** Everything — footprints, schematic, placement, routing,
+pours, silk — is generated from `hw/carrier/tools/design.py`, which is the single source of
+truth for the netlist. **Do not hand-edit `carrier.kicad_pcb`**; the next regeneration will
+discard it. Full detail: [`hw/carrier/layout-notes.md`](../../hw/carrier/layout-notes.md).
 
-- [ ] New project `hw/carrier/` in repo; grid mm; KiCad 9 defaults
-- [ ] Make footprints from §7 caliper data: `SuperMini_Socket_2x1x8`,
-      `GY-PCM5102A_6+9` (1×6 ⊥ 1×9, module ~31.8 mm), `Mic_Pigtail_1x3`, `TP4056_USBC_pads`,
-      `RCA_FlyingLead_Pads` (measured), reuse stock: `TO-92`, `SOT-23_HandSolder`,
-      `SMA+DO-41` dual, axial R, radial C, `SW_SS12D00`, tactile 6×6, `RV097NS` (5-pin),
-      JST-PH S2B, pin sockets
-- [ ] Draw schematic exactly per §3 netlist + §4.2 power path; net names as given here
-- [ ] Add JP1, D3 with **DNP flag set** (KiCad "Do not populate" attribute)
-- [ ] ERC clean (power flags on VLOAD/3V3/GND; no-connect flags on GPIO8/9 socket pins)
-- [ ] Cross-check every GPIO number against `config.h` one final time (5 min, checklist §3.2)
+```bash
+cd hw/carrier
+/usr/bin/python3 tools/gen_footprints.py   # only if footprints change (rewrites all UUIDs)
+/usr/bin/python3 tools/gen_schematic.py    # REQUIRED after any design.py change
+/usr/bin/python3 tools/gen_board.py && /usr/bin/python3 tools/route.py
+/usr/bin/python3 tools/audit_board.py --verbose
+# re-export the human-readable wiring diagram (wiring.md §3 embeds the SVG):
+kicad-cli sch export svg -o /tmp/schsvg carrier.kicad_sch && cp /tmp/schsvg/carrier.svg carrier-schematic.svg
+kicad-cli sch export pdf -o carrier-schematic.pdf carrier.kicad_sch
+```
 
-### Evening 2 — layout + outputs (~3–4 h)
+`gen_schematic.py` (v2, 2026-07-26) emits a properly-drawn wiring diagram — placed
+functional blocks, drawn power-path wiring, per-connector pin names, safety annotations —
+not a netlist dump. Presentation lives in the generator; connectivity still comes only from
+`design.py`, and the generator refuses to emit a wire whose endpoints disagree with it.
 
-- [ ] Board outline 70 × 50 mm, M3 holes, place per §6.1 floorplan
-- [ ] Place sockets first, verify module paper-doll cutouts (print 1:1, lay real modules on
-      the print — 10 minutes that catches every footprint disaster)
-- [ ] Route power nets (widths §6.4), then I2S bundle, then everything else
-- [ ] Pours + AGND island with single neck (§6.3); antenna keep-out enforced (§6.1 rule 3)
-- [ ] DRC with JLCPCB rules (min track/clearance 0.127 mm capability, but stay ≥ 0.25 mm);
-      zero errors, justify every warning
-- [ ] Silk pass per §6.1 rule 10; print 1:1 again, final module fit check
-- [ ] Fabrication outputs per §8.4, zip, upload, order **by Aug 1**
+Use **`/usr/bin/python3`** — `pcbnew` is only importable from KiCad's own interpreter, and a
+conda `python3` on `PATH` will fail to import it. Routing takes ~5–6 min and needs ~31 seeded
+attempts to reach zero failures with the default `ROUTE_SEED=77`; attempts 1–30 reporting
+failures is normal, do not abort early.
+
+The three gates, all of which must be clean before plotting gerbers:
+
+| Gate | Checks | Required |
+|---|---|---|
+| `check_netlist.py` (against a `kicad-cli sch export netlist` dump) | design.py ↔ schematic both ways, `config.h` GPIO map, §2/§3 invariants | pass |
+| `kicad-cli pcb drc --severity-all` | clearance, connectivity, silk, courtyards | **0 at every severity** |
+| `audit_board.py` | module pin-fit vs photogrammetry (0.25 mm), part heights under sockets, silk collisions, 90° corners, stitch gap | 0 fails |
+
+Add `--schematic-parity` to the DRC call when you change a BOM value — it is **opt-in** and no
+gate requests it by default, which is how stale value strings could otherwise sit in the board
+while the schematic said something else. Expect **67 residual items, none of them defects**
+(59 footprint-name/attribute formatting, 8 deliberate no-connects) — read the count as a diff
+against that baseline, not as something to drive to zero. Details in `layout-notes.md`.
+
+`kicad-cli sch erc` reports ~41 `footprint_link_issues` in a headless checkout — that is the
+global footprint library table not being visible to `kicad-cli`, not a design error.
+
+**Before plotting:** print `paper-doll-1to1.pdf` at 1:1 and lay the real modules on it. Ten
+minutes, and it is the check that catches a footprint disaster the DRC cannot see. Then
+fabrication outputs per §8.4.
 
 ---
 
@@ -551,8 +789,10 @@ no BNC and no TRS; TP4056 = USB-C variant; SW1 = 1 A-rated slide switch; mic = o
 ~10 cm pigtail; battery = EEMB LP103454 2000 mAh, off-board.)*
 *(Resolved 2026-07-18 from the bench session, see measurements.md: **RV1 = RV097NS-B10K**,
 5-pin, metal shaft turned directly, **no knob** — pot footprint finalized; SuperMini
-**VBUS is directly tied to the 5 V pin — CONFIRMED** with a meter, so the load-share path /
-"no USB while switch ON" rule stands as designed, and D3 stays DNP; DAC analog end is a **1×9**
+**VBUS is directly tied to the 5 V pin — CONFIRMED** with a meter. That is *why* the
+SuperMini-side OR term had to become a threshold rather than a diode (§4.1) — and per the
+2026-07-26 review that threshold does not reliably work, so **the "no USB while switch ON"
+rule stands** rather than being retired (§4.5). D3 stays DNP; DAC analog end is a **1×9**
 header, not 1×3.)*
 
 1. **Rprog mod on TP4056 (1 A → 500 mA):** the plan mandates 5 V/2 A chargers so the 1 A
@@ -560,3 +800,10 @@ header, not 1×3.)*
    optional, not mandated (§4.3 state 2). *(Measured Rprog = 1.19 kΩ ⇒ ~1 A, as expected.)*
 2. **R10/R11 value:** the module carries its own ~470 Ω output filter (§3.2, measured) — decide
    0 Ω vs 100 Ω on the Phase-4 bench ramp. Not a layout blocker (footprint stays either way).
+3. **Populate the §4 load-share block, or bridge JP1?** Decided by the amended §4.4 test on an
+   assembled carrier, not before the order. Default per §4.5 is **JP1** — and note the two
+   are not symmetric in effort: the block is 10 parts you can add later, JP1 is a bridge you
+   can cut later, and both live under socketed modules.
+4. **Divider values / reference part** (§4.2 table): 8.2 k/10 k + TL431A is fitted by default;
+   TLV431A + 100 k/38.3 k is electrically better if you can source the TO-92 part. This is a
+   populate-time choice — the board does not care.

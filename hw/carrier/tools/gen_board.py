@@ -13,7 +13,7 @@ import json, os, sys, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 import pcbnew
 from pcbnew import VECTOR2I, FromMM
-from design import COMPONENTS, norm
+from design import COMPONENTS, norm, FP_OVERRIDE
 import measured
 
 NS = uuid.UUID("bfa2dcb2-90d5-4c42-9f4d-6f2ac2f0b001")
@@ -42,12 +42,9 @@ SYS = "/usr/share/kicad/footprints"
 ZONE_MIN_MM = float(os.environ.get("CARRIER_ZONE_MIN", "0.15"))
 STITCH_SEED_PITCH = float(os.environ.get("CARRIER_SEED_PITCH", "7.0"))
 
-# Per-part footprint overrides — vertical (standing) axials wherever the
-# horizontal 10.16mm span doesn't fit. NOT under modules (9mm standing height).
-VERT_R = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P2.54mm_Vertical"
 REF_SIZE = 0.8          # reference designator text height, mm
-FP_OVERRIDE = {r: VERT_R for r in
-               ["R1", "R2", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"]}
+# FP_OVERRIDE (standing axials) now lives in design.py so gen_schematic.py sees
+# the same answer — see the note there.
 
 # ---- module datums ----------------------------------------------------------
 # Only the datum pad of each socketed module is chosen by hand; every other
@@ -163,6 +160,13 @@ for ref, c in COMPONENTS.items():
 
 # ---- footprints -------------------------------------------------------------
 def load_fp(fpid):
+    # NOTE: FootprintLoad() knows the path, not the library nickname, so the
+    # loaded footprint keeps a BARE name ("R_Axial_..." not "Resistor_THT:R_..").
+    # That makes `--schematic-parity` report a footprint_symbol_mismatch for
+    # every part. Setting the full LIB_ID back does silence those, but then DRC
+    # tries to resolve the nickname against the global footprint library table,
+    # which a headless kicad-cli cannot see, and 41 lib_footprint_issues break
+    # the "0 violations at every severity" gate. Bare names are the lesser evil.
     lib, name = fpid.split(":")
     if lib == "HYPEROSCI":
         return pcbnew.FootprintLoad(os.path.join(BASE, "HYPEROSCI.pretty"), name)

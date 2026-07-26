@@ -199,4 +199,29 @@ Two facts the millimetre tables cannot carry, both taken from the pixel coordina
 |---|---|---|---|
 | RCA output pads (X = PCM5102A L, Y = PCM5102A R): signal pad ↔ reused ~50 cm RCA cable tip; ground pad ↔ RCA shell | signal via R10/R11 (100 Ω series); ground pad = board GND, shell = GND | design item (no module to measure) — pads are simple signal+AGND lands. **Note:** analog source is now **LROUT/ROUT off the 9-pin header**, and a module-side 470 Ω filter exists (see PCM5102A ⚠️) — confirm R10/R11 value in that light | _design_ |
 | SW1 slide-switch pin pitch | 2× 3-pin @ 2.0 or 2.54 mm | _not in hand yet_ | _pending_ |
+| TP4056 pad-row → module short-edge offset | — | _open — gates the order; calipers, module in hand_ | _pending_ |
 | RV1 pot | (was undecided) | ✅ **RV097NS-B10K**, 5-pin, body **27.3 × 9.5 × 11.3 mm**, metal shaft. **No knob** — turned by hand → enclosure needs only a shaft hole. Resolves Q3 + Q9 | 2026-07-18 |
+| RV1 bracket-lug geometry vs the RV097NS footprint | from the generic RV09 drawing | _open — gates the order; 1:1 paper-doll check_ | _pending_ |
+
+## Power path — nothing measured yet
+
+Every number in [pcb.md](pcb.md) §4.3 is paper. The 2026-07-26 design review found two of
+them wrong on paper, so the bench values matter. There is no row here yet because the test
+cannot run on the current USB-only rig (no battery, no TP4056 in circuit, Q1 is SOT-23) — it
+moves to the assembled carrier via TP1/TP2/TP3. Fill these in when it does:
+
+| Measurement | Expected | Measured | Date |
+|---|---|---|---|
+| TL431 trip point (VSW rising), R7/R8 = 8.2 k/10 k + TL431A | **≈4.56 V** (window 4.46–4.66) | _pending_ | |
+| State 1 VBAT→VLOAD drop at 150 mA | < 20 mV | _pending_ | |
+| **State 4 cell current, source sagged to 4.4 / 4.5 / 4.6 V**, milliohm shunt, SoC 3.6–4.0 V | ≤ 1 mA — *this is the one the review says will fail* | _pending_ | |
+| State 2/3 cell trickle while charging (D1 Schottky fitted) | ≤ 1 mA | _pending_ | |
+| State 6 standby current at the cell | ~260 µA fully populated / ~30 µA on a JP1 plan-A board | _pending_ | |
+| U1 / Q2 TO-92 lead order vs the footprint (ohm REF against R7/R8) | REF on the pad wired to VSW_SENSE | _pending_ | |
+
+Also still open and **resolvable now on the USB rig**: the SuperMini LDO marking `S2LC`
+(recorded above) is undecoded and the carrier has **no fallback LDO footprint**, so if it turns out to
+be a ~250 mA part there is no board-level remedy. Stress-test it: run NETWORK streaming with
+`WiFi.setSleep(false)` and watch for resets or rail sag. If sustained streaming already works
+on these boards without resets, that closes the current-rating half of the question — record
+it here.

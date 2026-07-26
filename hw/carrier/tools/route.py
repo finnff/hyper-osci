@@ -22,7 +22,7 @@ search.py can sweep them in parallel rather than one edit-run-edit at a time.
 
 Run from hw/carrier/ AFTER gen_board.py:  python3 tools/route.py
 """
-import heapq, math, os, random, sys
+import heapq, json, math, os, random, sys
 sys.path.insert(0, os.path.dirname(__file__))
 import pcbnew
 from pcbnew import FromMM, VECTOR2I
@@ -61,6 +61,11 @@ WIDTHS = {"BAT_PLUS": 1.0, "BAT_MINUS": 1.0, "VBAT_OUT": 1.0, "VSW": 1.0,
           "VLOAD": 1.0, "VBUS_CHG": 1.0, "3V3": 0.6,
           "DAC_L": 0.5, "DAC_R": 0.5, "SCOPE_X": 0.5, "SCOPE_Y": 0.5, "GND": 0.4}
 FALLBACK = [1.0, 0.8, 0.6, 0.4, 0.3]
+# Per-net hard minimum width, e.g. ROUTE_WIDTH_FLOOR='{"VLOAD": 0.6}'. A net that
+# cannot be routed at or above its floor FAILS rather than narrowing. Default is
+# empty (no floors) — see layout-notes: forcing VLOAD wide is routable but costs
+# the GND pour its integrity, so it is a knob to sweep, not a setting to turn on.
+FLOOR = json.loads(os.environ.get("ROUTE_WIDTH_FLOOR", "{}"))
 # 0.2 is not offered to signals — it exists only for GND pour-tie stitches,
 # which carry no current and just have to fit. JLCPCB's 1oz minimum is 0.127.
 H_OF = {1.0: 0.5, 0.8: 0.4, 0.6: 0.3, 0.4: 0.2, 0.3: 0.15, 0.2: 0.1}
@@ -376,8 +381,9 @@ def run_phase_a(order):
             done = False
             cands = sorted(connected,
                            key=lambda q: (px - q[0]) ** 2 + (py - q[1]) ** 2)[:4]
+            allowed = [x for x in FALLBACK if want >= x >= FLOOR.get(net, 0.0)]
             for qx, qy, qls, qdx, qdy in cands:
-                for w in [x for x in FALLBACK if x <= want]:
+                for w in allowed:
                     h = H_OF[w]
                     sl = F if F in pls else B
                     path = astar(net, h, px, py, sl, pdx, pdy,

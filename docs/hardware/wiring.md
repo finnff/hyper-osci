@@ -1,7 +1,19 @@
 # HYPEROSCI — Slave Unit Wiring Guide
 
-**Scope:** one slave unit, breadboard bring-up. Every net here matches the future carrier
-PCB one-to-one, so the breadboard build *is* the schematic rehearsal.
+**Scope:** one slave unit, breadboard bring-up. Every **signal** net here matches the carrier
+PCB one-to-one, so the breadboard build *is* the schematic rehearsal for everything the
+firmware touches. The **power chain is not** one-to-one — the carrier adds the load-sharing
+path, which splits and renames things:
+
+| Breadboard | Carrier | Note |
+|---|---|---|
+| `VBAT_RAW` | `BAT_PLUS` | same node: cell + / TP4056 `B+`, always live, R1 taps it here |
+| `VBAT_SW` | `VSW` → SW1 → `VLOAD` | the switch now sits *downstream* of Q1; `VSW` is live off the cell whatever the switch position |
+| — | `VBAT_OUT` | TP4056 `OUT+` → Q1 drain (+ JP1) |
+| — | `GATE`, `VBUS_CHG`, `VSW_SENSE`, `TL431_K`, `Q2_B` | exist only on the carrier |
+
+The breadboard has none of Q1/Q2/U1/D1/D2/D3/JP1, so §6's rules below are the *breadboard*
+rules — see [pcb.md](pcb.md) §4.5 for which of them the carrier actually retires.
 **Canon:** pins and constants come from [`src/esp32-slave/include/config.h`](../../src/esp32-slave/include/config.h)
 and [DESIGN.md §4/§5/§9](../DESIGN.md). If anything below disagrees with those files, those files win.
 
@@ -42,8 +54,9 @@ On the ESP32-C3, silk `RX` **is** GPIO20 and silk `TX` **is** GPIO21).
 | P8 | Bulk cap ≥220 µF `+` | SM `5V` pin (`VBAT_SW`) | electrolytic, **observe polarity**, `−` to `GND`; buffers WiFi TX bursts |
 
 TP4056 module pad positions differ between clone batches — always go by the silk
-(`B+ B− OUT+ OUT−`, USB input on the connector end). Confirm yours is the **protected**
-03962A variant: two extra ICs (DW01 6-pin + FS8205 8-pin) near the output pads.
+(`B+ B− OUT+ OUT−`, USB input on the connector end). Confirm yours is the **protected** variant: two extra ICs (DW01 6-pin + FS8205 8-pin) near
+the output pads. The owned modules are the **USB-C blue** boards — `CSM4056T` + `8205LA`
+(FS8205) + DW01-type, confirmed 2026-07-18. (`03962A` is the older micro-USB part number.)
 
 ### 2.2 Battery sense (GPIO1)
 
@@ -124,51 +137,22 @@ on-board footprint.
 
 ## 3. Overall wiring diagram
 
-```
-                                 ┌──────────────────────────────┐
-                                 │      OSCILLOSCOPE (XY)       │
-                                 │  CH1 = X     CH2 = Y    GND  │
-                                 └────▲───────────▲─────────▲───┘
-                                      │           │         │  1 MΩ inputs, DC coupled
-                                LROUT/tip     ROUT/ring   sleeve
-                              ┌───────┴───────────┴─────────┴───────┐
-                              │        GY-PCM5102A (purple)         │
-                              │  back bridges: 1=L 2=L 3=H 4=L (§4) │
-                              │                                     │
-                              │  SCK   BCK   DIN   LCK   GND   VIN  │
-                              └───┬─────┬─────┬─────┬─────┬─────┬───┘
-                                  │     │     │     │     │     │
-                                 GND  GPIO4 GPIO6 GPIO5  GND   3V3
-                                  │     │     │     │     │     │
-      ┌───────────┐           ┌───┴─────┴─────┴─────┴─────┴─────┴───┐
-      │  MAX4466  │           │         ESP32-C3 SuperMini          │
-      │ VCC ──────┼── 3V3 ────┤ 3V3          (USB-C: flash/debug    │
-      │ GND ──────┼── GND ────┤ GND           ONLY — see rule §6)   │
-      │ OUT ──────┼───────────┤ GPIO0                               │
-      └───────────┘           │ GPIO1 ◀── VBAT_SENSE (divider, ▼)   │
-                              │ GPIO2 ──[10k]── 3V3   (pull-up only)│
-   10k POT                    │ GPIO3 ◀── pot wiper                 │
-   3V3 ──┤◄├── GND            │ GPIO7 ◀── mode button ──▶ GND       │
-        wiper ────────────────┤ GPIO10 ──[2.2k]──▶|── GND  (green,  │
-                              │                    LED_NET)         │
-                              │ GPIO20 ──[2.2k]──▶|── GND  (amber,  │
-                              │                    LED_MODE)        │
-                              │ GPIO8/9: onboard LED/BOOT (no wire) │
-                              │ 5V                                  │
-                              └──┬──────────────────────────────────┘
-                                 │ VBAT_SW                 ▼ battery sense
-                                 ●──[+ 220µF −]── GND      VBAT_RAW ──[100k]──●── GPIO1
-                                 │                                            │
-                            POWER SWITCH                              [100k] [100nF]
-                                 │                                            │
-                              ┌──┴───────────────────┐                       GND
-       charge-only USB ───────┤ OUT+                  │
-       (rules in §6)          │      TP4056 USB-C     │
-                              │      (DW01 + FS8205)  │
-      LiPo 3.7 V  + ──────────┤ B+                    │
-      2000 mAh (EEMB) − ──────┤ B−              OUT− ─┼── GND
-                              └───────────────────────┘
-```
+The wiring diagram is a real KiCad schematic, generated from the same netlist source of
+truth as the carrier PCB (`hw/carrier/tools/design.py`) and gated by the same checks
+(`check_netlist.py` against `config.h`, ERC, DRC schematic parity) — unlike the ASCII art
+that used to live here, it cannot silently drift from the board or the firmware pin map:
+
+![HYPEROSCI slave unit wiring diagram](../../hw/carrier/carrier-schematic.svg)
+
+Printable A3: [`hw/carrier/carrier-schematic.pdf`](../../hw/carrier/carrier-schematic.pdf).
+Regenerate after any `design.py` change: `python3 tools/gen_schematic.py`, then re-export
+the SVG/PDF per [`hw/carrier/layout-notes.md`](../../hw/carrier/layout-notes.md).
+
+Reading it as a *breadboard* guide: everything **except** the dashed "LOAD-SHARING POWER
+PATH" block is wired 1:1 on the breadboard (the §2 tables above stay the wire-by-wire
+authority). The breadboard power chain is `OUT+ → switch → SuperMini 5V pin` direct — see
+the "BREADBOARD DELTA" note on the sheet and the net-name mapping table at the top of this
+file (`VBAT_RAW` = `BAT_PLUS`, `VBAT_SW` ≈ `VLOAD`).
 
 ## 4. GY-PCM5102A module prep (do this FIRST, before any wiring)
 
@@ -235,19 +219,27 @@ On the carrier PCB the SCK socket pin is tied straight to the ground plane.
 
 ## 6. Power chain and safety rules (DESIGN §9)
 
-```
-LiPo ─▶ TP4056 (charge via its own USB; DW01 protection) ─▶ OUT+
-    OUT+ ─▶ slide switch ─▶ SuperMini 5V pin ─▶ onboard LDO ─▶ 3V3 rail
-    3V3 ─▶ PCM5102A VIN, MAX4466 VCC, LEDs, pot, pull-ups
-    LiPo+ ─▶ 100k/100k divider ─▶ GPIO1 (always connected, ~21 µA)
-```
+Breadboard power chain, in order:
+
+1. LiPo → TP4056 `B+`/`B−` (charge via its own USB; DW01 protection) → `OUT+`
+2. `OUT+` → slide switch → SuperMini `5V` pin → onboard LDO → `3V3` rail
+3. `3V3` → PCM5102A `VIN`, MAX4466 `VCC`, LEDs, pot, pull-ups
+4. LiPo+ → 100k/100k divider → GPIO1 (always connected, ~21 µA)
 
 **RULE 1 — the breadboard rule: NEVER have the power switch ON while the SuperMini USB-C is
 plugged in.** Most SuperMini clones tie VBUS straight to the `5V` pin, so USB 5 V would
 back-feed through the switch into TP4056 `OUT+` and push uncontrolled current into the LiPo,
 bypassing the charger's CC/CV control. Flash and debug on USB **with the switch OFF** (the
-whole circuit runs happily from USB: VBUS → 5V pin → LDO → 3V3). The carrier PCB adds a
-proper load-sharing path (P-FET + Schottky) that retires this rule — see [pcb.md](pcb.md).
+whole circuit runs happily from USB: VBUS → 5V pin → LDO → 3V3).
+
+**This rule does not automatically retire on the carrier.** The load-sharing path is meant to
+remove it, but design review (2026-07-26) found that the SuperMini-side term — a voltage
+threshold on the load node — cannot reliably distinguish a sagging laptop port from a charged
+cell, and that this is exactly the situation the rule exists for. So: **keep RULE 1 until
+pcb.md §4.4 passes on an assembled carrier**, and keep it permanently on a JP1-bridged board.
+(Separately, and about the *charger's* USB rather than this one: in a JP1 build with D2 still
+fitted, plugging the charger injects into the cell upstream of the switch, so RULE 2 below
+does not protect you either — D2 must be omitted. See [pcb.md](pcb.md) §4.4/§4.5.)
 
 **RULE 2 — charge with the switch OFF.** With a load on `OUT+`, the TP4056 can't tell load
 current from charge current and may never terminate; the cell also sits at 4.2 V under load.
