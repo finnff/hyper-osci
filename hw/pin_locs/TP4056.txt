@@ -1,0 +1,28 @@
+TP4056
+======
+
+scale            12.537 um/px  (+/- 0.20 %)
+user ref         17.30 mm = 1379.9 px    [calibration: reference]
+frame            similarity, origin at pin 1 of the primary row
+board outline    17.30 x 25.75 mm   (user-clicked corners, edges refined from the image)
+
+pin rows (1)
+  row 0 [pin]: 4 pads over 5 slots, angle -0.00 deg, NOT evenly spaced - excluded from calibration
+         pitch  3.5165 mm (ref 2.5400), straightness rms 0.1770 mm
+         hole   1.819+/-0.461 mm     pad 3.160+/-1.312 mm
+         drill  1.869 mm estimated (measured + 0.05 plating) -> nominal 2.00 mm (-0.131)
+
+loose pins (2) - picked, on no straight run
+  pin at (  -0.316,  -22.295) mm   hole 1.773 mm
+  pin at ( +13.885,  -22.303) mm   hole 1.588 mm
+
+pin field vs board outline (mm, informational)
+  left 1.816   right 1.572   top 23.937   bottom 1.792
+
+warnings
+  ! scale comes from the user-measured reference distance (17.30 mm over 1379.9 px), not from the 2.54 mm grid; it is exactly as good as the caliper reading and the two endpoint clicks behind it
+  ! fewer than two usable pad rows, so the pixel-to-millimetre map is a similarity; residual perspective biases absolute offsets and cannot be separated from them
+  ! 2 picked pin(s) lie on no straight run of 3 or more and take part in no row geometry; their coordinates are reported individually
+  ! 6 of 8 corner correspondences ruled out as physically impossible (a flipped board is a reflection that preserves the aspect ratio)
+  ! pin holes were selected by hand (both faces); positions and diameters are still measured from the images
+  ! 6 holes confirmed on both faces (registration residual 2.3 px); 0 front-only and 0 back-only features were discarded as not being through-holes

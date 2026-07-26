@@ -17,6 +17,10 @@ DEVIATIONS from pcb.md (to fold back into the doc):
   1. J5/J6: the measured TP4056 pad row is OUT- B- B+ OUT+ (north->south,
      measurements.md), so the two 1x2 sockets split as J5=(OUT-,B-) and
      J6=(B+,OUT+) — not the doc's J5=batt-end/J6=out-end grouping. J6b -> J9 (KiCad refs must end in a digit; ditto J1A/J1B -> JA1/JB1 — silk keeps the doc names).
+     1a. Those four pads are NOT on a 2.54 grid (measurements.md's "~2.54 grid"
+     was a guess): photogrammetry gives 0 / 3.53 / 10.96 / 14.07 mm across the
+     module's 17.3 mm edge. J5/J6 therefore use generated HYPEROSCI footprints
+     at the measured pitches, not stock 1x2 sockets — see gen_footprints.py.
   2. D3 (DNP) anode is on VLOAD per §4.2's netlist table; §3.1's VSW row
      ("D3 anode") is the stale line. §4.1's text agrees with §4.2: the naive
      OR term senses the load node.
@@ -67,9 +71,9 @@ COMPONENTS = {
     # --- mic pigtail, TP4056, debug, battery, scope pads ---
     "J4": ("MAX4466 pigtail", "CONN3", STOCK["socket3"], {
         "1": "3V3", "2": "GND", "3": "MIC_OUT"}),   # VCC GND OUT (back silk)
-    "J5": ("TP4056 OUT-/B-", "CONN2", STOCK["socket2"], {
+    "J5": ("TP4056 OUT-/B-", "CONN2", "HYPEROSCI:TP4056_Pads_OUTminus_Bminus", {
         "1": "GND", "2": "BAT_MINUS"}),             # measured row: OUT- B- B+ OUT+
-    "J6": ("TP4056 B+/OUT+", "CONN2", STOCK["socket2"], {
+    "J6": ("TP4056 B+/OUT+", "CONN2", "HYPEROSCI:TP4056_Pads_Bplus_OUTplus", {
         "1": "BAT_PLUS", "2": "VBAT_OUT"}),
     "J9": ("TP4056 IN+ wire (J6b)", "PAD1", "HYPEROSCI:WirePad_D1.0", {"1": "VBUS_CHG"}),
     "J7": ("debug TX", "CONN2", STOCK["header2"], {"1": "DBG_TX", "2": "GND"}),

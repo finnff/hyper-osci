@@ -9,11 +9,12 @@ cannot be colinear. USB-C still exits the east edge.
 Coordinates: mm from the board's top-left corner (x east, y south).
 Board: 70 x 50. Run from hw/carrier/:  python3 tools/gen_board.py
 """
-import os, sys, uuid
+import json, os, sys, uuid
 sys.path.insert(0, os.path.dirname(__file__))
 import pcbnew
 from pcbnew import VECTOR2I, FromMM
 from design import COMPONENTS, norm
+import measured
 
 NS = uuid.UUID("bfa2dcb2-90d5-4c42-9f4d-6f2ac2f0b001")
 ROOT = str(uuid.uuid5(NS, "root-sheet"))
@@ -21,82 +22,132 @@ ROOT = str(uuid.uuid5(NS, "root-sheet"))
 def mm(x, y):
     return VECTOR2I(FromMM(x), FromMM(y))
 
+def pad_zone_conn_full(pad):
+    """Solid (non-thermal) zone connection. KiCad 8 renamed PAD::SetZoneConnection
+    to SetLocalZoneConnection; accept either so the build runs on 7 and 9 alike."""
+    for name in ("SetLocalZoneConnection", "SetZoneConnection"):
+        fn = getattr(pad, name, None)
+        if fn:
+            fn(pcbnew.ZONE_CONNECTION_FULL)
+            return
+    raise RuntimeError("pcbnew PAD has no zone-connection setter")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-BASE = os.path.normpath(os.path.join(HERE, ".."))
+# CARRIER_BASE lets tools/search.py build many board variants side by side in
+# scratch directories instead of overwriting the real one.  Unset = the repo.
+BASE = os.environ.get("CARRIER_BASE") or os.path.normpath(os.path.join(HERE, ".."))
 OUT = os.path.join(BASE, "carrier.kicad_pcb")
 SYS = "/usr/share/kicad/footprints"
+# Knobs a placement sweep varies.  Defaults reproduce the committed board.
+ZONE_MIN_MM = float(os.environ.get("CARRIER_ZONE_MIN", "0.15"))
+STITCH_SEED_PITCH = float(os.environ.get("CARRIER_SEED_PITCH", "7.0"))
 
 # Per-part footprint overrides — vertical (standing) axials wherever the
 # horizontal 10.16mm span doesn't fit. NOT under modules (9mm standing height).
 VERT_R = "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P2.54mm_Vertical"
+REF_SIZE = 0.8          # reference designator text height, mm
 FP_OVERRIDE = {r: VERT_R for r in
                ["R1", "R2", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12"]}
+
+# ---- module datums ----------------------------------------------------------
+# Only the datum pad of each socketed module is chosen by hand; every other
+# module-mating position falls out of the photogrammetry in hw/pin_locs via
+# measured.py.  Re-measure a module and the board follows it.
+#
+# JB1 is the SuperMini's GPIO5..21 row and it is the NORTH one.  That is not a
+# free choice: the antenna overhangs WEST (keepout x<6) and the USB-C end is
+# therefore EAST, which puts the 5V row SOUTH — see the derivation in
+# measured.py.  v1.0 had these two rows the other way round, which is a mirror
+# image of the real module; measured.Placed._check_mirror now refuses it.
+JB1_PIN1 = (20.32, 9.30)
+JA1_PIN1 = tuple(a + b for a, b in zip(JB1_PIN1, measured.ESP32C3_JA1_FROM_JB1))
+# DAC: J3 (1x9 analog/config) runs WEST from LROUT at the jack end; J2 (1x6
+# I2S) hangs off it at the MEASURED offset — 4.06 mm further west and 0.58 mm
+# further south than v1.0's provisional "+2.54 mm from FLT, collinear" guess.
+J3_PIN1 = (52.07, 7.62)
+J2_PIN1 = tuple(a + b for a, b in zip(J3_PIN1, measured.PCM5102A_J2_FROM_J3))
+# TP4056: OUT- B- B+ OUT+ running south at x=45.72.  Not a 2.54 column — the
+# measured spacing is 3.53 / 7.43 / 3.11, so J5 and J6 sit 10.96 mm apart and
+# the module body reaches from y0-1.82 to y0+15.64.  y0 is chosen to clear the
+# DAC body (south edge 23.59) to the north and J8's wire entry to the south.
+J5_PIN1 = (45.72, 26.40)
+J6_PIN1 = tuple(a + b for a, b in zip(J5_PIN1, measured.TP4056_J6_FROM_J5))
+J9_PAD = tuple(a + b for a, b in zip(J5_PIN1, measured.TP4056_J9_FROM_J5))
 
 # ref: (x, y, rot_degrees)  — anchor is the footprint's native origin.
 # Rotation convention (audited): rot90 maps footprint-local (x,y)->(y,-x),
 # rot270 the inverse; a PinSocket's pads run +y at rot0.
 P = {
     # SuperMini rows: pad1 east (USB end), pads run WEST. Module west edge
-    # overhangs board by ~1mm; antenna region x<6 gets a pour keepout.
-    "JA1": (20.32,  9.30, 270), "JB1": (20.32, 24.54, 270),
-    # DAC: J2 (1x6) column at x=29.21 running south; J3 (1x9) row at y=7.62
-    # running west from LROUT(jack end). Finn's provisional corner geometry.
-    "J2": (29.21,  7.62, 0), "J3": (52.07, 7.62, 270),
+    # overhangs board by ~0.7mm; antenna region x<6 gets a pour keepout.
+    "JB1": JB1_PIN1 + (270,), "JA1": JA1_PIN1 + (270,),
+    "J2": J2_PIN1 + (0,), "J3": J3_PIN1 + (270,),
     "J4": (66.04,  9.39, 0),          # mic pigtail, NE analog zone
-    # TP4056 (south of DAC): pad column x=45.72, OUT- B- B+ OUT+ going south.
-    # NB module pad-row edge offset was never measured — module may sit
-    # shifted N/S on these sockets; region 24..41.3 has margin for that.
-    "J5": (45.72, 26.67, 0), "J6": (45.72, 31.75, 0),
-    "J9": (64.77, 41.15, 0),          # IN+ sense wire pad (doc J6b)
+    "J5": J5_PIN1 + (0,), "J6": J6_PIN1 + (0,),
+    "J9": J9_PAD + (0,),              # IN+ sense wire pad (doc J6b)
     "J7": (2.54, 29.21, 0),           # debug header, SW corner area
     "J8": (57.68, 42.5, 0),           # LiPo JST-PH: wires exit south edge
     "X1": (57.15, 2.54, 270), "Y1": (33.02, 2.54, 90),
-    # power path: Q1 under TP4056 (SMD), diodes under DAC (low), Rs standing
-    # in a column at x36.83, TL431/BC557 in the open SW quadrant
+    # power path: Q1/JP1 under the TP4056 (both flat), diodes under the DAC
+    # (both flat), and the standing parts in the open mid band y26..38 that
+    # opened up once the 5V row moved south.
     "Q1": (50.29, 27.94, 0),
-    "Q2": (22.0, 34.29, 0),
-    "U1": (32.6, 31.0, 90),           # rot90: REF@31.0, A@28.46, K@25.92 — beside the R col it senses
+    "Q2": (6.0, 29.5, 0),
+    "U1": (6.0, 35.5, 0),             # beside R7/R8, the divider it senses
     # D1/D3 carry GATE/VBUS_CHG/VLOAD — they live in the power cluster,
     # NOT in the analog island where they'd wall off the §6.3 neck with
     # 7.62mm-pitch pad rows. J5/J6 pads run SOUTH at x45.72 — keep clear.
     "D1": (46.5, 23.0, 0),            # north of J5 col, east of D2 court
     "D2": (43.18, 16.2, 90),          # cathode/VSW pad south
-    "D3": (60.96, 30.48, 90),         # DNP; open strip east of Q1/JP1,
-                                      # outside the module for easy retrofit
-    "R12": (36.83, 22.86, 0), "R9": (36.83, 26.16, 0), "R6": (36.83, 29.46, 0),
-    "R7": (36.83, 32.76, 0), "R8": (36.83, 36.06, 0),
+    "D3": (60.96, 23.0, 90),          # DNP; NORTH of the TP4056 body so it
+                                      # can be retrofitted without unplugging
+    # standing power-path resistors: none may sit under a socketed module
+    # (~9mm tall against an 8.3mm socket standoff — measurements.md)
+    "R7": (15.0, 33.5, 0), "R8": (15.0, 37.0, 0),
+    "R9": (21.0, 33.5, 0), "R6": (27.0, 33.5, 0), "R12": (33.0, 33.5, 0),
     "JP1": (54.61, 27.94, 0),         # beside Q1: it bridges Q1 D->S (VBAT_OUT->VSW)
-    "C1": (26.03, 28.5, 90),         # pads run north: +VLOAD @ anchor
-    "C2": (22.86, 12.95, 270),        # east of 5V pin, clear of row escapes
-    # battery sense divider, NW near GPIO1 (JA1.7 @ 5.08,9.30)
+    "C1": (26.0, 29.5, 90),           # pads run north: +VLOAD @ anchor
+    "C2": (17.5, 28.5, 0),            # VLOAD bypass, 5mm from the 5V pin
+    # battery sense divider, NW near GPIO1 (JA1.7 @ 5.08, JA1 row)
     "R1": (9.5, 3.81, 0), "R2": (15.5, 3.81, 0), "C3": (24.13, 2.79, 0),
     "R3": (17.16, 17.0, 180),         # GPIO2 pull-up between the rows: pad1/3V3 east, pad2/GPIO2 west
     # DAC -> RCA series R, standing, in the island strip north of J3
     "R10": (55.88, 6.35, 0), "R11": (44.45, 4.06, 180),
-    "C4": (60.5, 9.5, 270), "C5": (24.5, 19.5, 270),
-    # controls along the south edge (H3 court..H4 court = x 7.5..62.5)
-    "D4": (9.9, 46.99, 0), "D5": (17.05, 46.99, 0),
-    "SW2": (23.54, 43.0, 0),          # anchor = pad1 corner (pads +x/+y)
-    "RV1": (38.28, 47.5, 0), "SW1": (49.98, 46.0, 0),
-    "R4": (8.9, 40.9, 0), "R5": (15.5, 41.28, 0),
-    "TP1": (67.31, 21.59, 0), "TP2": (42.5, 36.5, 0),
-    "TP3": (18.75, 34.29, 0), "TP4": (20.32, 19.05, 0),
-    "TP5": (24.13, 6.35, 0),
+    "C4": (60.5, 9.5, 270), "C5": (31.5, 25.5, 0),
+    # controls along the south edge (H3 court..H4 court = x 7.5..62.5).
+    # RV1 is 11.3mm tall and had to slide west: its body reaches 9.2mm north
+    # of its pins and was fouling the TP4056 module's south-west corner.
+    "D4": (9.9, 46.99, 0), "D5": (15.5, 46.99, 0),
+    "SW2": (21.5, 43.0, 0),           # anchor = pad1 corner (pads +x/+y)
+    "RV1": (36.8, 47.5, 0), "SW1": (49.98, 46.0, 0),
+    "R4": (8.9, 40.9, 0), "R5": (14.5, 41.28, 0),
+    "TP1": (67.31, 21.59, 0), "TP2": (39.0, 30.0, 0),
+    "TP3": (21.0, 37.5, 0), "TP4": (37.5, 28.0, 0),
+    "TP5": (21.0, 3.5, 0),
     "H1": (4, 4, 0), "H2": (66, 4, 0), "H3": (4, 46, 0), "H4": (66, 46, 0),
 }
 
+# Placement sweep hook.  A layout variant is then just data — CARRIER_PLACE is
+# {"R8": [24.5, 37.5, 0], ...} — so tools/search.py can try dozens at once
+# instead of the file being edited, run, and edited back one at a time.
+for _ref, _v in json.loads(os.environ.get("CARRIER_PLACE", "{}")).items():
+    assert _ref in P, f"CARRIER_PLACE: {_ref} is not a placed part"
+    P[_ref] = tuple(_v)
+
 # audit: (ref, pad, x, y) — hard positions that MUST land exactly
 AUDIT = [
-    ("JA1", "1", 20.32, 9.30), ("JA1", "8", 2.54, 9.30),
-    ("JB1", "1", 20.32, 24.54), ("JB1", "8", 2.54, 24.54),
-    ("J2", "1", 29.21, 7.62), ("J2", "6", 29.21, 20.32),
-    ("J3", "1", 52.07, 7.62), ("J3", "9", 31.75, 7.62),
+    ("JB1", "1") + JB1_PIN1, ("JB1", "8", 2.54, JB1_PIN1[1]),
+    ("JA1", "1") + JA1_PIN1, ("JA1", "8", JA1_PIN1[0] - 17.78, JA1_PIN1[1]),
+    ("J2", "1") + J2_PIN1, ("J2", "6", J2_PIN1[0], J2_PIN1[1] + 12.70),
+    ("J3", "1") + J3_PIN1, ("J3", "9", 31.75, 7.62),
     ("J4", "3", 66.04, 14.47),
-    ("J5", "2", 45.72, 29.21), ("J6", "2", 45.72, 34.29),
+    ("J5", "2", 45.72, J5_PIN1[1] + measured.TP4056_PAIR_A_PITCH),
+    ("J6", "1") + J6_PIN1,
+    ("J6", "2", 45.72, J6_PIN1[1] + measured.TP4056_PAIR_B_PITCH),
     ("X1", "2", 52.07, 2.54), ("Y1", "2", 38.10, 2.54),
     ("D2", "1", 43.18, 21.28),        # VSW cathode south (rot90 check)
-    ("C1", "2", 26.03, 26.0),         # GND pad north (rot90 check)
-    ("SW2", "1", 23.54, 43.0),
+    ("C1", "2", 26.0, 27.0),          # GND pad north (rot90 check)
+    ("SW2", "1", 21.5, 43.0),
 ]
 
 board = pcbnew.NewBoard(OUT)
@@ -135,15 +186,29 @@ for ref, c in COMPONENTS.items():
             if net == "GND":
                 # solid zone connection: kills starved-thermal on pour-walled
                 # pads; board is small enough to hand-solder against the pour
-                pad.SetLocalZoneConnection(pcbnew.ZONE_CONNECTION_FULL)
+                pad_zone_conn_full(pad)
     fp.SetPath(pcbnew.KIID_PATH("/" + ROOT + "/" + str(uuid.uuid5(NS, "sym:" + ref))))
     if dnp and hasattr(fp, "SetDNP"):
         fp.SetDNP(True)
     if ref == "SW2" and hasattr(fp, "SetDuplicatePadNumbersAreJumpers"):
         fp.SetDuplicatePadNumbersAreJumpers(True)   # switch body bridges its twin pads
+    if ref in ("X1", "Y1"):
+        # The RCA footprint prints "S"/"G" on the pad axis.  Which pair is the
+        # X channel and which the Y is the one thing this legend has to answer,
+        # and a separate letter placed by the ring search cannot answer it: the
+        # north edge is full, so the search pushed both letters inboard until
+        # they sat nearer each other than their own pads.  Rewrite the "S" in
+        # place instead — it is already exactly where it should be, and the
+        # signal/ground distinction survives in the "G" opposite it.
+        for g in fp.GraphicalItems():
+            if g.GetClass() == "PCB_TEXT" and g.GetText() == "S":
+                g.SetText(ref[0])
+                g.SetTextSize(VECTOR2I(FromMM(1.4), FromMM(1.4)))
+                g.SetTextThickness(FromMM(0.22))
     r = fp.Reference()
-    r.SetTextSize(mm(0.8, 0.8).x and VECTOR2I(FromMM(0.8), FromMM(0.8)))
+    r.SetTextSize(VECTOR2I(FromMM(REF_SIZE), FromMM(REF_SIZE)))
     r.SetTextThickness(FromMM(0.12))
+    r.SetLayer(pcbnew.F_SilkS)
     board.Add(fp)
     fps[ref] = fp
 
@@ -169,53 +234,340 @@ def edge(x1, y1, x2, y2):
 
 edge(0, 0, 70, 0); edge(70, 0, 70, 50); edge(70, 50, 0, 50); edge(0, 50, 0, 0)
 
-# ---- silk graphics ----------------------------------------------------------
-def silk_rect(x1, y1, x2, y2, layer=pcbnew.F_SilkS):
+# ---- silkscreen -------------------------------------------------------------
+# v1.0 shipped 140 silk DRC violations: every designator sat wherever its
+# footprint's default offset put it, and the module outlines were full
+# rectangles ruled straight across the socket silk.  Both are fixed
+# structurally rather than by nudging:
+#
+#   * module outlines become corner brackets on F.Silkscreen (the full
+#     rectangle stays, on F.Fab, for documentation), so they no longer cross
+#     anything;
+#   * every label and every designator goes through `place_text`, which walks
+#     a ring of candidate spots outward and takes the first that clears the
+#     pads, the board edge and everything already placed.
+#
+# Anything that cannot be placed is reported and fails the build, so silk
+# congestion shows up here instead of in the fab's DRC.
+SILK_CLR = 0.20                    # silk-to-pad / silk-to-silk margin, mm
+EDGE_CLR = 0.50                    # silk-to-board-edge margin, mm
+occupied = []                      # boxes already claimed on F.Silkscreen
+unplaced = []
+
+def _box_of(item):
+    bb = item.GetBoundingBox()
+    return (bb.GetLeft() / 1e6 - SILK_CLR, bb.GetTop() / 1e6 - SILK_CLR,
+            bb.GetRight() / 1e6 + SILK_CLR, bb.GetBottom() / 1e6 + SILK_CLR)
+
+def _mk_text(s, size, rot, layer=pcbnew.F_SilkS):
+    t = pcbnew.PCB_TEXT(board)
+    t.SetText(s)
+    t.SetLayer(layer)
+    t.SetTextSize(VECTOR2I(FromMM(size), FromMM(size)))
+    t.SetTextThickness(FromMM(max(0.12, size * 0.15)))
+    if rot:
+        t.SetTextAngleDegrees(rot)
+    return t
+
+def _text_box(t, x, y):
+    """Where a text item really lands — asked of KiCad, not guessed.
+
+    An estimated glyph advance is what put the one surviving silk overlap on
+    the board; PCB_TEXT::GetBoundingBox knows the stroke font exactly, and
+    handles rotation and multi-line strings for free.
+    """
+    t.SetPosition(mm(x, y))
+    return _box_of(t)
+
+def _text_wh(t):
+    b = _text_box(t, 0, 0)
+    return b[2] - b[0], b[3] - b[1]
+
+def _free(b):
+    if b[0] < EDGE_CLR or b[1] < EDGE_CLR or b[2] > 70 - EDGE_CLR \
+            or b[3] > 50 - EDGE_CLR:
+        return False
+    return not any(b[0] < o[2] and o[0] < b[2] and b[1] < o[3] and o[1] < b[3]
+                   for o in occupied)
+
+# Seed the occupancy map: exposed copper (silk over a pad is a real defect),
+# then every graphic the footprints themselves put on the front silk.
+for _fp in board.GetFootprints():
+    for _p in _fp.Pads():
+        occupied.append(_box_of(_p))
+    for _g in _fp.GraphicalItems():
+        if _g.GetLayer() == pcbnew.F_SilkS:
+            occupied.append(_box_of(_g))
+
+# Candidate directions, nearest-first: the four cardinals, then the diagonals,
+# then half-diagonals so a designator can slide along the long side of a part
+# instead of jumping to the next ring.
+RING = [(0, 1), (0, -1), (1, 0), (-1, 0),
+        (1, 1), (-1, 1), (1, -1), (-1, -1),
+        (0.5, 1), (-0.5, 1), (0.5, -1), (-0.5, -1),
+        (1, 0.5), (1, -0.5), (-1, 0.5), (-1, -0.5)]
+
+def silk_line(x1, y1, x2, y2, layer=pcbnew.F_SilkS, w=0.12, claim=True):
+    s = pcbnew.PCB_SHAPE(board)
+    s.SetShape(pcbnew.SHAPE_T_SEGMENT)
+    s.SetStart(mm(x1, y1)); s.SetEnd(mm(x2, y2))
+    s.SetLayer(layer); s.SetWidth(FromMM(w))
+    board.Add(s)
+    if claim and layer == pcbnew.F_SilkS:
+        occupied.append((min(x1, x2) - w - SILK_CLR, min(y1, y2) - w - SILK_CLR,
+                         max(x1, x2) + w + SILK_CLR, max(y1, y2) + w + SILK_CLR))
+
+def silk_rect(x1, y1, x2, y2, layer=pcbnew.F_SilkS, w=0.12, claim=True):
     for a, b in [((x1, y1), (x2, y1)), ((x2, y1), (x2, y2)),
                  ((x2, y2), (x1, y2)), ((x1, y2), (x1, y1))]:
-        s = pcbnew.PCB_SHAPE(board)
-        s.SetShape(pcbnew.SHAPE_T_SEGMENT)
-        s.SetStart(mm(*a)); s.SetEnd(mm(*b))
-        s.SetLayer(layer); s.SetWidth(FromMM(0.12))
-        board.Add(s)
+        silk_line(a[0], a[1], b[0], b[1], layer, w, claim)
 
-def silk_text(txt, x, y, size=1.0, layer=pcbnew.F_SilkS, rot=0):
-    t = pcbnew.PCB_TEXT(board)
-    t.SetText(txt)
+def module_outline(box, arm=2.5):
+    """Corner brackets on silk + the full rectangle on F.Fab.
+
+    Brackets say 'the module reaches this far' without ruling a line through
+    every socket and part inside it.  Clipped to the board so the overhanging
+    modules do not throw silk-to-edge violations.
+    """
+    x0 = max(box[0], EDGE_CLR); y0 = max(box[1], EDGE_CLR)
+    x1 = min(box[2], 70 - EDGE_CLR); y1 = min(box[3], 50 - EDGE_CLR)
+    silk_rect(box[0], box[1], box[2], box[3], pcbnew.F_Fab, 0.1, claim=False)
+    for cx, sx in ((x0, 1), (x1, -1)):
+        for cy, sy in ((y0, 1), (y1, -1)):
+            _arm(cx, cy, sx, 0, arm)
+            _arm(cx, cy, 0, sy, arm)
+    return (x0, y0, x1, y1)
+
+def _arm(cx, cy, ux, uy, arm):
+    """One bracket stroke, trimmed back to the last length that stays clear.
+
+    The sockets sit right on the module corners, so a fixed-length arm walks
+    straight over their silk.  Shortening beats deleting: even a 0.8mm tick
+    still marks the corner.
+    """
+    L = arm
+    while L >= 0.8:
+        b = (min(cx, cx + ux * L) - 0.12 - SILK_CLR,
+             min(cy, cy + uy * L) - 0.12 - SILK_CLR,
+             max(cx, cx + ux * L) + 0.12 + SILK_CLR,
+             max(cy, cy + uy * L) + 0.12 + SILK_CLR)
+        if _free(b):
+            silk_line(cx, cy, cx + ux * L, cy + uy * L)
+            return
+        L -= 0.4
+
+MIN_TEXT = 0.8          # KiCad's default minimum-text-height DRC rule
+LOCAL_REACH = 3.5       # how far a designator may stray from its courtyard, mm
+
+def _sweep(t, x0, y0, x1, y1, ax, ay, step, keep):
+    """Grid-search a window for the free spot nearest (ax, ay).
+
+    `keep` is a box the text must stay out of — a part's own courtyard, so a
+    designator lands beside its part rather than on top of it.
+    """
+    best = None
+    gy = y0
+    while gy <= y1:
+        gx = x0
+        while gx <= x1:
+            b = _text_box(t, gx, gy)
+            if keep is None or not (b[0] < keep[2] and keep[0] < b[2]
+                                    and b[1] < keep[3] and keep[1] < b[3]):
+                if _free(b):
+                    d = (gx - ax) ** 2 + (gy - ay) ** 2
+                    if best is None or d < best[0]:
+                        best = (d, gx, gy, b)
+            gx += step
+        gy += step
+    return best
+
+def _sizes(size, shrink):
+    """Sizes to try, largest first, never below the DRC text-height floor."""
+    if not shrink:
+        return [size]
+    out = [size]
+    for s in (size * 0.85, size * 0.7, MIN_TEXT):
+        if s >= MIN_TEXT and s < out[-1] - 1e-6:
+            out.append(s)
+    return out
+
+def find_spot(s, ax, ay, size, halo=(0.0, 0.0), prefer=(), rot=0, shrink=True,
+              scan=False):
+    """Nearest clear patch of silk for `s`, anchored on (ax, ay) + `halo`.
+
+    Returns (x, y, size, box) or None.  Offsets are computed from the text's
+    own half-width/half-height, so a long string pushed east clears the part
+    by the same margin a short one does.  If nothing fits, the text is retried
+    a size down before giving up — legible-but-small beats absent.
+    """
+    dirs = list(prefer) + [d for d in RING if d not in prefer]
+    for sz in _sizes(size, shrink):
+        t = _mk_text(s, sz, rot)
+        w, h = _text_wh(t)
+        for step in range(10):
+            gap = 0.30 + 0.5 * step
+            for dx, dy in ([(0, 0)] if step == 0 and halo == (0, 0) else dirs):
+                x = ax + dx * (halo[0] + w / 2 + gap)
+                y = ay + dy * (halo[1] + h / 2 + gap)
+                b = _text_box(t, x, y)
+                if _free(b):
+                    return (x, y, sz, b)
+    # The ring only samples 16 bearings, which walks straight past a slot that
+    # is barely wider than the text — the gap between X1 and H2's keep-out is
+    # one.  Sweep the neighbourhood properly before giving up.
+    keep = (ax - halo[0], ay - halo[1], ax + halo[0], ay + halo[1])
+    for sz in _sizes(size, shrink):
+        t = _mk_text(s, sz, rot)
+        got = _sweep(t, ax - halo[0] - LOCAL_REACH, ay - halo[1] - LOCAL_REACH,
+                     ax + halo[0] + LOCAL_REACH, ay + halo[1] + LOCAL_REACH,
+                     ax, ay, 0.25, keep)
+        if got:
+            return (got[1], got[2], sz, got[3])
+    if not scan:
+        return None
+    # Legends that are not tied to one part get a whole-board sweep: take the
+    # free spot nearest the preferred anchor rather than giving up.
+    for sz in _sizes(size, shrink):
+        t = _mk_text(s, sz, rot)
+        got = _sweep(t, EDGE_CLR, EDGE_CLR, 70 - EDGE_CLR, 50 - EDGE_CLR,
+                     ax, ay, 0.5, None)
+        if got:
+            return (got[1], got[2], sz, got[3])
+    return None
+
+def place_text(s, ax, ay, size=REF_SIZE, halo=(0.0, 0.0), prefer=(),
+               rot=0, layer=pcbnew.F_SilkS, name=None, shrink=True, scan=True):
+    """Put `s` as close to (ax, ay) as a clear patch of silk allows."""
+    spot = find_spot(s, ax, ay, size, halo, prefer, rot, shrink, scan)
+    if spot is None:
+        unplaced.append(name or s.replace("\n", " "))
+        return None
+    x, y, sz, b = spot
+    t = _mk_text(s, sz, rot, layer)
     t.SetPosition(mm(x, y))
-    t.SetLayer(layer)
+    board.Add(t)
+    occupied.append(b)
+    return (x, y)
+
+def back_text(s, x, y, size=0.8, rot=0):
+    t = pcbnew.PCB_TEXT(board)
+    t.SetText(s)
+    t.SetPosition(mm(x, y))
+    t.SetLayer(pcbnew.B_SilkS)
+    t.SetMirrored(True)
     t.SetTextSize(VECTOR2I(FromMM(size), FromMM(size)))
     t.SetTextThickness(FromMM(max(0.12, size * 0.15)))
     if rot:
         t.SetTextAngleDegrees(rot)
     board.Add(t)
 
-# module outlines (fab layer look-alikes on silk so bare board shows sockets)
-silk_rect(0, 8.0, 21.5, 25.8)                 # SuperMini (west edge overhang)
-silk_text("ESP32-C3", 11, 15.5, 1.0)
-silk_text("ANT", 2.5, 17.5, 0.8)
-silk_rect(27.8, 6.2, 59.6, 23.2)              # GY-PCM5102A
-silk_text("PCM5102A", 40, 12.5, 1.0)
-silk_rect(43.6, 24.0, 70, 41.3)               # TP4056 (USB-C east)
-silk_text("TP4056", 57, 27.5, 1.0)
-silk_text("USB-C", 66, 38, 0.8)
-silk_text("B- != GND!", 39.4, 25.4, 0.8)      # next to J5 (pcb.md §3.1)
-silk_text("X", 57.15, 6.6, 1.5)
-silk_text("Y", 33.02, 6.6, 1.5)
-silk_text("IN+ (J6b)", 62.0, 39.9, 0.8)
-silk_text("+", 56.3, 40.7, 1.2)               # J8 polarity (pad1 = BAT+)
-silk_text("-", 61.0, 40.7, 1.2)
-silk_text("VERIFY CELL POLARITY", 48, 49.2, 0.8)
-silk_text("PWR", 49.98, 42.9, 0.8)
-silk_text("CUTOFF", 38.28, 37.5, 0.8)
-silk_text("MODE", 26.79, 40.9, 0.8)
-silk_text("NET", 9.9, 44.3, 0.8)
-silk_text("MODE", 17.05, 44.3, 0.8)
-silk_text("HYPEROSCI carrier v1.0  2026-07", 20, 49.0, 0.9)
-silk_text("UNIT #__", 11, 36.5, 1.0)
-silk_text("JLCJLCJLCJLC", 55, 30.5, 0.8)      # fab order number goes here
-silk_text("J1A", 22.5, 9.3, 0.8)
-silk_text("J1B", 22.5, 24.54, 0.8)
+def court(ref):
+    """(cx, cy, half_w, half_h) of a placed footprint's courtyard."""
+    bb = fps[ref].GetCourtyard(pcbnew.F_CrtYd).BBox()
+    x0, y0 = bb.GetLeft() / 1e6, bb.GetTop() / 1e6
+    x1, y1 = bb.GetRight() / 1e6, bb.GetBottom() / 1e6
+    return ((x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2)
+
+def label(ref, s, size=0.8, prefer=()):
+    """Legend for a specific part — must land next to it, so no board sweep."""
+    cx, cy, hw, hh = court(ref)
+    return place_text(s, cx, cy, size, (hw, hh), prefer, scan=False,
+                      name=f"label {s} @{ref}")
+
+def pad_label(ref, num, s, size=0.8, prefer=()):
+    """Legend for one pad — same rule, anchored on the pad instead."""
+    p = [q for q in fps[ref].Pads() if q.GetNumber() == num][0]
+    bb = p.GetBoundingBox()
+    cx = (bb.GetLeft() + bb.GetRight()) / 2e6
+    cy = (bb.GetTop() + bb.GetBottom()) / 2e6
+    hw = (bb.GetRight() - bb.GetLeft()) / 2e6
+    hh = (bb.GetBottom() - bb.GetTop()) / 2e6
+    return place_text(s, cx, cy, size, (hw, hh), prefer, scan=False,
+                      name=f"pad label {s} @{ref}.{num}")
+
+# --- module bodies, straight off the measured outlines ----------------------
+def body(ref, pad, box):
+    x, y = [p.GetPosition() for p in fps[ref].Pads()
+            if p.GetNumber() == pad][0].x / 1e6, \
+           [p.GetPosition() for p in fps[ref].Pads()
+            if p.GetNumber() == pad][0].y / 1e6
+    return (x + box[0], y + box[1], x + box[2], y + box[3])
+
+ESP_BODY = body("JB1", "1", measured.ESP32C3_OUTLINE)
+DAC_BODY = body("J3", "1", measured.PCM5102A_OUTLINE)
+CHG_BODY = body("J5", "1", measured.TP4056_OUTLINE)
+for _b in (ESP_BODY, DAC_BODY, CHG_BODY):
+    module_outline(_b)
+
+# --- fixed legends, most-constrained first ----------------------------------
+place_text("ESP32-C3 SuperMini", (ESP_BODY[0] + ESP_BODY[2]) / 2, 20.6, 0.9,
+           name="ESP32-C3 legend")
+place_text("ANT", 2.6, 27.2, 0.8, name="ANT legend")
+place_text("GY-PCM5102A", (DAC_BODY[0] + DAC_BODY[2]) / 2, 20.0, 0.9,
+           name="PCM5102A legend")
+place_text("TP4056", 57.0, 33.5, 0.9, name="TP4056 legend")
+place_text("USB-C", 66.0, 30.0, 0.8, name="USB-C legend")
+# TP4056 output pads: which of the four is which is not guessable, and B- is
+# the one that gets a board killed if it is mistaken for GND.
+WEST = ((-1, 0), (-1, -0.5), (-1, 0.5))
+pad_label("J5", "1", "OUT-", prefer=WEST)
+pad_label("J5", "2", "B-", prefer=WEST)
+pad_label("J6", "1", "B+", prefer=WEST)
+pad_label("J6", "2", "OUT+", prefer=WEST)
+place_text("B- is NOT GND", 38.8, 32.0, 0.8, name="B- warning")
+# X/Y are printed by the footprint itself (see the X1/Y1 case above) — the
+# north edge has no room for a free-floating letter that stays next to its pad.
+label("J9", "IN+", 0.8, prefer=((0, -1), (-1, 0)))
+label("J8", "+ cell -", 0.8, prefer=((0, -1),))
+place_text("VERIFY\nCELL\nPOLARITY", 62.5, 46.5, 0.8, name="cell warning")
+label("SW1", "PWR", 0.8, prefer=((0, -1),))
+label("RV1", "CUTOFF", 0.8, prefer=((0, -1),))
+# SW2 and D5 are both "MODE", and the placer put the two words side by side —
+# on the render they read as one part labelled MODE MODE.  The button is the
+# one that gets the qualifier: the south edge around D4/D5 has no room for a
+# longer string, and "NET / MODE" beside two LEDs is unambiguous on its own.
+label("SW2", "MODE SW", 0.8, prefer=((0, -1),))
+label("D4", "NET", 0.8, prefer=((0, -1),))
+label("D5", "MODE", 0.8, prefer=((0, -1),))
+place_text("HYPEROSCI carrier\nv1.1  2026-07", 8.0, 27.0, 0.8,
+           name="board name")
+place_text("UNIT #__", 8.0, 22.5, 0.9, name="unit box")
+# The fab's order number goes on the BACK, and specifically into the antenna
+# keep-out strip: v1.0 had it landing across Q1/JP1/D3, and anywhere else on
+# the back is stitched with vias (which is what silk_over_copper catches).
+# The keep-out carries no pour and no stitching by construction, so this strip
+# of bare laminate is the one place on the board where silk is guaranteed
+# clear — running vertically between the two SuperMini rows.
+back_text("JLCJLCJLCJLC", 2.3, 17.0, 0.8, rot=90)
+back_text("HYPEROSCI v1.1", 3.9, 17.0, 0.8, rot=90)
+
+# --- reference designators ---------------------------------------------------
+# Mounting holes carry no BOM line, so their designators are pure clutter.
+HIDE_REF = {"H1", "H2", "H3", "H4"}
+# Parts whose designator wants to go somewhere specific (everything else takes
+# whatever the ring search finds first).
+REF_PREFER = {
+    "JB1": ((0, -1),), "JA1": ((0, 1),), "J2": ((-1, 0),), "J3": ((0, -1),),
+    "J5": ((-1, 0),), "J6": ((-1, 0),), "J4": ((1, 0),),
+    "R10": ((0, -1),), "R11": ((0, -1),),
+}
+for ref in sorted(fps, key=lambda r: (r not in REF_PREFER, r)):
+    r = fps[ref].Reference()
+    if ref in HIDE_REF:
+        r.SetVisible(False)
+        continue
+    cx, cy, hw, hh = court(ref)
+    spot = find_spot(ref, cx, cy, REF_SIZE, (hw, hh), REF_PREFER.get(ref, ()))
+    if spot is None:
+        unplaced.append(f"designator {ref}")
+        r.SetVisible(False)
+        continue
+    x, y, sz, b = spot
+    r.SetPosition(mm(x, y))
+    r.SetTextAngleDegrees(0)
+    r.SetTextSize(VECTOR2I(FromMM(sz), FromMM(sz)))
+    r.SetTextThickness(FromMM(max(0.12, sz * 0.15)))
+    occupied.append(b)
 
 # ---- zones ------------------------------------------------------------------
 def add_zone(poly, layers, priority, name):
@@ -230,7 +582,11 @@ def add_zone(poly, layers, priority, name):
     for x, y in poly:
         o.Append(FromMM(x), FromMM(y))
     z.SetAssignedPriority(priority)
-    z.SetMinThickness(FromMM(0.25))
+    # 0.15mm, not 0.25: on a 2-layer board the routing chops the pour into
+    # ribbons, and a 0.25mm floor discards every sliver narrower than that —
+    # which is how a GND pad ends up on a fill fragment with no path home.
+    # JLCPCB's 1oz minimum copper width is 0.127mm, so 0.15 is in spec.
+    z.SetMinThickness(FromMM(ZONE_MIN_MM))
     z.SetZoneName(name)
     z.SetPadConnection(pcbnew.ZONE_CONNECTION_THERMAL)
     board.Add(z)
@@ -336,8 +692,8 @@ while _yv < 48:
             v.SetNet(netinfo["GND"])
             board.Add(v)
             nseed += 1
-        _xv += 7.0
-    _yv += 7.0
+        _xv += STITCH_SEED_PITCH
+    _yv += STITCH_SEED_PITCH
 print(f"seeded {nseed} GND stitch vias")
 
 # ---- design settings --------------------------------------------------------
@@ -350,7 +706,17 @@ filler = pcbnew.ZONE_FILLER(board)
 filler.Fill(board.Zones())
 pcbnew.SaveBoard(OUT, board)
 print("wrote", OUT)
+print(f"SILK_UNPLACED {len(unplaced)}")
+if unplaced:
+    print(f"SILK: {len(unplaced)} items had nowhere clear to sit:")
+    for u in unplaced:
+        print("   ", u)
 if fails:
     print("AUDIT FAILURES:", fails)
+# A sweep (tools/search.py) wants to score a variant that loses one designator,
+# not be blocked by it — the count is reported either way and ranked against
+# everything else.  For a normal build an unplaced item is still a hard stop.
+STRICT = os.environ.get("CARRIER_SILK_STRICT", "1") != "0"
+if fails or (unplaced and STRICT):
     sys.exit(1)
-print("audit clean")
+print("audit clean, silk placed")

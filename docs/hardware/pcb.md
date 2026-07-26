@@ -43,13 +43,13 @@ Reference designators used throughout this doc and to be used in KiCad:
 
 | Ref | Part | Function |
 |---|---|---|
-| J1A, J1B | 1×8 female header, 2.54 mm | SuperMini socket rows (row spacing expected 15.24 mm ⚠️ VERIFY §7) |
+| J1A, J1B | 1×8 female header, 2.54 mm | SuperMini socket rows. **KiCad refs are `JA1`/`JB1`** (a KiCad reference must end in a digit); the silk keeps the doc names. Row spacing ✅ **measured 15.240 mm** (photogrammetry, worst pin 0.100 mm). `JB1` = the GPIO5-side row and it is the **north** one — see §6.1 rule 3. |
 | J2 | 1×6 female header | PCM5102A I2S end: `SCK BCK DIN LCK GND VIN` (order per module silk ⚠️ VERIFY) |
 | J3 | 1×9 female header | PCM5102A analog/config end (long edge). Silk (jack→digital): `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Carrier nets only the analog pins: **LROUT (=X), ROUT (=Y), AGND**; FLT/DEMP/XSMT/FMT are set by the module's own H1L–H4L back-side bridges (DESIGN §5), so they are **NC** on the carrier — the rest of the 1×9 is mechanical support. |
 | J4 | 1×3 header (pigtail landing) | MAX4466 on a ~10 cm 3-wire pigtail: `VCC GND OUT` (order ⚠️ VERIFY — clones differ). Mic exits the enclosure, aimed at the PA. |
-| J5 | 1×2 female header | TP4056 battery end: `B+ B−` |
-| J6 | 1×2 female header | TP4056 output end: `OUT+ OUT−` |
-| J6b | 1 plated pad + short wire | TP4056 `IN+` (VBUS_CHG sense — see §4; pad drilled 1.0 mm) |
+| J5 | 1×2 pad pair, **3.526 mm** pitch | TP4056 north pair: `OUT− B−`. ⚠️ **Not a stock socket and not a 2.54 grid** — the module's four pads measure 0 / 3.526 / 10.960 / 14.066 mm down its short edge (photogrammetry, 2026-07-26), so the grouping is `(OUT−,B−)` + `(B+,OUT+)`, *not* the battery-end/output-end split this table used to claim. Generated footprint `HYPEROSCI:TP4056_Pads_OUTminus_Bminus`. |
+| J6 | 1×2 pad pair, **3.106 mm** pitch | TP4056 south pair: `B+ OUT+`, 10.960 mm south of J5.1. Generated footprint `HYPEROSCI:TP4056_Pads_Bplus_OUTplus`. Fit four machined single sockets, or solder wires and give up removability. |
+| J6b | 1 plated pad + short wire | TP4056 `IN+` (VBUS_CHG sense — see §4; pad drilled 1.0 mm). **KiCad ref is `J9`.** |
 | J7 | 1×2 male header | Debug: `GPIO21 (UART0 TX)`, `GND` |
 | J8 | JST-PH 2-pin, side entry (S2B-PH-K-S) | LiPo battery in (EEMB LP103454 2000 mAh, mounted off-board — cell not on the PCB outline). **Polarity silk mandatory.** |
 | X, Y | 2× RCA flying-lead solder pad-pair (signal + AGND) | Scope X (=DAC L), Scope Y (=DAC R). Finn solders the reused ~50 cm RCA cables here — no connector part on the board. Silk `X` / `Y`. |
@@ -324,13 +324,21 @@ Hard placement rules:
    the flying leads at assembly (hot-glue / zip-tie).
 2. **Controls grouped on the bottom (south) long edge**: SW1 (power), RV1, SW2, D4, D5 —
    all reachable/visible in one line when units are racked. Silk-label every control
-   (`PWR`, `CUTOFF`, `MODE`, `NET`, `MODE`).
-3. **SuperMini at the west short edge, antenna end overhanging the board outline by ~3–5 mm.**
-   The antenna end of the SuperMini must extend past the PCB edge. Additionally keep a
-   **copper/parts keep-out ≥ 5 mm** inboard of that edge on both layers (no pour, no traces)
-   in case the overhang ends up smaller after caliper check. Orient so the module's USB-C
-   faces the same west edge (flashing access). ⚠️ VERIFY which end carries the antenna vs USB
-   on your modules before fixing socket orientation.
+   (`PWR`, `CUTOFF`, `MODE SW`, `NET`, `MODE`) — the button is the one that carries the
+   qualifier, because `MODE` on the button and `MODE` on its LED landed side by side and
+   read as one part labelled `MODE MODE`.
+3. **SuperMini at the west short edge, antenna end overhanging the board outline.**
+   The antenna end must extend past the PCB edge, and a **copper/parts keep-out** inboard
+   of that edge on both layers (no pour, no traces) covers the case where the overhang
+   ends up smaller than planned. ✅ RESOLVED (2026-07-26): antenna and USB-C are at
+   **opposite** ends of the module, so the old second sentence here — "orient so the
+   module's USB-C faces the same west edge" — contradicted the first and could not be
+   satisfied. **Antenna west wins** (RF clearance beats flashing convenience; the module
+   lifts out of its sockets for flashing anyway). USB-C therefore faces east. The keep-out
+   as built is x < 6 mm, y 6–28 mm, and because the SuperMini's antenna is *flush* with
+   its board edge rather than overhanging (measurements.md), that keep-out is what
+   actually does the work. Consequence: the 5V row lands **south** ⇒ `JA1` south, `JB1`
+   north, which is the mirror-image bug v1.0 shipped and `measured.py` now refuses.
 4. **TP4056 (USB-C, blue 17 × 27 mm) at the east short edge**, its USB-C jack overhanging the
    board edge by ~2 mm (~29 mm effective module depth). Size the board-edge cutout / charge-port
    opening to clear the USB-C connector. Power-path parts (Q1, Q2, U1, D1, D2, R6–R9, R12, JP1,
@@ -350,14 +358,36 @@ Hard placement rules:
 8. Bulk C1 within 10 mm of the SuperMini 5V pin. 220 µF is the WiFi-burst reservoir.
 9. Battery divider R1/R2/C3 near the SuperMini (short GPIO1 trace), not near the battery —
    the 100 k source impedance wants a short ADC trace.
-10. Silk: board name `HYPEROSCI carrier v1.0`, date, a blank `UNIT #__` box, polarity marks
-    on J8/C1/D-series, `B− ≠ GND!` warning at J5.
+10. Silk: board name `HYPEROSCI carrier v1.1`, date, a blank `UNIT #__` box, polarity marks
+    on J8/C1/D-series, `B- is NOT GND` warning at J5. Every legend and every reference
+    designator is *placed by search* (`gen_board.py`), not by a footprint's default
+    offset: each string walks a ring of candidate spots outward and takes the first that
+    clears the pads, the board edge and everything already placed, shrinking to the
+    0.8 mm DRC floor before it gives up. Anything with nowhere to sit fails the build.
+    The fab's order number goes on the **back**, inside the antenna keep-out — the one
+    strip of the board guaranteed to carry neither pour nor stitching vias.
 
 ### 6.2 Ground pour
 
-Both layers: GND pour, 0.3 mm clearance, stitched with vias every ~10 mm along signal
-corridors. **No pour or traces in the antenna keep-out** (rule 3). Bottom layer under the
-analog zone belongs to the AGND island (§6.3).
+Both layers: GND pour, 0.3 mm clearance. **No pour or traces in the antenna keep-out**
+(rule 3). Bottom layer under the analog zone belongs to the AGND island (§6.3).
+
+Stitching happens in two passes, because one is not enough on a 2-layer board this dense:
+
+- **Seeded, before routing** — a 7 mm grid of GND vias placed by `gen_board.py` so the
+  router treats them as obstacles. Post-route stitching cannot find legal via spots in the
+  signal-dense quadrants (tracks land ~1.27 mm apart), and a fragment with no via in it is
+  a fragment nothing can rescue.
+- **Post-route, on a 4 mm grid** — `route.py` phase C, placed only where both layers are
+  free *and* both sit on the main pour. (A via in a pour pocket welds an isolated F+B
+  scrap together, which island removal then keeps as floating copper.)
+
+As built that gives a **worst stitch gap of 8.6 mm** anywhere on the board outside the
+antenna keep-out; `audit_board.py` gates it at 12 mm. Zone minimum thickness is 0.15 mm,
+not KiCad's 0.25 mm default: the routing chops the pour into ribbons and a 0.25 mm floor
+discards every sliver narrower than that, which is one way a GND pad ends up on a fill
+fragment with no path home. JLCPCB's 1 oz minimum copper width is 0.127 mm, so 0.15 is
+in spec.
 
 ### 6.3 Star ground (analog)
 
@@ -410,7 +440,9 @@ dimensions.** Capture, per module:
 
 **TP4056 (USB-C, blue variant)**
 - [ ] Outline (nominal ~17 × 27 mm, blue USB-C board)
-- [ ] Positions + drill of B+, B−, OUT+, OUT− pads (are they on a 2.54 grid? usually *almost*)
+- [x] Positions + drill of B+, B−, OUT+, OUT− pads — ✅ **answered, and the answer is no.**
+  Not a 2.54 grid at all: 0 / 3.526 / 10.960 / 14.066 mm from OUT−, holes 2.0 mm
+  (±0.55 mm pin slack). See measurements.md §Photogrammetry.
 - [ ] IN+ / IN− pads: drilled or SMD-only? position
 - [ ] USB-C jack overhang past the board edge (~2 mm, ~29 mm effective module depth)
 - [ ] Confirm B+ ↔ OUT+ continuity (0 Ω) and B− ↔ OUT− **non**-continuity (protection FET)

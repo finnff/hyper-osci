@@ -1,0 +1,335 @@
+{
+  "scale_um_per_px": 12.537355549807595,
+  "scale_relative_sigma": 0.0020497685843735834,
+  "calibration_confidence": "reference",
+  "frame": {
+    "model": "similarity",
+    "origin": "pin 1 of the primary header row",
+    "x_axis": "along the primary row, increasing lattice index"
+  },
+  "pitch_reference_mm": 2.54,
+  "pitch_px": null,
+  "board": {
+    "note": "outline is informational; the datum is pin 1 of the primary row",
+    "source": "user",
+    "corners_mm": [
+      [
+        15.612680567954174,
+        1.6723312739916896
+      ],
+      [
+        -1.7335013904015693,
+        1.8645638213318918
+      ],
+      [
+        -1.8409639124206834,
+        -23.94236182473814
+      ],
+      [
+        15.411977675968012,
+        -24.01746110657552
+      ]
+    ],
+    "width_mm": 17.300176066663532,
+    "height_mm": 25.748862878472103,
+    "side_lengths_mm": [
+      17.34724709816065,
+      25.807149387242013,
+      17.253105035166413,
+      25.690576369702192
+    ],
+    "corner_angles_deg": [
+      90.18731569900055,
+      89.60365079341,
+      90.01081398351786,
+      90.1982195240716
+    ],
+    "max_corner_deviation_deg": 0.3963492065900027,
+    "pin_bbox_mm": [
+      -0.024708517593923673,
+      -0.08088062283525943,
+      14.041092129669353,
+      0.07236954990374755
+    ],
+    "left_margin_mm": 1.8162553948267597,
+    "right_margin_mm": 1.5715884382848202,
+    "top_margin_mm": 23.93658048374026,
+    "bottom_margin_mm": 1.7921942714281442
+  },
+  "rows": [
+    {
+      "row": 0,
+      "role": "pin",
+      "n_pads": 4,
+      "n_measured": 4,
+      "n_inferred": 0,
+      "lattice_span": 5,
+      "indices": [
+        0,
+        1,
+        3,
+        4
+      ],
+      "even_pitch": false,
+      "pitch_px": 283.6754102604628,
+      "pitch_mm_measured": 3.5164527367967158,
+      "straightness_rms_mm": 0.17700804887990404,
+      "direction_mm": [
+        0.9999999999997188,
+        -4.9946214566211575e-16
+      ],
+      "angle_deg": -2.8617072972995637e-14,
+      "start_mm": [
+        -0.024708517593923673,
+        0.05534740404075045
+      ],
+      "end_mm": [
+        14.041092129669353,
+        0.07236954990374755
+      ],
+      "hole_dia_mean_mm": 1.8188159124515633,
+      "hole_dia_std_mm": 0.4611385190339838,
+      "pad_dia_mean_mm": 3.1597687384064894,
+      "pad_dia_std_mm": 1.3120512982653723,
+      "drill_est_mm": 1.8688159124515633,
+      "drill_nominal_mm": 2.0,
+      "drill_nominal_residual_mm": -0.1311840875484367,
+      "n_probed": 0,
+      "is_primary": true
+    }
+  ],
+  "pin_rows": [
+    0
+  ],
+  "pads": [
+    {
+      "id": 0,
+      "row": 0,
+      "index": 1,
+      "x_mm": 3.5010693620525952,
+      "y_mm": -0.046836331109256335,
+      "x_px": 1306.6216259226715,
+      "y_px": 878.3867653993311,
+      "pad_dia_mm": 2.1124148495553405,
+      "hole_dia_mm": 1.6484916708982773,
+      "drill_est_mm": 1.6984916708982774,
+      "roundness": 0.9818775635137115,
+      "kind": "through-hole",
+      "anchor": "hole",
+      "coverage": 0.8333333333333334,
+      "score": 1.0,
+      "probed": false,
+      "picked": true,
+      "inferred": false,
+      "two_sided": true,
+      "tags": [
+        "picked",
+        "centre-from-back",
+        "hole-from-back",
+        "confirmed"
+      ],
+      "in_row": true,
+      "role": "pin",
+      "hole_dia_nominal_mm": 2.0,
+      "hole_dia_residual_mm": -0.30150832910172265
+    },
+    {
+      "id": 1,
+      "row": null,
+      "index": null,
+      "x_mm": -0.3164445184211937,
+      "y_mm": -22.295092339588575,
+      "x_px": 3067.2136923716703,
+      "y_px": 501.44631175997483,
+      "pad_dia_mm": 3.5614158563117253,
+      "hole_dia_mm": 1.773317928017402,
+      "drill_est_mm": 1.8233179280174021,
+      "roundness": 0.9711798879496211,
+      "kind": "through-hole",
+      "anchor": "hole",
+      "coverage": 0.8541666666666666,
+      "score": 1.0,
+      "probed": false,
+      "picked": true,
+      "inferred": false,
+      "two_sided": true,
+      "tags": [
+        "picked",
+        "centre-from-back",
+        "confirmed"
+      ],
+      "in_row": false,
+      "role": "pin",
+      "hole_dia_nominal_mm": null,
+      "hole_dia_residual_mm": null
+    },
+    {
+      "id": 2,
+      "row": null,
+      "index": null,
+      "x_mm": 13.884853616229146,
+      "y_mm": -22.30260252468104,
+      "x_px": 3114.22056564617,
+      "y_px": 1633.1894613431762,
+      "pad_dia_mm": 3.1881026353187334,
+      "hole_dia_mm": 1.5875819823837023,
+      "drill_est_mm": 1.6375819823837023,
+      "roundness": 0.9468677700196768,
+      "kind": "through-hole",
+      "anchor": "hole",
+      "coverage": 0.90625,
+      "score": 1.0,
+      "probed": false,
+      "picked": true,
+      "inferred": false,
+      "two_sided": true,
+      "tags": [
+        "picked",
+        "centre-from-back",
+        "confirmed"
+      ],
+      "in_row": false,
+      "role": "pin",
+      "hole_dia_nominal_mm": null,
+      "hole_dia_residual_mm": null
+    },
+    {
+      "id": 3,
+      "row": 0,
+      "index": 3,
+      "x_mm": 10.934862859255658,
+      "y_mm": -0.08088062283525943,
+      "x_px": 1333.6276311569459,
+      "y_px": 1470.709191878258,
+      "pad_dia_mm": 4.306816101639351,
+      "hole_dia_mm": 1.6126456707138348,
+      "drill_est_mm": 1.6626456707138348,
+      "roundness": 0.9852417729881814,
+      "kind": "through-hole",
+      "anchor": "hole",
+      "coverage": 0.6770833333333334,
+      "score": 1.0,
+      "probed": false,
+      "picked": true,
+      "inferred": false,
+      "two_sided": true,
+      "tags": [
+        "picked",
+        "centre-from-back",
+        "confirmed"
+      ],
+      "in_row": true,
+      "role": "pin",
+      "hole_dia_nominal_mm": 2.0,
+      "hole_dia_residual_mm": -0.33735432928616516
+    },
+    {
+      "id": 4,
+      "row": 0,
+      "index": 0,
+      "x_mm": -0.024708517593923673,
+      "y_mm": 0.05534740404075045,
+      "x_px": 1286.9562554103566,
+      "y_px": 597.7350054591041,
+      "pad_dia_mm": 1.6152184820000055,
+      "hole_dia_mm": 2.6021280123832256,
+      "drill_est_mm": 2.6521280123832254,
+      "roundness": 0.9753588559004652,
+      "kind": "through-hole",
+      "anchor": "hole",
+      "coverage": 0.84375,
+      "score": 1.0,
+      "probed": false,
+      "picked": true,
+      "inferred": false,
+      "two_sided": true,
+      "tags": [
+        "picked",
+        "centre-from-back",
+        "hole-from-back",
+        "confirmed"
+      ],
+      "in_row": true,
+      "role": "pin",
+      "hole_dia_nominal_mm": 2.0,
+      "hole_dia_residual_mm": 0.6521280123832254
+    },
+    {
+      "id": 5,
+      "row": 0,
+      "index": 4,
+      "x_mm": 14.041092129669353,
+      "y_mm": 0.07236954990374755,
+      "x_px": 1331.5652412312968,
+      "y_px": 1718.7598973098725,
+      "pad_dia_mm": 4.60462552043126,
+      "hole_dia_mm": 1.4119982958109152,
+      "drill_est_mm": 1.4619982958109152,
+      "roundness": 0.977878711443095,
+      "kind": "through-hole",
+      "anchor": "hole",
+      "coverage": 0.6666666666666666,
+      "score": 1.0,
+      "probed": false,
+      "picked": true,
+      "inferred": false,
+      "two_sided": true,
+      "tags": [
+        "picked",
+        "centre-from-back",
+        "confirmed"
+      ],
+      "in_row": true,
+      "role": "pin",
+      "hole_dia_nominal_mm": 2.0,
+      "hole_dia_residual_mm": -0.5380017041890848
+    }
+  ],
+  "diagnostics": {
+    "n_candidates": 6,
+    "n_pads_in_rows": 4,
+    "gap_cv": 0.0,
+    "row_pairs": [],
+    "scale_source": "reference",
+    "reference": {
+      "mm": 17.3,
+      "px": 1379.8763169211943,
+      "scale_um_px": 12.537355549807595,
+      "deviation_from_pitch": null
+    },
+    "frame_model": "similarity",
+    "lattice_fit_rms_mm": null,
+    "similarity_fit_rms_mm": null,
+    "lattice_fit": null,
+    "edge_fit_rms_px": [
+      1.6006589922469023,
+      1.6590470066050786,
+      0.802684241848296,
+      0.44540513561622597
+    ]
+  },
+  "gap_measurements_px": [
+    {
+      "row": 0,
+      "from": 4,
+      "to": 0,
+      "k": 0,
+      "gap_px": 281.33989613087846
+    },
+    {
+      "row": 0,
+      "from": 3,
+      "to": 5,
+      "k": 3,
+      "gap_px": 248.0592790389567
+    }
+  ],
+  "warnings": [
+    "scale comes from the user-measured reference distance (17.30 mm over 1379.9 px), not from the 2.54 mm grid; it is exactly as good as the caliper reading and the two endpoint clicks behind it",
+    "fewer than two usable pad rows, so the pixel-to-millimetre map is a similarity; residual perspective biases absolute offsets and cannot be separated from them",
+    "2 picked pin(s) lie on no straight run of 3 or more and take part in no row geometry; their coordinates are reported individually",
+    "6 of 8 corner correspondences ruled out as physically impossible (a flipped board is a reflection that preserves the aspect ratio)",
+    "pin holes were selected by hand (both faces); positions and diameters are still measured from the images",
+    "6 holes confirmed on both faces (registration residual 2.3 px); 0 front-only and 0 back-only features were discarded as not being through-holes"
+  ]
+}

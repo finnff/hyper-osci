@@ -1,0 +1,26 @@
+MAX4466
+=======
+
+scale            11.088 um/px  (+/- 1.34 %)
+2.54 mm ref      229.08 px    [calibration: weak]
+user ref         20.80 mm = 1825.0 px (+2.79 % vs the pitch)
+frame            similarity, origin at pin 1 of the primary row
+board outline    20.24 x 13.31 mm   (user-clicked corners, edges refined from the image)
+
+pin rows (1)
+  row 0 [pin]: 3 pads over 3 slots, angle -0.00 deg
+         pitch  2.5400 mm (ref 2.5400), straightness rms 0.0469 mm
+         hole   1.134+/-0.071 mm     pad 1.480+/-0.087 mm
+         drill  1.184 mm estimated (measured + 0.05 plating) -> nominal 1.20 mm (-0.016)
+
+pin field vs board outline (mm, informational)
+  left 4.257   right 4.089   top 19.124   bottom 1.190
+
+warnings
+  ! the pitch rests on a single run of 3 pads; it is assumed to be 2.54 mm but nothing in the image corroborates that
+  ! the user reference distance implies a scale +2.8% away from the 2.54 mm pitch; one of the two is wrong (a misread caliper, a mis-clicked endpoint, or holes that are not on the 0.1" grid).  The pitch was used
+  ! fewer than two usable pad rows, so the pixel-to-millimetre map is a similarity; residual perspective biases absolute offsets and cannot be separated from them
+  ! pad-to-pad gaps vary by 1.9% - the board is probably tilted relative to the sensor; treat absolute offsets with caution
+  ! 6 of 8 corner correspondences ruled out as physically impossible (a flipped board is a reflection that preserves the aspect ratio)
+  ! pin holes were selected by hand (both faces); positions and diameters are still measured from the images
+  ! 3 holes confirmed on both faces (registration residual 0.0 px); 0 front-only and 0 back-only features were discarded as not being through-holes

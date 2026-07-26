@@ -1,0 +1,31 @@
+ESP32C3
+=======
+
+scale            17.584 um/px  (+/- 0.64 %)
+2.54 mm ref      144.45 px    [calibration: good]
+user ref         17.80 mm = 1006.8 px (+0.55 % vs the pitch)
+frame            homography, origin at pin 1 of the primary row, lattice fit rms 0.0396 mm
+board outline    22.22 x 17.82 mm   (user-clicked corners, edges refined from the image)
+
+pin rows (2)
+  row 0 [pin]: 8 pads over 8 slots, angle -0.07 deg, 1 recovered by probe
+         pitch  2.5321 mm (ref 2.5400), straightness rms 0.0344 mm
+         hole   1.026+/-0.212 mm     pad 1.639+/-0.117 mm
+         drill  1.076 mm estimated (measured + 0.05 plating) -> nominal 1.10 mm (-0.024)
+  row 1 [pin]: 8 pads over 8 slots, angle +0.07 deg, 1 recovered by probe
+         pitch  2.5366 mm (ref 2.5400), straightness rms 0.0492 mm
+         hole   1.025+/-0.035 mm     pad 1.652+/-0.074 mm
+         drill  1.075 mm estimated (measured + 0.05 plating) -> nominal 1.10 mm (-0.025)
+
+pin row relations
+  rows 0-1: parallel, separation 15.207 mm = 0.5987 in = 5.987 x 2.54 = 11.974 x 1.27
+         offset along the rows -0.090 mm
+
+pin field vs board outline (mm, informational)
+  left 3.173   right 1.402   top 1.293   bottom 1.330
+
+warnings
+  ! 2 picked pin(s) were measured too far off their row's axis (solder doming) and were re-measured by the lattice probe; the probe's centre is the one reported
+  ! 6 of 8 corner correspondences ruled out as physically impossible (a flipped board is a reflection that preserves the aspect ratio)
+  ! pin holes were selected by hand (both faces); positions and diameters are still measured from the images
+  ! 16 holes confirmed on both faces (registration residual 4.9 px); 0 front-only and 0 back-only features were discarded as not being through-holes
