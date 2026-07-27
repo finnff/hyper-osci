@@ -1,36 +1,39 @@
-# carrier layout notes (board v1.1, notes updated 2026-07-27)
+# carrier layout notes (board v1.1, notes updated 2026-07-28)
 
 Fully routed and clean: `kicad-cli pcb drc --severity-all` reports **0 violations
-of any severity** and **0 unconnected items**. 1228 track segments, 50 GND vias,
+of any severity** and **0 unconnected items**. 1225 track segments, 50 GND vias,
 30 GND through-hole pads. Worst GND stitch gap anywhere outside the antenna
 keep-out: **7.8 mm** (gate: 12 mm).
 
-**Zero 90° track corners.** Of the 1146 two-way track vertices, **1133 are true
-135° mitres**; 4 are collinear and 7 otherwise obtuse. The 2 acute ones are
-traces fanning out from a pad — SW2 pad 1 (`BTN_MODE`) and Q1 pad 3
-(`VBAT_OUT`) — wide copper, no notch, not routed corners. (There are also 150
-track endpoints and 4 tees, which have no interior angle.)
+**Zero 90° track corners.** The 2 acute ones are traces fanning out from a pad —
+SW2 pad 1 (`BTN_MODE`) and Q1 pad 3 (`VBAT_OUT`) — wide copper, no notch, not
+routed corners.
 
-*v1.1's counts were 1267/45/1154-of-1165 with one acute corner; they moved
-because RV1's corrected footprint forced a fresh route on a new seed — see
-"What the 2026-07-27 pot correction changed".*
+*Counts have moved twice: 1267/45 → 1228/50 when RV1's corrected footprint forced
+a fresh route on a new seed, and → 1225/50 when the TP4056 gained its USB-C-end
+mount row. Both are below; both re-routed on **seed 11**, which held.*
 
 **On schematic parity:** this used to claim "0 schematic-parity items". That was
 never measured — `kicad-cli pcb drc` only reports parity when passed
-`--schematic-parity`, and nothing was passing it. Measured, the board has **67**,
+`--schematic-parity`, and nothing was passing it. Measured, the board has **69**,
 none of them defects:
 
-- **59 `footprint_symbol_mismatch`** — 50 because the board stores a *bare*
+- **60 `footprint_symbol_mismatch`** — 50 because the board stores a *bare*
   footprint name (`R_Axial_…`) while the symbol stores `Lib:Name`
   (`Resistor_THT:R_Axial_…`), and 9 "exclude from BOM" attribute differences.
   The bare name is deliberate; see "what the review changed" below.
-- **8 `net_conflict`** on the deliberate no-connects (J3 pads 5–9, JB1 pads 4–5,
-  SW1 pad 3), where the schematic assigns an `unconnected-(…)` net and the board
-  leaves the pad netless.
+- **9 `net_conflict`** on the deliberate no-connects (J3 pads 5–9, JB1 pads 4–5,
+  SW1 pad 3, **J10**), where the schematic assigns an `unconnected-(…)` net and
+  the board leaves the pad netless.
 
 The noise is unfortunate, because it is exactly what hid the eleven standing
 resistors the schematic thought were horizontal. Read parity by *diffing* the
 count against a known-good baseline, not by expecting zero.
+
+*The baseline was **67** (59 + 8) until 2026-07-28, when `J10` was added: one
+more bare-FPID mismatch for the new component, one more `net_conflict` for its
+deliberate no-connect. Same two benign categories, +1 each — which is what a
+parity diff is supposed to look like when nothing is wrong.*
 
 `kicad-cli sch erc` likewise reports ~41 `footprint_link_issues` in a headless
 checkout — that is the global footprint library table not being visible to
@@ -75,7 +78,7 @@ Plus one that is **opt-in and easy to forget**: add `--schematic-parity` to the
 DRC call whenever `design.py` changes. It is the only thing that catches a BOM
 value or footprint drifting between the schematic and the board — which is
 exactly what it found in July 2026 (eleven standing resistors the schematic
-thought were horizontal). Expect 67 residual items; see above.
+thought were horizontal). Expect 69 residual items; see above.
 
 ## What changed from v1.0
 
@@ -213,6 +216,55 @@ Consequences that were not obvious:
   the pour is the part's only rear anchoring against a bare shaft turned by
   hand. Closing the switch shorts GND to GND.
 
+## What the 2026-07-28 TP4056 mount row changed
+
+The second copper change, and the reason is mechanical rather than electrical:
+**J5/J6 are four pins in one column at one end of the module, and the USB-C jack
+is 21.65 mm away at the other.** A row of pins resists rotation about its own
+axis only by bending, so the jack — the one connector handled on every charge
+cycle, at 10–20 N of insertion force — sat on a diving board.
+
+The module already carried the fix: two ~2.8 mm bare-copper pads on ⌀1.68 mm
+plated holes at its USB-C-end corners, in line with OUT+ (`+` silk) and OUT−.
+The carrier already had a pad on one of them — `J9`, drawn as a **wire pad** for
+the IN+ sense tap. So:
+
+- **`J9` became a socket and moved 0.65 mm west** onto the real hole position.
+- **`J10` was added** on the other corner, **on no net**.
+- `WirePad_D1.0` was replaced by `TP4056_MountPin` (same 1.0 mm drill / 2.2 mm
+  pad — the name and the docstring were the only things that were wrong).
+
+Three things that were not obvious:
+
+- **The offset is a caliper number overriding the photogrammetry**, and it is the
+  only place in `measured.py` where that happens. The picks say 22.30 mm; the
+  caliper says 21.65 mm; the module's hole gives 0.39 mm of slack on a 0.64 mm
+  square pin. 0.65 mm of disagreement is therefore the difference between a pin
+  that drops in and one that does not, so it had to be settled rather than
+  averaged. `hw/pin_locs/TP4056.txt` says why the picks lose: the frame is a
+  **similarity** calibrated on a 17.30 mm reference measured *across* the output
+  row, so the along-row axis is metric and the perpendicular one is not.
+  Cross-check: the picks put these pads 1.68 mm inboard of the clicked east edge,
+  and `25.2 − 1.935 − 1.68 = 21.59`. Rule now stated in `measured.py`: **across
+  the row → photogrammetry, along the module → caliper.**
+- **`J9`/`J10` are deliberately NOT in `audit_board.py`'s `FIT_MAP`.** Fitting
+  them would re-measure that override and report it as a 0.65 mm error. What
+  covers them instead is the module's own hole slack, and the escape hatch if a
+  pin will not enter is to drill those two module holes to 2.0 mm (0.39 → 0.55 mm
+  of slack, 0.4 mm of annular ring left).
+- **`J10` is netless on purpose.** pcb.md §2 asserts TP4056 `IN− ≡ OUT−`, which is
+  the usual protected-TP4056 topology, but it has never been ohmed on this
+  module — and if it is wrong, bonding it to carrier GND shorts across the
+  DW01/FS8205 and the cell loses its protection. A floating pin anchors just as
+  well. This is also why the parity baseline gained a `net_conflict`.
+
+**Seed 11 survived this one.** Unlike the RV1 correction, adding two pads in the
+empty east strip (the only copper there was one VBUS_CHG run from TP1 to J9) did
+not break the route: phase A landed 0 failures on attempt 11, phase D found a
+single GND cluster in round 0 and placed **zero** bridging vias, and the stitch
+gap stayed at 7.8 mm. No re-sweep was needed — but it was not assumed, it was
+checked, because a stale seed fails silently as a severed pour.
+
 ## Module fit — measured, not assumed
 
 Every socket position comes from the photogrammetry in `hw/pin_locs` via
@@ -227,6 +279,8 @@ seating:
 | ESP32-C3 | 16 | 0.100 mm at JA1.4 | 0.25 mm |
 | TP4056 | 4 | 0.081 mm at J6.1 | 0.55 mm slack, gated at 0.25 |
 
+J9/J10 are absent from that table on purpose — see the 2026-07-28 section above.
+
 0.25 mm is the misalignment a 2.54 mm female header accepts before a rigid
 module pin fouls the barrel. Re-measure a module, drop the new CSV in, re-run
 `gen_board.py`, and the board follows it.
@@ -237,7 +291,8 @@ module pin fouls the barrel. Re-measure a module, drop the new CSV in, re-run
   + PCM5102A (~32 mm) + TP4056 (~26 mm) don't fit on a 70 mm edge. USB-C still
   exits east.
 - **J5/J6 are two pad pairs**, not butted 1×2 sockets, at the measured pitches
-  (see above). Fit four machined single sockets, or solder wires and give up
+  (see above), **and there is a second mount row 21.65 mm east** (J9 = IN+,
+  J10 = IN−/NC). Fit **six** machined single sockets, or solder wires and give up
   removability.
 - **D1/D3 live in the power cluster, not the island**: they carry
   GATE/VBUS_CHG/VLOAD, and their 7.62 mm pad rows would have walled off the
@@ -443,11 +498,28 @@ floorplan room, not just a bigger number.
    south of the anchor (the wiper pad), so y=45.0 lands it on the board's south
    edge with the bushing and shaft overhanging. A paper-doll pass is still
    worth doing, but it now confirms a drawing rather than a guess.
-4. **TP4056 pad-row edge offset**: the pad *pitches* are now measured, but how
-   far the row sits from the module's short edge is not, so the module may sit
-   shifted N/S on J5/J6. Region y 24–41 has margin; check.
+4. ~~**TP4056 pad-row edge offset**~~ — **RESOLVED 2026-07-27, and it seats as
+   drawn.** The pad column sits 0.05 mm south of the module's body centre
+   against 0.12 mm modelled: **Δ 0.07 mm on a 0.25 mm gate**, so there is no
+   N/S shift and no copper moves. Two by-products: the module's west edge
+   carries **two depanelization nubs** (+1.6 mm at the OUT−/OUT+ corners) that
+   the photogrammetry's hand-clicked corners averaged across — **file them
+   flush**, or the SW corner comes within ~0.7 mm of RV1's body instead of
+   2.4 mm; and the body's east end lands ~0.8 mm west of the modelled 69.79,
+   which only adds board clearance but changes the enclosure's charge-port
+   cutout. `TP4056.json` is deliberately **not** edited — every delta is inside
+   the gate or adds clearance, and touching the outline would force a
+   `gen_board` + `route` re-run and a seed re-sweep for nothing. Full reduction:
+   `docs/hardware/measurements.md` §Nubs.
 5. **JST cell polarity** (silk warns): B− is NOT GND — verify the wiring of the
    cell before first plug-in.
+5b. **The two TP4056 mount pins (J9/J10) are the one fit on this board measured
+   with a caliper rather than the photogrammetry** — 21.65 mm from the output
+   row, against 0.39 mm of slack in the module's own 1.68 mm hole. Dry-fit it:
+   six pins in the carrier's sockets, module lowered on. If a mount pin will not
+   enter, **drill those two module holes to 2.0 mm** (they carry no current here,
+   and 2.8 mm pads leave a 0.4 mm ring). Do not force it — bending a pin at the
+   far end of a 21.65 mm lever is how you damage the output pads.
 6. Antenna keepout (x < 6, y 6–28) is pour-free on both layers; a few thin
    signal traces may pass the region edge (soft-penalised, not forbidden).
 7. **R10** is a standing axial (≈7.5 mm) at x 54.35…59.49, y 4.83…7.88, and the

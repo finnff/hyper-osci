@@ -31,7 +31,7 @@ DNP (do-not-populate) footprint so the decision moves to assembly time, not layo
 | ESP32-C3 SuperMini | 2× 1×8 female (J1A/J1B) | antenna end at the west edge. The antenna is **flush** with the module's own board edge (0 mm overhang, measured) — what protects it is the copper keep-out inboard of that edge, §6.1 rule 3 |
 | GY-PCM5102A (purple) | 1×6 female (J2) + 1×9 female (J3) | I2S end (short edge) + 9-pin analog/config end on the long edge (⊥ to J2). Module measures **32.0 × 17.4 mm** (photogrammetry) — see §7/measurements.md |
 | MAX4466 mic | 1×3 header (J4) | off-board on a ~10 cm pigtail (`VCC/GND/OUT`); aimed at the PA |
-| TP4056 USB-C (blue, **26.9 × 17.3 mm**, with DW01+FS8205) | **4× machined single-pin sockets** (J5 = `OUT−`/`B−` @ 3.526 mm, J6 = `B+`/`OUT+` @ 3.106 mm) + 1 pad for IN+ | USB-C end at board edge (jack overhangs **1.4 mm** → 28.3 mm effective depth). **Not a stock 1×2 socket** — the pads are not on a 2.54 grid, see §2 |
+| TP4056 USB-C (blue, **26.9 × 17.3 mm** *with* the two west-edge depanelization nubs; **25.2 mm body** once they are filed off — §5) | **6× machined single-pin sockets**: the output row (J5 = `OUT−`/`B−` @ 3.526 mm, J6 = `B+`/`OUT+` @ 3.106 mm) **plus a mount row at the USB-C end** 21.65 mm away (J9 = `IN+`, J10 = `IN−`/NC) — four in one line left the jack on a 21.65 mm cantilever, §5 | USB-C end at board edge; the jack overhangs the module's own east edge by **1.4 mm**, which lands it ~0.5 mm proud of the carrier edge (§6.1 rule 4 — an enclosure constraint). **Not a stock 1×2 socket** — the pads are not on a 2.54 grid, see §2 |
 
 - Passive parts may be placed **under the socketed modules**. The gated figure is
   **8.3 mm**: that is the SuperMini's own bottom-side component height (measured), and it is
@@ -43,6 +43,15 @@ DNP (do-not-populate) footprint so the decision moves to assembly time, not layo
   loose (velcro/pocket) in the 3D-printed enclosure, since 56 × 34 mm is large next to the
   70 × 50 mm carrier. The carrier only carries the JST-PH socket (J8). The ~10 h runtime target
   is met comfortably (≈13 h NETWORK, ≈30 h LOCAL).
+  **Sourcing changed 2026-07-27: cells come from Amazon**, not the EEMB part, to keep the LiPo
+  off the slow-freight critical path. Two things the substitution puts on you, because a
+  generic cell guarantees neither: **(a)** it must terminate in a **JST-PH 2.00 mm** plug — PH,
+  XH and mini-Tamiya all ship on Amazon LiPos; **(b) meter the polarity before the first
+  plug-in** (layout-notes VERIFY 5). Cell-lead polarity is not standardised, J8's silk assumes
+  the EEMB convention, and on this board `B−` is deliberately **not** GND (§3.1), so a reversed
+  cell drives the pack backwards through the FS8205 rather than simply failing to run. Keep the
+  capacity near 2000 mAh — every runtime and threshold figure in
+  [power-budget.md](power-budget.md) is written against it.
 - **Enclosure:** 3D-printed case; the carrier keeps its 4× M3 mounting holes (§6).
 - 4 identical boards will be built (a 5th possible later); order **5 PCBs** (§8) — the fab
   minimum quantity is 5 anyway, which yields one spare bare board.
@@ -61,11 +70,12 @@ Reference designators used throughout this doc and to be used in KiCad:
 | J4 | 1×3 header (pigtail landing) | MAX4466 on a ~10 cm 3-wire pigtail: `VCC GND OUT` ✅ confirmed on the back silk 2026-07-18. Mic exits the enclosure, aimed at the PA. |
 | J5 | 1×2 pad pair, **3.526 mm** pitch | TP4056 north pair: `OUT− B−`. ⚠️ **Not a stock socket and not a 2.54 grid** — the module's four pads measure 0 / 3.526 / 10.960 / 14.066 mm down its short edge (photogrammetry, 2026-07-26), so the grouping is `(OUT−,B−)` + `(B+,OUT+)`, *not* the battery-end/output-end split this table used to claim. Generated footprint `HYPEROSCI:TP4056_Pads_OUTminus_Bminus`. |
 | J6 | 1×2 pad pair, **3.106 mm** pitch | TP4056 south pair: `B+ OUT+`, 10.960 mm south of J5.1. Generated footprint `HYPEROSCI:TP4056_Pads_Bplus_OUTplus`. Fit four machined single sockets, or solder wires and give up removability. |
-| J6b | 1 plated pad + short wire | TP4056 `IN+` (VBUS_CHG sense — see §4; pad drilled 1.0 mm). **KiCad ref is `J9`.** |
+| J6b | 1 machined single-pin socket | TP4056 `IN+` (VBUS_CHG sense — see §4; 1.0 mm drill). **KiCad ref is `J9`.** No longer a wire pad: it is half of the **USB-C-end mount row** (§5), 21.65 mm east of the J5/J6 column, on the module's `+`-marked corner pad. |
+| — | 1 machined single-pin socket | **`J10`** — the other USB-C-end corner pad (`IN−`). **On no net, deliberately**: its job is mechanical, and `IN− ≡ OUT−` is asserted in this table but has never been measured on this module. Bonding it to GND on a wrong assumption shorts across the DW01/FS8205. See [measurements.md §The second mount row](measurements.md). |
 | J7 | 1×2 male header | Debug: `GPIO21 (UART0 TX)`, `GND` |
 | J8 | JST-PH 2-pin, side entry (S2B-PH-K-S) | LiPo battery in (EEMB LP103454 2000 mAh, mounted off-board — cell not on the PCB outline). **Polarity silk mandatory.** |
 | X, Y | 2× RCA flying-lead solder pad-pair (signal + AGND) | Scope X (=DAC L), Scope Y (=DAC R). Finn solders the reused ~50 cm RCA cables here — no connector part on the board. Silk `X` / `Y`. |
-| SW1 | 1 A-rated SS12D00-class SPDT slide switch (e.g. SK12D07) | Power switch (in VSW→VLOAD path, §4); 1 A rating chosen because WiFi TX peaks ≈ 0.35 A |
+| SW1 | SPDT slide switch — **SS12D00, 6 mm handle** (ordered 2026-07-27) | Power switch (in VSW→VLOAD path, §4). Its 0.3 A rating is a *make/break* figure at 50 VDC; this switch breaks 4 V, so the ≈0.35 A WiFi peak is accepted — see the §5 row |
 | SW2 | 6×6 mm THT tactile | MODE button → GPIO7 |
 | RV1 | **RV097NS** 9 mm 10 kΩ linear pot (B10K), **5-pin mono *with switch*, right-angle**, body 27.3 × 9.5 × 11.3 mm. **Metal shaft turned directly — no knob.** Pads 4/5 are the SPST, not bracket lugs (the part has none) — both parked on GND, see §5. The **mounting surface sits on the board's south edge**; the M7×0.75 bushing and 15 mm shaft hang off it. | Filter-cutoff → GPIO3 |
 
@@ -390,6 +400,30 @@ The PCB is identical under all three — that is what JP1 buys.
 Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (spares). Example parts are LCSC-searchable MPNs;
 ⚠️ VERIFY exact LCSC stock codes at order time (codes drift) — search by the MPN given.
 
+> **📦 ORDERED 2026-07-27 — this BOM is closed for a §4.5 plan-A build.**
+>
+> **Bought:** SW1 slide switches (**SS12D00, 6 mm handle** — see the SW1 row for the accepted
+> 0.3 A deviation) · 2.54 mm female header assortment · **DMG3415U-7 ×10** (Q1) · TO-92
+> PNP/NPN assortment (Q2 substitutes) · **JST-PH 2.00 mm** connector kit · **RV097NS-B10K ×5**
+> (5-pin mono *with switch*, right-angle) · M3 heat-set inserts + screws.
+>
+> **From stock (drawer-checked 2026-07-27):** machined round-pin sockets (J5/J6/J9/J10 — **6**
+> per board since 2026-07-28, not 4) · 6×6 mm
+> tactile (SW2) · 3 mm LEDs (D4/D5) · 220 µF 10 V ×10 (C1) · 100 nF "104" (C2–C5) · all
+> resistor values · male header strip + pigtail wire (J7, mic pigtails). 5 V/2 A wall charger
+> confirmed on hand (mandatory per §4.3 state 2).
+>
+> **Deliberately not bought — the plan-B power-path parts: U1, D1, D2, D3, R7, R8, R9.**
+> Per §4.5 the board ships with JP1 bridged, so these have no function; **D2 in particular must
+> never be fitted on a JP1 board** (§4.4). Q1 and a PNP for Q2 *were* bought anyway, as cheap
+> insurance if §4.4 later passes on an assembled carrier — populating the block then needs
+> only the TL431A, two BAT85, an SS34 and three resistors.
+>
+> **Two near-misses worth remembering.** A **JST XH-2.54** kit was ordered first and swapped:
+> XH is 2.5 mm and mates neither J8 (`S2B-PH-K`, 2.00 mm) nor the cell's pre-fitted lead. And
+> the header assortment carries no 1×9 or 1×3 — **cut J3 from a 10-pin and J4 from a 4-pin**,
+> accepting the destroyed position.
+
 | Ref | Qty | Part | Example MPN / LCSC search | Package | Notes |
 |---|---|---|---|---|---|
 | Q1 | 1 | P-FET −20 V | **DMG3415U-7** (Diodes) | SOT-23 (SMD) | hand-solder pads; THT fallback: none good at low Vgs — keep SOT-23 |
@@ -411,7 +445,7 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 | C1 | 1 | 220 µF ≥ 10 V electrolytic | e.g. Rubycon/Chang 220 µF 16 V | radial 6.3 mm | VLOAD bulk |
 | C2, C4, C5 | 3 | 100 nF X7R | generic | 2.54 mm radial | decoupling |
 | C3 | 1 | 100 nF X7R | generic | 2.54 mm radial | across R2 (ADC filter) |
-| SW1 | 1 | SPDT slide, **1 A-rated** | **SK12D07**-class (1 A); the base SS12D00G4 is only 0.3 A and WiFi TX peaks ≈ 0.35 A, so the 1 A part is required | THT | power |
+| SW1 | 1 | SPDT slide | **SS12D00, 6 mm handle — ✅ ordered 2026-07-27** (alternative: SK12D07-class, 1 A) | THT | power. ⚠️ **Accepted deviation** — this doc previously said the 1 A part was *required* because the SS12D00's 0.3 A is below the ≈0.35 A WiFi TX peak. That compares a peak current against a **make/break rating specified at 50 VDC**, and arc energy scales with the voltage being interrupted: at the ~4 V this switch actually breaks there is no arc to speak of, and 0.35 A through the contacts is a thermal non-event. Revisit only if contact resistance climbs in service. **6 mm handle** chosen so the actuator clears the enclosure wall — no length had ever been specified |
 | SW2 | 1 | Tactile 6×6 mm | **TS-1102** / Omron B3F-1000 style | THT 6×6, 4-pin | MODE |
 | RV1 | 1 | 10 k linear pot, 9 mm (B10K) | **RV097NS-B10K, "5-pin mono *with switch*", right-angle** (metal shaft, body 27.3 × 9.5 × 11.3 mm) | RV097NS THT (5-pin, ⌀1.0 holes) | shaft turned directly — **no knob** (enclosure needs only a shaft hole). ⚠️ **Do not substitute the 3-pin or the vertical variant** — see the box below |
 | X, Y | — | RCA output landings (signal + AGND solder pads) | no connector part — reuse the ~50 cm RCA cables from the old sigma-delta units | 2× pad-pair | Finn solders the RCA cable leads directly; scope side uses a BNC→RCA adapter |
@@ -420,7 +454,7 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 | J2 | 1 | Female header 1×6 | generic | THT | DAC I2S |
 | J3 | 1 | Female header 1×9 | generic | THT | DAC analog/config end (only LROUT/ROUT/AGND netted; rest mechanical/NC) |
 | J4 | 1 | Female header 1×3 | generic | THT | mic pigtail (`VCC GND OUT`) |
-| J5, J6 | **4** | **Machined single-pin socket** (turned-pin, e.g. a Mill-Max 0305 series single, or singles broken off a machined DIP socket) | — | THT | TP4056. **A stock 1×2 female header cannot mate** — the module's pads are at 3.526 / 3.106 mm, not 2.54 (§2). Alternative: solder wires and give up removability |
+| J5, J6, **J9, J10** | **6** | **Machined single-pin socket** (turned-pin, e.g. a Mill-Max 0305 series single, or singles broken off a machined DIP socket) | — | THT | TP4056, **and it is six now, not four**. **A stock 1×2 female header cannot mate** — the module's pads are at 3.526 / 3.106 mm, not 2.54 (§2). J9/J10 are the USB-C-end mount row 21.65 mm away — see the assembly box below for why four in one line is not enough. Alternative: solder wires and give up removability |
 | J7 | 1 | Male header 1×2 | generic | THT | debug TX |
 | JP1 | 1 | 0 Ω / solder jumper | — | 2.54 mm | power-path escape hatch (open by default). ⚠️ **If bridged, D2 must be omitted** — and Q1/U1/Q2/D1 with it (§4.4) |
 | TP1–TP5 | 5 | testpoint pad | — | 1.5 mm pad | no part |
@@ -429,7 +463,7 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 Order **fixed-size** female headers (1×8, 1×6, 1×9, 1×3) — female strips do not snap cleanly;
 each cut destroys one position. **The TP4056 is the exception:** its four pads are at
 0 / 3.526 / 10.960 / 14.066 mm (photogrammetry 2026-07-26 — the old "close to 2.54 grid"
-guess is answered, and the answer is no), so fit **four individual machined pins**, not a
+guess is answered, and the answer is no), so fit **individual machined pins**, not a
 2.54 mm strip, which cannot span them.
 
 > **⚠️ TO-92 orientation — check before you solder U1 and Q2.** `design.py` assigns
@@ -468,10 +502,65 @@ guess is answered, and the answer is no), so fit **four individual machined pins
 > 9.5 mm apart and 7.0 mm back — every row-2 pad 2.25 mm out in X and 0.75 mm in Y, and the
 > mounting surface 3.8 mm out. The part would not have gone into the board.*
 
-`IN+` connects via a short soldered wire from the module pad to J6b. Size it for the **whole
-board load, not a sense current**: in §4.3 state 2 the entire load runs charger → D2 → VSW
-through this wire — ~150 mA average, ~350 mA on WiFi TX bursts, plus a ~4 A/<100 µs inrush
-blip into C1 at plug-in. A 5 cm wire is still fine; the old "≤ 200 mA" note was not.
+`IN+` no longer connects via a wire — **J6b (`J9`) is a socketed pin** through the module's
+`+` corner pad (2026-07-28; it had to move 0.65 mm west to land on it, see below). That
+matters for current, not tidiness: in §4.3 state 2 the **entire board load** runs
+charger → D2 → VSW through this connection — ~150 mA average, ~350 mA on WiFi TX bursts, plus
+a ~4 A/<100 µs inrush blip into C1 at plug-in. A 0.64 mm pin in a turned-pin socket carries
+that with room to spare, and it removes the one hand-soldered wire from the power path. (On a
+**§4.5 plan-A board** the net is idle anyway: with D1/D2 omitted, `VBUS_CHG` reaches only TP1.
+Note that TP1 is then **live at 5 V whenever the charger is plugged in** — it always was going
+to be, via the wire; it is just no longer optional.)
+
+> **📐 TP4056 assembly — two steps that are not obvious, both out of the caliper sessions
+> ([measurements.md §Nubs](measurements.md) 2026-07-27, §The second mount row 2026-07-28).**
+>
+> **1. File the two nubs off first.** The module's west edge is not straight: two
+> depanelization tabs protrude ~1.6 mm at the OUT− and OUT+ corners. They are bare
+> soldermask — no copper, no silk, no trace — so filing them flush to the main west edge is
+> safe, and it is what makes the body match the modelled outline (west edge x ≈ 43.9, within
+> 0.15 mm). Left on, the SW nub reaches x ≈ 42.2 and the gap to **RV1's body**
+> (`x 32.05…41.55, y 37.0…50.0`) drops from 2.4 mm to ~0.7 mm — between a PCB corner ~4 mm up
+> and an 11.3 mm-tall pot. Not a collision; just not worth living with for 30 s of work.
+>
+> **2. Pins into the module first, then onto the carrier.** Push the machined pins into the
+> TP4056's holes, *then* lower that assembly into J5/J6/J9/J10 and solder the carrier side.
+> The module's holes are **~1.5 mm, not the 2.0 mm** assumed (calipers 1.43; the
+> photogrammetry's "2.0 nominal" was pulled up by one bad pick), and calipers read the pad
+> span ~0.25 mm shorter than the 14.066 mm the copper is built to — well inside the ~0.45 mm
+> radial slack per hole, but only if the *module* sets the pin positions. Solder the pins to
+> the board first and you are fighting rigid pins into holes at a span you did not choose.
+>
+> Step 1 changes nothing on the board. Step 2 covers **six** pins, not four — see the next
+> box for where the other two came from.
+
+> **🔩 SIX pins, not four — the USB-C end is mounted too (2026-07-28, and this one moved
+> copper).** J5/J6 are all in **one column at one end** of the module, and the USB-C jack is
+> **21.65 mm** away at the other. A row of pins resists rotation about its own axis only by
+> bending — order of magnitude, a **5 N off-axis nudge on the plug tilts the module ~25°** —
+> and that is the one connector on this build that gets handled every charge cycle, at 10–20 N
+> of insertion force each time.
+>
+> The module already had the fix on it: **two ~2.8 mm bare-copper pads on 1.68 mm plated
+> holes** at the USB-C-end corners, in line with OUT+ (`+` silk, next to `R8`) and OUT−. The
+> carrier already had a pad on one of them — J6b/`J9`, drawn as a wire pad for the IN+ sense
+> tap. So: **J9 became a socket and moved 0.65 mm west** onto the real hole position, and
+> **`J10` was added** on the other corner. Four-in-a-line becomes a four-corner mount.
+>
+> - **`J10` is on no net.** Its job is mechanical. §2 asserts `IN− ≡ OUT−` and that is the
+>   usual protected-TP4056 topology, but it has **never been ohmed on this module** — and if
+>   it is wrong, bonding it to carrier GND shorts across the DW01/FS8205 and the cell loses
+>   its protection. A floating pin anchors just as well. Ohm it later if you want it bonded.
+> - **If a mount pin will not enter,** drill those two module holes to **2.0 mm** — the pads
+>   are 2.8 mm of copper carrying no current here, and it takes the slack from 0.39 to
+>   0.55 mm. Three independent routes put the 21.65 mm figure inside ±0.2 mm, against 0.39 mm
+>   of slack — so this should not be needed.
+> - The offset is **caliper, not photogrammetry** — the picks say 22.30 mm, which is 0.65 mm
+>   of a 0.39 mm slack budget. [measurements.md §The second mount row](measurements.md)
+>   has the reduction and the cross-check that settles it.
+>
+> The **outline** in `TP4056.json` is still deliberately not edited — see measurements.md.
+> What changed is a pad position and a pad count, not the module model.
 
 ---
 
@@ -545,9 +634,14 @@ Hard placement rules:
    its board edge rather than overhanging (measurements.md), that keep-out is what
    actually does the work. Consequence: the 5V row lands **south** ⇒ `JA1` south, `JB1`
    north, which is the mirror-image bug v1.0 shipped and `measured.py` now refuses.
-4. **TP4056 (USB-C, blue, measured 26.9 × 17.3 mm) at the east short edge**, its USB-C jack
-   overhanging the board edge by **1.4 mm** (28.3 mm effective module depth). Size the
-   board-edge cutout / charge-port opening to clear the USB-C connector. As built, only
+4. **TP4056 (USB-C, blue, 26.9 × 17.3 mm *including* the depanelization nubs; 25.2 mm body)
+   at the east short edge**, its USB-C jack overhanging the *module's* east edge by
+   **1.4 mm**. ⚠️ **Revised 2026-07-27:** with the nubs filed the body ends at **x ≈ 69.0–69.2**,
+   not the modelled 69.79, so the jack's face sits only **~0.5 mm proud of the carrier's
+   east edge** — not the ~1.2 mm implied before. More board clearance, but an **enclosure
+   constraint**: the charge-port opening has to clear a USB-C **plug overmold** reaching a
+   nearly-flush jack, so that wall wants a local relief or a recessed cutout, not a
+   jack-sized slot. See [measurements.md §Nubs](measurements.md) reduction 3. As built, only
    **Q1 and JP1** hide under this module; **D1 and D2 sit under the PCM5102A**, D3 is north
    of the TP4056 body and outside every module outline, and the TL431 arm (U1, Q2, R7–R9,
    R12) plus C1 live in the **south-west** quadrant. That matters for §4.4: executing the
@@ -660,7 +754,8 @@ caliper session guessed at — the PCM5102A's row-to-row offset and the TP4056's
 were both wrong, and both were wrong *in the v1.0 layout*. **No footprint is drawn from
 internet dimensions.** Everything below cites `measurements.md`.
 
-Five boxes below are still open, and they are marked ⬜ **OPEN**.
+Three boxes below are still open, and they are marked ⬜ **OPEN**. **None of them gates the
+gerber plot** — the one that did (the TP4056 pad-row edge offset) closed 2026-07-27.
 
 **ESP32-C3 SuperMini**
 - [x] Board outline L × W — **22.5 × 17.8 mm** (2026-07-18)
@@ -692,13 +787,22 @@ Five boxes below are still open, and they are marked ⬜ **OPEN**.
 - [x] IN+ / IN− pads — **drilled**, next to the USB-C jack; IN+ at (+22.358, +13.910) from J5.1 (2026-07-18 / 2026-07-26)
 - [x] USB-C jack overhang past the board edge — **1.4 mm** (28.3 − 26.9), *not* the ~2 mm this doc used to assume (2026-07-18)
 - [x] B+ ↔ OUT+ continuity **0 Ω ✓** and B− ↔ OUT− **open ✓** (protection FET present) (2026-07-18)
-- ⬜ **OPEN** Pad-row-to-board-edge offset — needed to confirm the module's north/south seat against the y = 50 mm control edge. *Doable now with calipers on the module in hand; **this one gates the order**.*
+- [x] Pad-row-to-board-edge offset — ✅ **CLOSED 2026-07-27, and it was the last thing gating the gerbers.** The pad column sits **0.05 mm south of the body centre** against 0.12 mm modelled: **Δ 0.07 mm on a 0.25 mm gate**, so the module seats north/south exactly as drawn and nothing in the layout moves. The reduction is hole-radius-free — A and B are both measured to the near rim, so the unknown radius cancels in `((A+r) + (17.3−B−r))/2`. It also resolved the 26.9-vs-25.75 length contradiction: **the west edge carries two depanelization nubs** (+1.6 mm) at the OUT−/OUT+ corners, which the photogrammetry's hand-clicked corners averaged across. **File them flush** — see §5. Raw readings and all four reductions: [measurements.md §Nubs](measurements.md).
+- [x] **USB-C-end corner pads located, and the module gained a second mount row** —
+  ✅ **CLOSED 2026-07-28.** Four pins in one column left the USB-C jack on a **21.65 mm
+  cantilever** (≈25° of tilt per 5 N of off-axis push on the plug), so `J9` moved 0.65 mm
+  west onto the module's `+` corner pad and became a socket, and **`J10` was added** on the
+  `IN−` corner as a netless mechanical anchor. Offset is **caliper 21.65 mm**, not the
+  photogrammetry's 22.30 — the picks' perpendicular axis is the one a similarity fit cannot
+  get right, and 0.65 mm is more than the 0.39 mm of slack in a 1.68 mm hole. Reduction and
+  cross-check: [measurements.md §The second mount row](measurements.md). **This one moved
+  copper** — re-routed and re-gated the same day.
 
 **Bought parts**
 - [x] RCA output pads (X/Y): design item, nothing to measure — simple signal+AGND pad-pairs (~2 mm) for the reused ~50 cm RCA cable leads
-- ⬜ **OPEN** SW1 slide-switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — **switch not in hand**, so not resolvable before the order. Mitigated: the footprint carries **both** 2.0 and 2.54 mm slots, so the residual risk is body/lever fit only.
+- ⬜ **OPEN** SW1 slide-switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — **ordered 2026-07-27 (SS12D00, 6 mm handle), not yet in hand**, so still not resolvable; it was never an order gate. Mitigated: the footprint carries **both** 2.0 and 2.54 mm slots, so the residual risk is body/lever fit only. **On arrival, check two things:** the pins against the paper doll, and whether the part carries locating lugs or posts — `SW_Slide_SPDT_DualPitch` has the **three signal holes only**, so any lug must be clipped.
 - [x] RV1 row-2 geometry — **was** the least-certain footprint on the board, and it **was wrong**. Redrawn 2026-07-27 from the seller's mechanical drawing + KiCad's ALPS RK097 stock footprint: SPST at ⌀1.0, 5.0 mm apart, 6.25 mm behind the pot row; mounting surface 5.0 mm in front of it, on the board edge. *A 1:1 paper-doll check with the pot in hand is still worth ten minutes — but it is now confirming a drawing, not a guess.*
-- [x] RV1 = **RV097NS-B10K**, 5-pin **mono with switch**, right-angle, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — footprint drawn 2026-07-18, **corrected 2026-07-27** (§5 box)
+- [x] RV1 = **RV097NS-B10K**, 5-pin **mono with switch**, right-angle, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — footprint drawn 2026-07-18, **corrected 2026-07-27** (§5 box). ×5 ordered 2026-07-27; paper-doll the first one that arrives (§9), since 5 pieces is 4 boards plus one spare and there is no margin for a wrong variant.
 
 ---
 
@@ -726,7 +830,7 @@ hand-soldered) so JLCPCB's SMT ecosystem isn't a factor either way. Total expect
 | Date | Milestone |
 |---|---|
 | ~~≤ Jul 27~~ | ✅ Caliper session (§7) done Jul 18; photogrammetry Jul 26. **§4.4 is not an order gate and has moved** to the assembled carrier (Aug 11–16) — it cannot run on the current bench (no battery or TP4056 in circuit, Q1 is SOT-23). |
-| **Jul 27–28** | **RV1 row 2 is closed** — it was wrong, and the corrected geometry is in the board (§5 box); a paper-doll pass now only confirms a drawing. That leaves one order-gating item: the **TP4056 pad-row-to-edge offset** (§7), a 10-minute check with the module in hand. Place the parts order with the **amended BOM** (§5: R7 8.2 k, R8 10 k, R9 1 k, D1 BAT85, U1 TL431A, 4× machined single pins, and RV1 = the **5-pin *with switch*** variant, not the vertical/lug one). |
+| **Jul 27–28** | **RV1 row 2 is closed** — it was wrong, and the corrected geometry is in the board (§5 box); a paper-doll pass now only confirms a drawing. ✅ **Parts order placed 2026-07-27** (§5 box: plan-A subset, so R7/R8/R9/D1/D2/U1 were *not* bought; RV1 = the **5-pin *with switch*** variant). ✅ **TP4056 pad-row edge offset measured and CLOSED the same day** (§7) — Δ 0.07 mm on a 0.25 mm gate, layout unchanged. ✅ **2026-07-28: the TP4056 gained a second mount row** (§5 box) — J9 moved onto the module's `+` corner pad and J10 was added on the `IN−` corner, because four pins in one column left the USB-C jack on a 21.65 mm cantilever. **This one moved copper**: re-generated, re-routed and re-gated. **No open gates remain: plot gerbers.** |
 | ~~Jul 28–30~~ | ✅ Layout complete Jul 26 — v1.1, 0 DRC violations at every severity. The order can go out ~5 days early. |
 | **Jul 31 – Aug 1** | **Upload gerbers, pay, DHL express** ← hard order-by date |
 | Aug 2–4 | Fab (24–48 h + weekend slack) |
@@ -836,7 +940,8 @@ fabrication outputs per §8.4.
 ## 10. Open questions (Finn)
 
 *(Resolved 2026-07-17 and folded into the spec above: scope outputs = RCA flying-lead pads,
-no BNC and no TRS; TP4056 = USB-C variant; SW1 = 1 A-rated slide switch; mic = off-board on a
+no BNC and no TRS; TP4056 = USB-C variant; SW1 = SS12D00 slide switch, 6 mm handle, its 0.3 A
+make/break rating accepted at 4 V (revised 2026-07-27 from "1 A-rated"); mic = off-board on a
 ~10 cm pigtail; battery = EEMB LP103454 2000 mAh, off-board.)*
 *(Resolved 2026-07-18 from the bench session, see measurements.md: **RV1 = RV097NS-B10K**,
 5-pin, metal shaft turned directly, **no knob** — pot footprint finalized; SuperMini

@@ -34,10 +34,10 @@ UNO-Q (WiFi AP, 2.4 GHz) ──UDP──▶ 4× [ESP32-C3 ──I2S──▶ PCM
 | 2 | GY-PCM5102A (purple module) | 24-bit stereo DAC → scope X/Y | €2 | already ordered ×4 |
 | 3 | MAX4466 electret mic module | fallback/hybrid audio input | €1.50 | already owned ×4 |
 | 4 | TP4056 charger module (**USB-C variant**, blue PCB 17×27 mm, **with** DW01+FS8205 protection) | LiPo charging + protection | €0.50 | 1 A default charge kept (RPROG swap to 0.5 A optional); **mandate 5 V / 2 A wall chargers** so 1 A (~0.5C, full ~2.5–3 h) is safe |
-| 5 | LiPo 3.7 V — **selected: EEMB LP103454, 2000 mAh** (34×56×11 mm, ~40 g, pre-fitted JST) | power | — | mounted off-board (loose in the enclosure, velcro/pocket); 1000 mAh is a smaller-cell reference only |
+| 5 | LiPo 3.7 V, **~2000 mAh** — reference part EEMB LP103454 (34×56×11 mm, ~40 g, pre-fitted JST); **sourced from Amazon as of 2026-07-27** | power | — | mounted off-board (loose in the enclosure, velcro/pocket); 1000 mAh is a smaller-cell reference only. A substituted cell must bring a **JST-PH 2.00 mm** lead, and its **polarity must be metered before first plug-in** — `B−` is not GND (pcb.md §1/§3.1) |
 | 6 | Carrier PCB (this project) | ties it all together | ~€1–2/board | v1.1 laid out; THT except Q1 (SOT-23) + D2 (SMA) |
 
-Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (1 A-rated, SS12D00-class — WiFi TX peaks ~0.35 A), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff; **RV097NS** 9 mm PCB-mount, B10K, 5-pin **mono with switch**, right-angle, metal shaft turned directly — no knob; the switch is unused, both ends on GND), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
+Carrier-board discrete parts (full BOM in [hardware/pcb.md](hardware/pcb.md)): slide power switch (**SS12D00**, 6 mm handle — the 0.3 A make/break rating is accepted at 4 V, §5), mode button (6×6 mm tactile), 10 kΩ potentiometer (filter-cutoff; **RV097NS** 9 mm PCB-mount, B10K, 5-pin **mono with switch**, right-angle, metal shaft turned directly — no knob; the switch is unused, both ends on GND), 2× 3 mm LED + resistors, battery divider (2× 100 kΩ + 100 nF), 10 kΩ pull-up for GPIO2, bulk electrolytic (≥220 µF) on the battery rail, **2× RCA flying-lead output pad-pairs** (signal + ground; X = PCM5102A L, Y = PCM5102A R) driving the reused ~50 cm RCA cables — 100 Ω series resistors (R10/R11) feed the pads, female pin-header sockets for the SuperMini/DAC/TP4056 modules, and a **3-pin pigtail header (VCC / GND / OUT)** for the MAX4466 (on a ~10 cm cable, not a flat on-board footprint).
 
 ## 4. Canonical pin map (ESP32-C3 SuperMini)
 
@@ -173,20 +173,23 @@ Details/derivation: [hardware/power-budget.md](hardware/power-budget.md).
 
 ## 11. Mechanical / size
 
-Target carrier PCB: **70 × 50 mm**, 2-layer, through-hole **except Q1 (SOT-23) and D2 (SMA)**, both on enlarged hand-solder pads. Modules are socketed on female headers — **except the TP4056**, whose four pads are not on a 2.54 grid and take four machined single pins or soldered wires (pcb.md §2). Module footprints (✅ measured 2026-07-18, pin positions from photogrammetry 2026-07-26):
+Target carrier PCB: **70 × 50 mm**, 2-layer, through-hole **except Q1 (SOT-23) and D2 (SMA)**, both on enlarged hand-solder pads. Modules are socketed on female headers — **except the TP4056**, whose pads are not on a 2.54 grid and take **six** machined single pins: four on the output row, plus two 21.65 mm away at the USB-C-end corner pads, without which the jack sits on a cantilever (pcb.md §2/§5). Module footprints (✅ measured 2026-07-18, pin positions from photogrammetry 2026-07-26):
 
 | Module | Approx. size | Mounting |
 |--------|--------------|----------|
 | ESP32-C3 SuperMini | 22.5 × 18 mm | 2× 1×8 header, 2.54 mm |
 | GY-PCM5102A | **32.0 × 17.4 mm** (photogrammetry 2026-07-26; calipers said ~31.8 × 17) | 1×6 I2S header (SCK BCK DIN LCK GND VIN) on a short edge + **1×9 analog/config header** on the long edge (⊥); analog out on **LROUT / ROUT / AGND** (X = LROUT, Y = ROUT) |
 | MAX4466 | ~20 × 13 mm | on a ~10 cm 3-pin pigtail (VCC GND OUT), exits the enclosure aimed at the PA so its gain trimpot stays screwdriver-reachable — not flat on the carrier |
-| TP4056 (USB-C variant) | blue PCB **26.9 × 17.3 mm** measured (USB-C jack overhangs **1.4 mm** → **28.3 mm** effective depth) | 4 pads (B+/B−/OUT+/OUT−) at 0 / 3.526 / 10.960 / 14.066 mm — **four machined single pins or soldered wires, not a 2.54 header**; **USB-C** charge-port cutout on the board edge |
+| TP4056 (USB-C variant) | blue PCB **26.9 × 17.3 mm** measured, **25.2 mm** once the two depanelization nubs are filed off (USB-C jack overhangs **1.4 mm**) | 4 pads (B+/B−/OUT+/OUT−) at 0 / 3.526 / 10.960 / 14.066 mm, **plus the two `IN+`/`IN−` corner pads 21.65 mm away as a second mount row** — **six machined single pins, not a 2.54 header**; **USB-C** charge-port cutout on the board edge |
 
 **Scope connection (resolved):** no BNC or TRS on the carrier. The board exposes **2× RCA flying-lead solder pad-pairs** (signal + ground): X = PCM5102A L, Y = PCM5102A R, each fed through its 100 Ω series resistor (R10/R11). Signal chain: board RCA pad → reused ~50 cm RCA cable (RCA male, salvaged from the old sigma-delta units) → BNC→RCA adapter already fitted on each scope → scope CH. This frees ~25 mm of board edge and ~€2/board vs the old BNC plan.
 
 **Enclosure:** 3D-printed case; the carrier keeps its 4× M3 mounting holes and its JST-PH battery socket. The 2000 mAh LiPo (34 × 56 × 11 mm) rides **off-board**, loose in the enclosure (velcro/pocket), since it is large relative to the 70 × 50 mm carrier.
 
-**Panel controls:** power = **1 A-rated slide switch** (SS12D00-class, for the ~0.35 A WiFi TX peak). Filter-cutoff pot = **RV097NS** 9 mm PCB-mount (B10K, **5-pin mono *with switch*, right-angle**, body 27.3 × 9.5 × 11.3 mm); its **metal shaft is turned directly — no knob**, so the enclosure needs only a shaft hole (resolved 2026-07-18). The pot's **mounting surface sits on the board's south edge** and its M7×0.75 bushing + 15 mm shaft protrude through the enclosure wall — the panel nut is structural, since a bare shaft turned by hand puts torque into a part with no bracket lugs (geometry corrected 2026-07-27, [hardware/pcb.md](hardware/pcb.md) §5).
+**Panel controls:** power = **SS12D00 slide switch, 6 mm handle** (ordered 2026-07-27). Its 0.3 A
+rating is a make/break figure at 50 VDC and is accepted at the ~4 V this switch interrupts —
+the earlier "1 A-rated part required, for the ~0.35 A WiFi TX peak" call compared a peak
+current against an arc-energy rating; see [hardware/pcb.md](hardware/pcb.md) §5. Filter-cutoff pot = **RV097NS** 9 mm PCB-mount (B10K, **5-pin mono *with switch*, right-angle**, body 27.3 × 9.5 × 11.3 mm); its **metal shaft is turned directly — no knob**, so the enclosure needs only a shaft hole (resolved 2026-07-18). The pot's **mounting surface sits on the board's south edge** and its M7×0.75 bushing + 15 mm shaft protrude through the enclosure wall — the panel nut is structural, since a bare shaft turned by hand puts torque into a part with no bracket lugs (geometry corrected 2026-07-27, [hardware/pcb.md](hardware/pcb.md) §5).
 
 ## 12. Verification checklist
 

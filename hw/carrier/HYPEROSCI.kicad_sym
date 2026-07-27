@@ -320,6 +320,21 @@
         (pin passive line (at 0 -2.54 90) (length 1.778) (name "~" (effects (font (size 0.9 0.9)))) (number "1" (effects (font (size 0.9 0.9)))))
       )
     )
+    (symbol "X_J10"
+      (pin_names (offset 0.508))
+      (exclude_from_sim no) (in_bom yes) (on_board yes)
+      (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (property "Value" "X_J10" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (property "Datasheet" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))
+      (symbol "X_J10_0_1"
+        (rectangle (start -5.08 -1.905) (end 10.16 1.905) (stroke (width 0.254) (type default)) (fill (type background)))
+        (polyline (pts (xy -5.08 0) (xy -4.48 0)) (stroke (width 0.15) (type default)) (fill (type none)))
+      )
+      (symbol "X_J10_1_1"
+        (pin passive line (at -7.62 0 0) (length 2.54) (name "IN-" (effects (font (size 0.9 0.9)))) (number "1" (effects (font (size 0.8 0.8)))))
+      )
+    )
     (symbol "X_J2"
       (pin_names (offset 0.508))
       (exclude_from_sim no) (in_bom yes) (on_board yes)

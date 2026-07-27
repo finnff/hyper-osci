@@ -51,7 +51,7 @@ PART_HEIGHT_MM = {
     "TO-92": 5.2, "LED_D3.0mm": 5.5, "SW_PUSH_6mm": 5.0,
     "JST_PH": 6.0, "RV097NS": 11.3, "PinSocket": 8.5, "PinHeader": 8.5,
     "SW_Slide": 7.0, "SOT-23": 1.2, "D_DO-35": 2.2, "SMA": 2.6,
-    "TestPoint": 0.0, "MountingHole": 0.0, "WirePad": 0.0, "SolderJumper": 0.0,
+    "TestPoint": 0.0, "MountingHole": 0.0, "TP4056_": 0.0, "SolderJumper": 0.0,
     "RCA_FlyingLead": 0.0, "D_Dual_SMA_DO41": 2.6,
 }
 
@@ -66,9 +66,16 @@ FIT_MAP = {
         **{("JB1", str(i + 1)): (0, 7 - i) for i in range(8)},
         **{("JA1", str(i + 1)): (1, 7 - i) for i in range(8)},
     },
-    "TP4056": {     # OUT- B- B+ OUT+ ; J9 is a soldered wire, not a fit datum
+    "TP4056": {     # OUT- B- B+ OUT+.
         ("J5", "1"): (0, 0), ("J5", "2"): (0, 1),
         ("J6", "1"): (0, 2), ("J6", "2"): (0, 3),
+        # J9/J10 (the USB-C-end mount row) are deliberately NOT fit datums.
+        # Their across-row offsets come from the picks, but their 21.65 mm
+        # along-module offset is a CALIPER number that overrides the picks'
+        # 22.30 mm (measured.py explains why the perpendicular axis of a
+        # similarity fit is not metric).  Fitting them here would measure the
+        # override and call it a 0.65 mm error.  What covers them instead is
+        # the module's own hole: 1.68 mm on a 0.90 mm pin = 0.39 mm of slack.
     },
 }
 PLACED = {"PCM5102A": measured.PCM5102A, "ESP32C3": measured.ESP32C3,
@@ -80,7 +87,7 @@ OUTLINE_DATUM = {"PCM5102A": ("J3", "1", measured.PCM5102A_OUTLINE),
 # The sockets a module plugs into are what holds it at the standoff height, so
 # they are exempt from the "too tall to live under this module" rule.
 MOUNTS = {"PCM5102A": {"J2", "J3"}, "ESP32C3": {"JA1", "JB1"},
-          "TP4056": {"J5", "J6", "J9"}}
+          "TP4056": {"J5", "J6", "J9", "J10"}}
 
 
 def load():

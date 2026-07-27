@@ -119,6 +119,7 @@ class Module:
                       for p in self.pads if p["row"] is None]
         self.loose_px = [(p["x_px"], p["y_px"])
                          for p in self.pads if p["row"] is None]
+        self.loose_hole = [p["hole"] for p in self.pads if p["row"] is None]
         self.corners = [self.to_frame(x, y)
                         for x, y in self.meta["board"]["corners_mm"]]
 
@@ -244,9 +245,34 @@ TP4056_J6_FROM_J5 = TP4056.vec(TP4056_PAD_OFFSETS[2], 0.0)
 TP4056_SPAN = TP4056_PAD_OFFSETS[3]
 TP4056_HOLE_MM = TP4056.m.rows[0]["hole_nominal_mm"]
 TP4056_SLACK_MM = TP4056.m.rows[0]["fit_slack_mm"]
-# IN+ sense pad (J9): the loose pad on the OUT+ side of the USB-C end.
-_in_plus = max(TP4056.m.loose, key=lambda p: p[0])
-TP4056_J9_FROM_J5 = TP4056.vec(_in_plus[0] - _t[0][0], _in_plus[1] - _t[0][1])
+# --- the two USB-C-end corner pads: J9 (IN+) and J10 (IN-) -----------------
+# ~2.8 mm bare-copper squares on ~1.65 mm plated holes, one in line with each
+# OUT pad, at the far end of the module from the output row.  They were a
+# single wire pad for the IN+ sense tap; they are now the carrier's SECOND
+# MOUNT ROW as well, because the four output pads alone leave the module a
+# 21.65 mm cantilever with a USB-C plug being pushed into the far end.
+#
+# ONE number below is NOT photogrammetry, deliberately.  The picks put these
+# pads 22.30 mm from the output row; the caliper (2026-07-28) says 21.65 mm.
+# The similarity fit is calibrated on a 17.30 mm reference measured ACROSS the
+# output row, so the along-row axis is metric and the perpendicular one is
+# stretched — the same stretch reads the body as 25.75 mm long against a
+# measured 25.2 mm.  Cross-check, and it is the convincing one: the picks put
+# these pads 1.68 mm inboard of the clicked east edge, and the caliper body
+# gives 25.2 - 1.935 - 1.68 = 21.59 mm.  So the rule here is
+#   across the row  -> photogrammetry (the calibrated axis)
+#   along the module -> caliper (the axis a similarity cannot get right)
+# Full reduction: docs/hardware/measurements.md, "The second mount row".
+TP4056_MOUNT_FROM_ROW_MM = 21.65     # CALIPER 2026-07-28, not photogrammetry
+_m_north, _m_south = sorted(TP4056.m.loose, key=lambda p: p[0])
+TP4056_J10_FROM_J5 = TP4056.vec(_m_north[0] - _t[0][0], -TP4056_MOUNT_FROM_ROW_MM)
+TP4056_J9_FROM_J5 = TP4056.vec(_m_south[0] - _t[0][0], -TP4056_MOUNT_FROM_ROW_MM)
+# What the mount row spans, and how far a pin may sit off before it will not
+# enter the module's own hole: (D - 0.90) / 2 for a 0.64 mm square pin.
+TP4056_MOUNT_SPAN_MM = _m_south[0] - _m_north[0]
+TP4056_MOUNT_HOLE_MM = (sum(TP4056.m.loose_hole)
+                        / len(TP4056.m.loose_hole))
+TP4056_MOUNT_SLACK_MM = (TP4056_MOUNT_HOLE_MM - PIN_DIAGONAL_MM) / 2
 TP4056_OUTLINE = TP4056.outline(_t[0])             # relative to J5 pad 1
 
 # --- ESP32-C3 SuperMini ----------------------------------------------------
@@ -296,7 +322,12 @@ def report():
     row("TP4056 pads from OUT-", " ".join(f"{v:.2f}" for v in TP4056_PAD_OFFSETS),
         "", f"hole slack {TP4056_SLACK_MM:.2f} (own pins)")
     row("TP4056 J6 from J5.1", "(%+.3f, %+.3f)" % TP4056_J6_FROM_J5)
-    row("TP4056 J9 (IN+) from J5.1", "(%+.3f, %+.3f)" % TP4056_J9_FROM_J5)
+    row("TP4056 J9  (IN+) from J5.1", "(%+.3f, %+.3f)" % TP4056_J9_FROM_J5,
+        "", "mount row: %.2f mm CALIPER, not picks" % TP4056_MOUNT_FROM_ROW_MM)
+    row("TP4056 J10 (IN-) from J5.1", "(%+.3f, %+.3f)" % TP4056_J10_FROM_J5,
+        "", "span %.2f, hole %.2f, slack %.2f"
+            % (TP4056_MOUNT_SPAN_MM, TP4056_MOUNT_HOLE_MM,
+               TP4056_MOUNT_SLACK_MM))
     row("TP4056 outline from J5.1", _box(TP4056_OUTLINE))
 
     row("ESP32-C3 JA1 (5V row) from JB1.1",

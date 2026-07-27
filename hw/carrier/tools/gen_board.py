@@ -69,7 +69,10 @@ J2_PIN1 = tuple(a + b for a, b in zip(J3_PIN1, measured.PCM5102A_J2_FROM_J3))
 # DAC body (south edge 23.59) to the north and J8's wire entry to the south.
 J5_PIN1 = (45.72, 26.40)
 J6_PIN1 = tuple(a + b for a, b in zip(J5_PIN1, measured.TP4056_J6_FROM_J5))
+# J9/J10 are the second mount row at the module's USB-C end, 21.65 mm east of
+# the output pads (measured.py: that one offset is caliper, not photogrammetry).
 J9_PAD = tuple(a + b for a, b in zip(J5_PIN1, measured.TP4056_J9_FROM_J5))
+J10_PAD = tuple(a + b for a, b in zip(J5_PIN1, measured.TP4056_J10_FROM_J5))
 
 # ref: (x, y, rot_degrees)  — anchor is the footprint's native origin.
 # Rotation convention (audited): rot90 maps footprint-local (x,y)->(y,-x),
@@ -81,7 +84,8 @@ P = {
     "J2": J2_PIN1 + (0,), "J3": J3_PIN1 + (270,),
     "J4": (66.04,  9.39, 0),          # mic pigtail, NE analog zone
     "J5": J5_PIN1 + (0,), "J6": J6_PIN1 + (0,),
-    "J9": J9_PAD + (0,),              # IN+ sense wire pad (doc J6b)
+    "J9": J9_PAD + (0,),              # IN+ sense tap + SE mount (doc J6b)
+    "J10": J10_PAD + (0,),            # IN- mount only, NC
     "J7": (2.54, 29.21, 0),           # debug header, SW corner area
     "J8": (57.68, 42.5, 0),           # LiPo JST-PH: wires exit south edge
     "X1": (57.15, 2.54, 270), "Y1": (33.02, 2.54, 90),
@@ -545,6 +549,7 @@ place_text("B- is NOT GND", 38.8, 32.0, 0.8, name="B- warning")
 # X/Y are printed by the footprint itself (see the X1/Y1 case above) — the
 # north edge has no room for a free-floating letter that stays next to its pad.
 label("J9", "IN+", 0.8, prefer=((0, -1), (-1, 0)))
+label("J10", "IN-", 0.8, prefer=((0, 1), (-1, 0)))
 label("J8", "+ cell -", 0.8, prefer=((0, -1),))
 place_text("VERIFY\nCELL\nPOLARITY", 62.5, 46.5, 0.8, name="cell warning")
 label("SW1", "PWR", 0.8, prefer=((0, -1),))

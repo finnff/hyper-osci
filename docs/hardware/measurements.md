@@ -134,9 +134,9 @@ Photos: [front](images/TP4056_FRONT.jpg) · [back](images/TP4056_BACK.jpg)
 
 | Measurement | Nominal | Measured | Date |
 |---|---|---|---|
-| Board outline L × W | ~26 × 17 mm | **26.9 × 17.3 mm** ✓ | 2026-07-18 |
-| B+, B−, OUT+, OUT− pad positions + drill | ~2.54 grid (usually *almost*) | Order confirmed: THT pads on the left short edge, top→bottom **`OUT− · B− · B+ · OUT+`** (+ `M` mounting mark). ⚠️ **"~2.54 grid" is WRONG** — photogrammetry gives **0 / 3.526 / 10.960 / 14.066 mm**: two pairs (3.53 and 3.11 pitch) with a 7.43 mm gutter, spanning nearly the whole 17.3 mm edge. Nothing on a 2.54 grid mates with it. Holes 2.0 mm ⇒ ±0.55 mm slack per pin. See §Photogrammetry | 2026-07-26 |
-| IN+ / IN− pads: drilled or SMD-only? position | — | **drilled**, next to the USB-C jack | 2026-07-18 |
+| Board outline L × W | ~26 × 17 mm | **26.9 × 17.3 mm** — but see §Nubs: 26.9 is the **nub-inclusive** length. The main body is **25.2 mm**; two depanelization tabs at the OUT−/OUT+ corners add 1.6 mm | 2026-07-18, refined 2026-07-27 |
+| B+, B−, OUT+, OUT− pad positions + drill | ~2.54 grid (usually *almost*) | Order confirmed: THT pads on the left short edge, top→bottom **`OUT− · B− · B+ · OUT+`** (+ `M` mounting mark). ⚠️ **"~2.54 grid" is WRONG** — photogrammetry gives **0 / 3.526 / 10.960 / 14.066 mm**: two pairs (3.53 and 3.11 pitch) with a 7.43 mm gutter, spanning nearly the whole 17.3 mm edge. Nothing on a 2.54 grid mates with it. See §Photogrammetry. ⚠️ **Hole ⌀ revised 2026-07-27: ~1.5 mm, not 2.0** (calipers give 1.43; the photogrammetry's 2.0 "nominal" was pulled up by a single bad pick reading 2.60 against 1.65 / 1.61 / 1.41 for the other three). Slack per pin is therefore **~0.45 mm with 0.5 mm machined round pins**, not ±0.55 — still clear of the 0.25 mm gate | 2026-07-26 |
+| IN+ / IN− pads: drilled or SMD-only? position | — | **drilled** — ~2.8 mm bare-copper squares on **1.68 mm** plated holes, one at each USB-C-end corner, in line with OUT+ (`+` silk, beside `R8`) and OUT−. **21.65 mm** from the output row. These are now the carrier's **second mount row** (J9/J10), not just a sense tap — see §The second mount row | 2026-07-18, positioned 2026-07-28 |
 | USB connector type (micro-B vs USB-C) + overhang | — | **USB-C**; overhang **1.4 mm** (28.3 − 26.9) | 2026-07-18 |
 | RPROG value (read resistor / marking) | 1.2 kΩ → 1 A default | **measured 1.19 kΩ** (no legible marking) ⇒ ~1 A default ✓ | 2026-07-18 |
 | B+ ↔ OUT+ continuity | 0 Ω (same copper) | ✅ **continuous** (0 Ω) | 2026-07-18 |
@@ -144,6 +144,164 @@ Photos: [front](images/TP4056_FRONT.jpg) · [back](images/TP4056_BACK.jpg)
 
 _ICs: main charger marked `CSM4056T` (TP4056-equivalent), `8205LA` = FS8205 dual FET,
 `U2` = DW01-type protection. Behaves per the nominal TP4056+DW01+FS8205 spec._
+
+### Nubs, and the pad-row → edge offset — ✅ CLOSED 2026-07-27
+
+**This was the last item gating the gerber plot.** It is closed, the module seats as drawn,
+and **nothing in the layout moves.**
+
+The module's west edge (the one behind the output pads) **is not straight**: two
+depanelization tabs protrude at the OUT− and OUT+ corners. In
+[`images/TP4056_FRONT.jpg`](images/TP4056_FRONT.jpg) they are bare soldermask — no copper,
+no silk, no component, no trace running out to them. **They get filed flush at assembly**
+(see the reduction below for why that is not cosmetic).
+
+Calipers, module in hand, all distances to the **near rim** of the hole (rim, not centre —
+that is what a caliper jaw can actually reach):
+
+| # | From → to | Measured |
+|---|---|---|
+| A | north long edge → OUT− near rim | **1.2 mm** |
+| B | OUT+ near rim → south long edge | **1.1 mm** |
+| C1 | **nub** west edge → OUT−/OUT+ near rim | **2.64 mm** |
+| C2 | **main** west edge → B−/B+ near rim | **1.0 mm** |
+| D1 | overall length, **with** nubs | **26.8 mm** |
+| D2 | overall length, **without** nubs | **25.2 mm** |
+| E | OUT− ↔ OUT+, nearest rims | **12.4 mm** |
+| F | OUT− ↔ OUT+, farthest rims | **15.25 mm** |
+| — | board width, edge to edge | **17.3 mm** |
+
+**Reduction 1 — the N/S seat, which is what the gate asked for.** The hole radius is
+unknown, but it *cancels*, because A and B are both measured to the near rim:
+
+```
+column centre from north edge = ( (A + r) + (17.3 − B − r) ) / 2
+                              = (1.2 + 16.2) / 2 = 8.70 mm       <- r cancels
+half width                    = 17.3 / 2         = 8.65 mm
+                                        => column sits 0.05 mm SOUTH of body centre
+```
+
+The board model puts it **0.12 mm south of centre** (1.81 / 14.066 / 1.57). **Δ = 0.07 mm
+against a 0.25 mm gate.** No shift toward D1 (0.31 mm north), none toward the control row.
+
+**Reduction 2 — the nubs are the 26.9-vs-25.75 contradiction.** D1 = 26.8 ≈ the 2026-07-18
+caliper 26.9 (which included the tabs); D2 = 25.2 is the body. The photogrammetry's 25.75
+was hand-clicked corners **averaging across a stepped edge**, which is why it agreed with
+neither — exactly the failure `hw/pin_locs/TP4056.txt` warns about. Filed vs not:
+
+| | west edge lands at | clearance to RV1 body (`x 32.05…41.55, y 37.0…50.0`) |
+|---|---|---|
+| **filed flush** | x ≈ 43.9 — within **0.15 mm** of the modelled 43.91, on any assumed hole ⌀ | **2.4 mm** |
+| unfiled | x ≈ 42.2 | **~0.7 mm** |
+
+The SW nub and the pot overlap in Y, so unfiled leaves 0.7 mm between a PCB corner ~4 mm up
+and an 11.3 mm-tall pot body. Not a collision — but filing costs 30 s per module and makes
+the as-built match the model.
+
+**Reduction 3 — the east end moved ~0.8 mm west.** `east edge = column + D2 − (1.0 + r)
+≈ column + 23.3` against the modelled `+24.07`, so the body ends at **x ≈ 69.0–69.2** with
+~1 mm of board left, not 0.2 mm. The USB-C jack overhangs the body by 1.4 mm, so its face
+sits only **~0.5 mm proud of the carrier's east edge** instead of ~1.2 mm. More clearance,
+not less — but it is an **enclosure input**: the charge-port opening must clear a USB-C
+**plug overmold** reaching a nearly-flush jack, so that wall wants a local relief or a
+recessed cutout.
+
+**Reduction 4 — the span disagrees by ~0.3 mm, and it does not matter.** E/F give a pad span
+of **13.83 mm** and hole ⌀ **1.43 mm**; A/B/width independently give span ≈ 13.6; the
+photogrammetry says 14.066. Both caliper routes land short in the same direction, which is
+predictable: the photogrammetry's **scale came from a caliper reading of this same 17.30 mm
+width**, so a ~1.7 % scale error is precisely what its warning block says it cannot separate
+from the result. Consequence at assembly: with ~1.5 mm holes and ~0.5 mm machined round pins
+there is ~0.45 mm of radial slack per hole, and a 0.27 mm span error puts the two end pins
+0.13 mm off centre. It drops on. **Assembly order matters though — see [pcb.md](pcb.md) §5:
+pins into the module first, then onto the carrier.**
+
+**Why the model is not being edited.** Every delta is either inside the gate (N/S, 0.07 mm)
+or in the direction of *more* clearance (east, 0.8 mm). `TP4056_OUTLINE` feeds
+`audit_board.py`'s under-module checks and `gen_board.py`'s silk/keep-out placement, so
+editing `hw/pin_locs/TP4056.json` would force a full `gen_board.py` + `route.py` re-run and a
+`ROUTE_SEED` re-sweep (pcb.md §9 — a stale seed fails silently as a severed ground pour) to
+buy nothing. The measured deltas are recorded here instead.
+
+### The second mount row (J9 + J10) — added 2026-07-28
+
+**This one did move copper**, and it is the answer to a question the fit gate cannot ask:
+*the module seats — but does it stay put?*
+
+J5/J6 put all four pins in **one column at one end of the module**. The USB-C jack is at the
+other end, **21.65 mm away**. A row of pins resists rotation about its own axis only by
+**bending**, so that geometry is a diving board with a plug being pushed into the free end:
+
+```
+   4 x 0.64 mm square pin, ~5 mm free length, E ~ 100 GPa
+   I = pi*d^4/64 = 3.1e-15 m^4      per-pin moment stiffness EI/L = 0.061 N*m/rad
+   four in a line, all on the axis  => ~0.25 N*m/rad total
+   a 5 N off-axis nudge on the jack => 5 N x 0.0217 m = 0.11 N*m => ~25 deg
+```
+
+The number is crude (the socket grips the pin over several mm, so the real figure is stiffer)
+but the order of magnitude is the point: **grams of side load, tens of degrees of tilt**, on
+the one connector that gets handled every single charge cycle. Repeated USB-C insertion —
+10–20 N of axial force at that lever — also works the pins back and forth in their sockets.
+
+The fix was already half-built. The module has **two ~2.8 mm bare-copper pads on ~1.65 mm
+plated holes** at the USB-C-end corners, one in line with each OUT pad — the "+" one visible
+beside `R8` in [`images/TP4056_FRONT.jpg`](images/TP4056_FRONT.jpg). The carrier already had a
+pad on one of them (`J9`, the IN+ sense tap, drawn as a wire pad). It is now a **socket**, and
+a second one (`J10`) was added on the other corner, turning a 4-in-a-line mount into a
+**4-corner mount**.
+
+| | Value | Source |
+|---|---|---|
+| Mount row ← output row | **21.65 mm** | **caliper 2026-07-28** — overrides the photogrammetry |
+| Mount pads, N ↔ S span | **14.20 mm** | photogrammetry (`loose pins`), calibrated axis |
+| Offset from OUT−/OUT+ | −0.32 mm N / +0.18 mm S | photogrammetry — both sit slightly *outboard* |
+| Hole ⌀ | **1.68 mm** | photogrammetry (1.773 / 1.588); calipers agree at 1.65 |
+| Slack per pin | **0.39 mm** radial | (1.68 − 0.90) / 2, 0.64 mm square pin |
+
+**Why one number is caliper and the rest are picks.** The caliper reading was
+`inner 20.0 / outer 23.3` between an OUT hole and the corner hole opposite it, and
+`(20.0 + 23.3)/2 = 21.65 mm` **independent of either hole's diameter**. The photogrammetry
+says 22.30 mm — 0.65 mm more, which is **more than the 0.39 mm slack**, i.e. the difference
+between a pin that drops in and one that does not. The picks are wrong here and it is
+predictable: `hw/pin_locs/TP4056.txt` warns that the frame is a **similarity** and its scale
+comes from the 17.30 mm reference measured **across** the output row, so the along-row axis is
+metric and the perpendicular one carries the residual perspective. The same stretch reads the
+body as 25.75 mm long against a measured 25.2 mm. Independent cross-check, and it is the
+convincing one — the picks put these pads **1.68 mm inboard of the clicked east edge**, a
+short local distance the stretch barely touches, and
+
+```
+25.2 (body)  −  (1.0 + r) (west edge → output row, from C2)  −  1.68 (picks)
+      r = 0.91 (picks' hole)  =>  21.61 mm
+      r = 0.75 (caliper hole) =>  21.77 mm
+```
+
+— it still carries the output row's unknown hole radius, so it is a bracket rather than a
+number, but the bracket is **21.6…21.8 mm** and the caliper's 21.65 sits in it. A third route
+agrees: scaling the picks' whole length axis by the body's own error (25.2 / 25.75) turns
+22.30 into **21.82**. Three routes inside 0.2 mm, and the 22.30 outside all of them. So the
+rule the code follows is: **across the row → photogrammetry; along the module → caliper.**
+
+Using the picks for the across-row numbers is deliberate even though Reduction 4 shows that
+axis may itself be ~1.7 % long: **J5/J6 are built in that same frame.** The module is one
+rigid part, so a common-mode scale error moves the mount row and the output row together and
+still drops on. Mixing frames on one axis is what would not.
+
+**Escape hatch if a pin will not enter.** The corner pads are ~2.8 mm of copper around a
+1.68 mm hole and carry no current on this board (J10 is on no net; J9 carries the IN+ sense
+tap). **Drill them to 2.0 mm** and the slack goes from 0.39 mm to 0.55 mm with a 0.4 mm
+annular ring still left to solder to. Do that only if needed — the three routes above agree
+to ±0.2 mm, against 0.39 mm of slack.
+
+**J10 is on no net on purpose.** [pcb.md](pcb.md) §2 lists TP4056 `IN−` as "the same node
+module-internally" as `OUT−`, which is the usual protected-TP4056 topology (the FS8205 is in
+the cell-negative leg, so charge return passes through it). That is an **assertion, not a
+measurement** — the 2026-07-18 bench session measured `B+ ↔ OUT+` and `B− ↔ OUT−`, never
+`IN− ↔ OUT−`. If it is wrong on this module, bonding `IN−` to carrier GND shorts across the
+protection FETs and the DW01 can no longer disconnect anything. A floating pin anchors the
+module exactly as well, so the pad is netless and the question stays open. **If you want it
+bonded:** ohm `IN−` against `OUT−`, and if it reads 0 Ω, run a wire from J10 to any GND pad.
 
 ## Photogrammetry (`hw/pin_locs`) — the numbers the carrier actually uses
 
@@ -168,10 +326,11 @@ re-measure a module, drop the new CSV in, re-run `gen_board.py`, and the board f
 | PCM5102A J3 (1×9) | datum = J3 pin 1 (LROUT) | 0.117 | within-row scatter, irreducible |
 | PCM5102A J2 (1×6) from J3.1 | **(−26.917, +0.583)** | 0.180 | the layout chooses this offset — the one number that was guessed before |
 | PCM5102A outline from J3.1 | x −28.47…+3.55, y −1.40…+15.97 | — | 32.0 × 17.4 mm |
-| TP4056 pads from OUT− | **0 / 3.526 / 10.960 / 14.066** | — | 2.0 mm holes ⇒ ±0.55 mm slack on our own pins |
+| TP4056 pads from OUT− | **0 / 3.526 / 10.960 / 14.066** | — | ~1.5 mm holes ⇒ ~0.45 mm slack on 0.5 mm machined pins (was "2.0 mm ⇒ ±0.55"; §Nubs reduction 4). Calipers read the span 0.24 mm shorter — absorbed by the slack, not acted on |
 | TP4056 J6 from J5.1 | (0.000, +10.960) | — | the 7.43 mm gutter between the pairs |
-| TP4056 J9 (IN+) from J5.1 | (+22.358, +13.910) | — | soldered wire pad, not a fit datum |
-| TP4056 outline from J5.1 | x −1.81…+24.07, y −1.82…+15.64 | — | 25.9 × 17.5 mm |
+| TP4056 J9 (IN+) from J5.1 | **(+21.650, +13.910)** | — | mount row, and the X is **caliper, not picks** — the picks say +22.358 and that is 0.65 mm of a 0.39 mm slack budget. §The second mount row |
+| TP4056 J10 (IN−) from J5.1 | **(+21.650, −0.292)** | — | same, other corner. Netless: mechanical anchor only. Neither J9 nor J10 is a fit datum (they would measure the override) |
+| TP4056 outline from J5.1 | x −1.81…+24.07, y −1.82…+15.64 | — | 25.9 × 17.5 mm. ⚠️ **Corners were hand-clicked across the stepped (nubbed) west edge** — calipers 2026-07-27 give **x −1.75…+23.3** with the nubs filed. Kept as-is deliberately: the deltas are inside the gate or add clearance, and editing it forces a re-route. §Nubs |
 | ESP32-C3 JA1 (5V row) from JB1.1 | (−0.018, +15.240) | 0.100 | confirms the nominal 15.24 row spacing |
 | ESP32-C3 outline from JB1.1 | x −20.98…+1.39, y −1.32…+16.57 | — | 22.4 × 17.9 mm |
 | MAX4466 1×3 pitch | 2.5400 | 0.066 | on a pigtail — fit not constrained |
@@ -198,8 +357,8 @@ Two facts the millimetre tables cannot carry, both taken from the pixel coordina
 | Measurement | Nominal | Measured | Date |
 |---|---|---|---|
 | RCA output pads (X = PCM5102A L, Y = PCM5102A R): signal pad ↔ reused ~50 cm RCA cable tip; ground pad ↔ RCA shell | signal via R10/R11 (100 Ω series); ground pad = board GND, shell = GND | design item (no module to measure) — pads are simple signal+AGND lands. **Note:** analog source is now **LROUT/ROUT off the 9-pin header**, and a module-side 470 Ω filter exists (see PCM5102A ⚠️) — confirm R10/R11 value in that light | _design_ |
-| SW1 slide-switch pin pitch | 2× 3-pin @ 2.0 or 2.54 mm | _not in hand yet_ | _pending_ |
-| TP4056 pad-row → module short-edge offset | — | _open — gates the order; calipers, module in hand_ | _pending_ |
+| SW1 slide-switch pin pitch | 2× 3-pin @ 2.0 or 2.54 mm | _ordered 2026-07-27 (SS12D00, 6 mm handle), not yet in hand._ Never an order gate — the footprint's slots take both pitches. On arrival check the pins against the paper doll **and** whether the part has locating lugs: `SW_Slide_SPDT_DualPitch` has the three signal holes only | _pending_ |
+| TP4056 pad-row → module edge offsets | — | ✅ **CLOSED — the module seats as drawn.** Pad column sits 0.05 mm south of body centre vs 0.12 mm modelled ⇒ **Δ 0.07 mm against a 0.25 mm gate**. Also resolved the 26.9-vs-25.75 length contradiction: the west edge carries two **depanelization nubs** (+1.6 mm) that get **filed flush** at assembly. Full reduction and the raw A–F caliper readings in §Nubs | 2026-07-27 |
 | RV1 pot | (was undecided) | ✅ **RV097NS-B10K**, 5-pin **mono with switch**, **right-angle / side-adjust** (shaft parallel to the board, exiting the south edge — *not* vertical, as this row implied until 2026-07-27), body **27.3 × 9.5 × 11.3 mm**, metal shaft. **No knob** — turned by hand → enclosure needs only a shaft hole. Resolves Q3 + Q9 | 2026-07-18 |
 | RV1 row-2 geometry vs the RV097NS footprint | "bracket lugs" from the generic RV09 drawing: 9.5 mm apart, 7.0 mm behind the pot row, oval 1.2 × 2.0 slots | ✅ **WRONG — corrected 2026-07-27.** The part is *5-pin mono **with switch***; it has no bracket lugs. Row 2 is an SPST on ⌀1.0 holes **5.0 mm apart, 6.25 mm behind** the pot row, and the **mounting surface is 5.0 mm in front of** the pot row (was drawn at 1.2 mm). Every row-2 pad was 2.25 mm out in X and 0.75 mm in Y — the part would not have gone in. Source: the seller's mechanical drawing (`5Pin Mono (with Switch)`, [drawing](https://i.ebayimg.com/images/g/3KIAAOSwd9VjM8EZ/s-l1600.webp)), which agrees exactly with KiCad's stock `Potentiometer_Alps_RK097_Single_Horizontal_Switch` (from ALPS `rk097.pdf`) | 2026-07-27 |
 | RV1 body cross-section (the check that identifies the part) | — | ✅ drawing says **9.5 mm** wide and 6.5 + 4.85 = **11.35 mm** tall; the 2026-07-18 calipers said **9.5 × 11.3**. Independent confirmation that this drawing is our part. The third caliper figure, 27.3 mm, is the back-of-body-to-shaft-tip length: drawing gives body 13.0 + shaft L 15.0 = 28.0 nominal, so **re-measure that one** — 0.7 mm unexplained, though it changes no hole position | 2026-07-27 |

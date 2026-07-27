@@ -94,7 +94,17 @@ COMPONENTS = {
         "1": "GND", "2": "BAT_MINUS"}),             # measured row: OUT- B- B+ OUT+
     "J6": ("TP4056 B+/OUT+", "CONN2", "HYPEROSCI:TP4056_Pads_Bplus_OUTplus", {
         "1": "BAT_PLUS", "2": "VBAT_OUT"}),
-    "J9": ("TP4056 IN+ wire (J6b)", "PAD1", "HYPEROSCI:WirePad_D1.0", {"1": "VBUS_CHG"}),
+    # J9/J10 are the module's two USB-C-end corner pads, and they are the
+    # SECOND MOUNT ROW: J5/J6 alone leave a 21.65 mm cantilever with a USB-C
+    # plug on the far end.  J9 doubles as the IN+ sense tap §4 wants (it is the
+    # pad silkscreened "+").  J10 is on NO NET on purpose: IN- is *probably*
+    # the same copper as OUT- (§2 says so), but "probably" on the low side of a
+    # DW01 is how you bypass a LiPo's protection FETs, and the pin does its
+    # mechanical job just as well floating.  Bond it later if a meter says 0 R.
+    "J9": ("TP4056 IN+ / mount (J6b)", "PAD1", "HYPEROSCI:TP4056_MountPin",
+           {"1": "VBUS_CHG"}),
+    "J10": ("TP4056 IN- / mount", "PAD1", "HYPEROSCI:TP4056_MountPin",
+            {"1": None}),
     "J7": ("debug TX", "CONN2", STOCK["header2"], {"1": "DBG_TX", "2": "GND"}),
     "J8": ("LiPo JST-PH", "CONN2", STOCK["jst"], {"1": "BAT_PLUS", "2": "BAT_MINUS"}),
     "X1": ("scope X RCA pads", "CONN2", "HYPEROSCI:RCA_FlyingLead_Pads", {
@@ -187,7 +197,7 @@ GROUPS = [
     ("SuperMini socket", ["JA1", "JB1", "R3", "J7"]),
     ("PCM5102A + scope out", ["J2", "J3", "R10", "R11", "X1", "Y1", "C5"]),
     ("Mic + controls", ["J4", "C4", "RV1", "SW2", "R4", "D4", "R5", "D5"]),
-    ("Battery + TP4056", ["J8", "J5", "J6", "J9", "R1", "R2", "C3"]),
+    ("Battery + TP4056", ["J8", "J5", "J6", "J9", "J10", "R1", "R2", "C3"]),
     ("Power path", ["Q1", "Q2", "U1", "D1", "D2", "D3", "R6", "R7", "R8",
                     "R9", "R12", "JP1", "SW1", "C1", "C2"]),
     ("Test + mech", ["TP1", "TP2", "TP3", "TP4", "TP5", "H1", "H2", "H3", "H4"]),

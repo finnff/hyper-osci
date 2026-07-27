@@ -182,9 +182,18 @@ footprint("SolderJumper_P2.54",
            pad_tht(2, 2.54, 0, 2.0, 1.0),
            rect(-1.4, -1.4, 3.94, 1.4, "F.CrtYd", 0.05)])
 
-# --- 5. J6B: single wire pad for the TP4056 IN+ sense wire (pcb.md §2, 1.0mm) ---
-footprint("WirePad_D1.0",
-          "Single plated wire pad, 1.0mm drill (TP4056 IN+ / VBUS_CHG sense wire)",
+# --- 5. TP4056 USB-C-end mount pins (J9 = IN+, J10 = IN-) ------------------
+# Same 1.0 mm hole as J5/J6, and it takes the same machined single-pin socket.
+# This started as one wire pad for the IN+ sense tap; it is now a PAIR, and the
+# second one is on no net at all, because the job is mechanical: J5/J6 sit at
+# one end of the module and a USB-C plug is pushed into the other, 21.65 mm
+# away.  Four pins in a single row resist that only by bending.  See pcb.md §5.
+footprint("TP4056_MountPin",
+          "TP4056 USB-C-end corner pad: 1.0mm drill for a machined single-pin "
+          "socket. J9 = IN+ (VBUS_CHG sense tap, '+' silk on the module); "
+          "J10 = IN- and is NC ON PURPOSE - it anchors the module's far end "
+          "without assuming IN- and OUT- are the same node. Both are mount "
+          "points first: without them the module is a 21.65mm cantilever.",
           [pad_tht(1, 0, 0, 2.2, 1.0),
            rect(-1.4, -1.4, 1.4, 1.4, "F.CrtYd", 0.05)])
 
