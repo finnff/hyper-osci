@@ -4,6 +4,68 @@ _Last verified: 2026-07-22. Scope: the physical Arduino UNO-Q board, the deploye
 controller daemon, and the (rejected) osci-render route. The controller app itself is
 documented in [README.md](README.md)._
 
+## Presets you can overwrite, phone UI cleanup (2026-07-28)
+
+Two things, both in `PAGE`; no Python behaviour changed.
+
+**Overwrite an existing preset.** `op=save` has always replaced a same-named
+preset in place server-side, but the only way to reach that path was the
+`+ save` prompt — you had to retype the name exactly and guess what
+`sanitize_name()` would do to it, so in practice everyone made a second
+preset. The page now tracks which preset it last applied or wrote
+(`localStorage`, because the phone locks its screen mid-set and the reloaded
+page must still know) and shows **`⟳ update "<name>"`** next to
+**`+ save as…`**. The update button names its target and confirms; the
+applied preset's chip is highlighted. Verified end to end against a real
+controller on :8098 with `HYPE_PRESETS` pointed at a temp dir: applying a
+preset then hitting update rewrote it in place (`circle`/90 Hz →
+`rose` a=8/412 Hz on disk) with the list still 20 long and no duplicate name.
+
+**UI cleanup, superseding two calls from the entry below.**
+
+- `.seg` wrapping was the right fix but left the joined pill with square
+  corners mid-row — row 1 ended blunt, row 2 started blunt, and it read as a
+  rendering fault. The 7 draw options are now separate 4 px-gapped chips
+  (also fewer mis-taps). The preset `[name][×]` pair keeps the joined pill
+  under its own `.chip` class: two buttons, never wrapped, radii always right.
+- The full-width square preview pushed the entire pattern panel below the
+  fold. Capped at `min(100%,38vh)` and centred, it stays square (mandatory —
+  the canvas is 520² and a non-square box shears every figure) while the
+  controls stay on screen. `#top` also switches to `flex-direction:column` on
+  phones: once the preview is narrower than the viewport the controls panel
+  tries to share its flex line, which put the page back to 504 px of
+  sideways scroll.
+- Touch targets: every button/select/number input gets `min-height:44px` and
+  ranges 44 px of height under 640 px. 52 controls were 32 px tall.
+- `post()` now surfaces the controller's `{err}` instead of swallowing it —
+  `+ save as` at the 20-preset cap used to look exactly like a save that
+  worked. Confirmed: the 21st save raises `max 20 presets` in the page.
+
+Verified in headless Chromium at 320/390 px (`scrollWidth == innerWidth`,
+zero overflowing elements, no button under 44 px) and 1280 px (unchanged:
+260 px scope, `#top` in a row, 32 px buttons, 3-column slave grid, 4-column
+stats). Extracted `<script>` passes `node --check`; `py_compile` clean.
+`test_fixes.py` and `test_persist.py` produce byte-identical output before
+and after the change (both still fail on this dev box for the documented
+reason — no Hershey fonts here). Needs the usual scp + restart to reach the
+board.
+
+## Dashboard renders on portrait phones (2026-07-28)
+
+On a 390 px phone the page scrolled sideways to 550 px: the 7-button `draw`
+segments (519 px, `.seg` didn't wrap) and the `#slaves` grid's 360 px minimum
+track both overflowed, and the preview canvas sat fixed at 260 px. CSS-only
+fix in `PAGE` (no JS/markup change): `.seg` gets `flex-wrap:wrap`, the slave
+grid minimum becomes `min(360px,100%)`, and a `max-width:640px` media query
+makes `#scope` a full-width square (`aspect-ratio:1/1`), drops `#controls`'
+min-width, loosens `.stats` to 3 columns and un-nowraps the help-table
+headers. Verified in headless Chromium at 320/390/1280 px with injected
+state: zero overflowing elements, `scrollWidth == innerWidth` on both phone
+widths; desktop unchanged (260 px scope, multi-column cards — where the seg
+row previously overflowed ~400 px cards too, now it wraps). Extracted
+`<script>` still passes `node --check`. Needs the usual scp + restart to
+reach the board.
+
 ## Controller daemon (bring-up, 2026-07-18)
 
 `tools/hype_controller.py` (deployed at `/home/arduino/hype_controller.py`) streams

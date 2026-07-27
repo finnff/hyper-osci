@@ -694,12 +694,20 @@ button.on { background:var(--ph); color:#031003; border-color:var(--ph);
 button.off { background:var(--bad); color:#1a0303; border-color:var(--bad);
              font-weight:bold; }
 button.danger:hover { border-color:var(--bad); color:var(--bad); }
-.seg { display:flex; gap:0; }
-.seg button { border-radius:0; }
-.seg button:first-child { border-radius:5px 0 0 5px; }
-.seg button:last-child { border-radius:0 5px 5px 0; }
+/* The 7 draw options never fit one phone row. A joined pill that wraps grows
+   square corners mid-row (row 1 ended blunt, row 2 started blunt — it read as
+   a rendering fault), and 7 touching 44px targets invite mis-taps on a dark
+   stage. So these are deliberately separate chips. */
+.seg { display:flex; flex-wrap:wrap; gap:4px; }
+/* A preset's [name][x] pair must stay glued or the x looks unowned, so it
+   keeps the joined pill: exactly two buttons, nowrap, first/last always right. */
+.chip { display:inline-flex; flex-wrap:nowrap; }
+.chip button { border-radius:0; }
+.chip button:first-child { border-radius:5px 0 0 5px; }
+.chip button:last-child { border-radius:0 5px 5px 0; }
+#plist { display:flex; gap:6px; flex-wrap:wrap; }
 #slaves { display:grid; gap:14px;
-          grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); }
+          grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr)); }
 .card h2 { font-size:15px; color:var(--ph); margin-bottom:2px; }
 .card h2 small { color:var(--dim); font-weight:normal; margin-left:8px; }
 .play { margin:4px 0 6px; font-size:13px; }
@@ -726,6 +734,27 @@ details summary { cursor:pointer; color:var(--fg); }
 details td { padding:2px 14px 2px 0; vertical-align:top; }
 details th { text-align:left; color:var(--fg); font-weight:normal;
              padding-right:14px; white-space:nowrap; }
+/* portrait phones: thumb-sized targets, preview that doesn't eat the fold */
+@media (max-width:640px) {
+  body { padding:10px; }
+  /* Stack, don't wrap: once the preview is narrower than the viewport the
+     controls panel tries to share its flex line and overflows sideways. */
+  #top { flex-direction:column; }
+  /* Square is mandatory — the canvas is 520x520 and a non-square CSS box
+     shears every figure. But full-width square pushed the whole pattern
+     panel below the fold; capped against viewport height it stays on screen
+     together with the controls you are actually turning. */
+  #scope { width:min(100%,38vh); height:auto; aspect-ratio:1/1;
+           align-self:center; }
+  #controls { min-width:0; }
+  .stats { grid-template-columns:repeat(3,1fr); }
+  details th { white-space:normal; }
+  .row label { width:58px; }
+  /* 32px controls are a mis-tap with a thumb; 44px is the usual floor. */
+  button, select, input[type=number] { min-height:44px; padding:8px 14px; }
+  input[type=range] { height:44px; }
+  #plist { gap:8px; }
+}
 </style></head><body>
 <header>
   <h1>HYPEROSCI</h1>
@@ -798,9 +827,10 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
       <span class="val" id="rotv"></span></div>
     <div class="row" id="presetrow"><label
         title="saved snapshots of everything in this panel — prepare artist names before the show, then switch in one tap">presets</label>
-      <span id="plist" style="display:flex;gap:6px;flex-wrap:wrap"></span>
-      <button title="save the current pattern settings as a named preset (max __PRESETS_MAX__)"
-              onclick="savePreset()">+ save</button></div>
+      <span id="plist"></span>
+      <button id="updbtn" style="display:none" onclick="updatePreset()"></button>
+      <button title="save the current pattern settings under a NEW name (max __PRESETS_MAX__)"
+              onclick="savePreset()">+ save as…</button></div>
   </div>
 </div>
 <div id="slaves" class="panel"><div id="none">no slaves discovered yet…</div></div>
@@ -838,8 +868,13 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
 let S = null;
 const hist = {};   // ip -> previous counters for rate calculation
 
+// Show the controller's {err} instead of swallowing it: "+ save as" at the
+// 20-preset cap used to look exactly like a save that worked.
 function post(path, body) {
   return fetch(path, {method:"POST", body:JSON.stringify(body)})
+    .then(r => r.json().catch(() => null))
+    .then(d => { if (d && d.err) alert(d.err); })
+    .catch(() => {})            // controller restarting; poll() retries
     .then(() => poll());
 }
 const setP = p => post("/api/pattern", p);
@@ -899,23 +934,57 @@ function live() {
 
 // Presets: snapshots of the whole streamed-pattern panel, kept on the
 // controller (~/hype_presets.json) so they survive restarts.
+//
+// "current" = the preset this browser last applied or wrote. The controller
+// has no session, so it is purely client-side -- but it lives in
+// localStorage, because the phone locks its screen mid-set and the reloaded
+// page must still be able to write back into the preset you were shaping
+// instead of only ever making another one.
+let curPreset = localStorage.getItem("hypePreset") || "";
+function setCur(n) {
+  curPreset = n || "";
+  if (curPreset) localStorage.setItem("hypePreset", curPreset);
+  else localStorage.removeItem("hypePreset");
+}
 function savePreset() {
   const p = S.pattern;
   const def = (p.kind === "text" ? p.text.split("\\n")[0] : p.kind).slice(0, 24);
-  const name = prompt("preset name (e.g. the artist):", def);
-  if (name && name.trim()) post("/api/preset", {op:"save", name:name.trim()});
+  const name = prompt("new preset name (e.g. the artist):", def);
+  if (!name || !name.trim()) return;
+  setCur(name.trim());
+  post("/api/preset", {op:"save", name:name.trim()});
 }
-const loadPreset = n => post("/api/preset", {op:"load", name:n});
+// op=save has always overwritten a same-named preset in place server-side;
+// reaching it used to mean retyping the name exactly and guessing what
+// sanitize_name would do to it. This just gives that path a button.
+function updatePreset() {
+  if (curPreset && confirm(`overwrite preset "${curPreset}" with the current settings?`))
+    post("/api/preset", {op:"save", name:curPreset});
+}
+function loadPreset(n) {
+  setCur(n);
+  return post("/api/preset", {op:"load", name:n});
+}
 function delPreset(n) {
-  if (confirm(`delete preset "${n}"?`))
-    post("/api/preset", {op:"delete", name:n});
+  if (!confirm(`delete preset "${n}"?`)) return;
+  if (n === curPreset) setCur("");
+  post("/api/preset", {op:"delete", name:n});
 }
 function presetChips() {
-  document.getElementById("plist").innerHTML = (S.presets || []).map(n =>
-    `<span class="seg"><button title="apply this preset"
+  const names = S.presets || [];
+  if (curPreset && !names.includes(curPreset)) setCur("");  // deleted elsewhere
+  document.getElementById("plist").innerHTML = names.map(n =>
+    `<span class="chip"><button class="${n === curPreset ? "on" : ""}"
+        title="apply preset '${esc(n)}'"
         onclick="loadPreset('${n}')">${esc(n)}</button><button class="danger"
         title="delete preset '${esc(n)}'" onclick="delPreset('${n}')">×</button></span>`
   ).join("") || '<span style="color:var(--dim)">none saved yet</span>';
+  const u = document.getElementById("updbtn");
+  u.style.display = curPreset ? "" : "none";
+  if (curPreset) {
+    u.textContent = `\u27f3 update "${curPreset}"`;
+    u.title = `overwrite "${curPreset}" with what is on this panel right now`;
+  }
 }
 
 // Text-path preview: fetched only when the server-side table changes (tver).

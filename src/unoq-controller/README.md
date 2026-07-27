@@ -55,6 +55,12 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    filled from `PRESET_DEFAULTS`, so adding a field to a later build cannot
    drop a preset written by an earlier one; values are clamped and the font
    whitelisted in `clean_preset()`, on both the file and the load path.
+   `op=save` overwrites a same-named preset in place, so the page offers both
+   **`⟳ update "<name>"`** (rewrite the preset you last applied — the button
+   names its target so there is no doubt what gets replaced) and
+   **`+ save as…`** (a new name). Which preset is "current" is a client-side
+   notion kept in `localStorage`; the controller has no session, and a phone
+   that locked its screen still comes back able to update the right one.
 
 HTTP API: `GET /api/state`, `GET /api/textpreview`; `POST /api/pattern`,
 `POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete).
