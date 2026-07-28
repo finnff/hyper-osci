@@ -322,6 +322,41 @@ Genuinely open items, with resolvability given the current bench (ESP+DAC+mic+po
 
 *Refs: hw/carrier/layout-notes.md:237-255, docs/hardware/pcb.md:454,434,115-121,558-562, docs/hardware/measurements.md:105,201-202*
 
+> **Addendum 2026-07-28 — disposition of the (a)–(h) list.** This review is a dated record and
+> the body above is left as written; what follows is what actually happened to its open items.
+>
+> - **(b) RV1 — resolved 2026-07-27, and the review's optimism was misplaced.** It was not a
+>   lug-position quibble: `RV097NS_Vertical` was a drawing of *the wrong part*. The real
+>   RV097NS-B10K is 5-pin mono **with switch**, right-angle — row 2 is an SPST on ⌀1.0 holes
+>   5.0 mm apart and 6.25 mm behind the pot row, not two oval lug slots 9.5 mm apart and
+>   7.0 mm behind. Every row-2 pad was 2.25 mm out in X and 0.75 mm in Y; the part would not
+>   have gone in. The "10-minute paper-doll check" was the right call and it earned its keep.
+> - **(c) TP4056 pad-row-to-edge offset — resolved 2026-07-27, seats as drawn** (Δ 0.07 mm on a
+>   0.25 mm gate). Two by-products: the module's west edge carries two depanelization nubs to
+>   be filed flush, and a second mount row (J9/J10) was added at the USB-C end.
+> - **(d) R10/R11 — resolved 2026-07-28 as 0 Ω links** (pcb.md §10 Q2). The review called this
+>   "resolvable NOW" on the Phase-4 slow ramp; **that test could never have decided it.** The
+>   module carries its own ~470 Ω output filter, against which a 100 Ω series part moves
+>   amplitude by 0.01 % and phase at 10 kHz by ≲0.07°, identically on both channels. It was
+>   settled by that arithmetic, not by a measurement.
+> - **(a) SW1 — still open, and now carries a fab-critical detail the review predates.** The
+>   part was ordered 2026-07-27 and is not in hand, so the body/lever fit still cannot close.
+>   New since: SW1's plated slots were **re-cut on 2026-07-28 from 1.44 × 0.90 mm (aspect 1.6)
+>   to 1.80 × 0.90 (aspect 2.0)** — JLCPCB will not plate a slot under 2× aspect, and a silent
+>   conversion to a round ⌀0.9 hole fits *neither* pitch and scraps the boards. Check the drill
+>   file, not the board: 0.90 mm of travel on the 0.900 tool.
+> - **(e)–(h)** stand as written.
+>
+> **On "the layout is already complete and gate-clean" / "it is routed and DRC-clean"** (this
+> finding and the Bottom line above): true on 2026-07-26, and true again now — but it was
+> **not** true in between. The 2026-07-28 pre-fab DFM pass moved copper, which invalidated
+> router seed 11; a 16-variant re-sweep found exactly one clean result (**seed 33**) and the
+> board is routed and DRC-clean again at 1343 segments / 48 GND vias / 0 unconnected. The
+> episode is worth keeping next to the review's "nothing in the layout" recommendation: that
+> advice was sound on its evidence, and the board still needed two forced re-routes afterwards
+> because sub-millimetre DFM fixes move copper. See
+> [`layout-notes.md` → "Routing: how it was re-swept"](../../hw/carrier/layout-notes.md).
+
 ### [MODERATE] SuperMini LDO identity still unresolved ('S2LC') and carrier v1.1 has no fallback LDO footprint
 
 power-budget.md §4.1 mandates reading the SOT-23-5 marking on all four SuperMinis BEFORE the PCB order, with remedy (b) being 'fit a known LDO on the carrier PCB and feed 3V3 directly'. The Jul 18 bench session found marking 'S2LC' — explicitly 'not the feared 250 mA LLVB, but not the verified 500 mA S2QB either' (measurements.md:44,83) — and it was never decoded. The carrier as built (design.py component list, layout-notes) contains NO provision for remedy (b): if S2LC turns out to be a ~250 mA part, WiFi-TX bursts (~300–345 mA modeled) brown out all 4 units on battery and there is no board-level fix without a respin. Partially resolvable NOW on the USB-only setup: run NETWORK mode streaming with WiFi.setSleep(false) and watch for resets/rail sag — that exercises the burst current through the LDO (USB input even gives worst-case dissipation headroom-wise); the low-VBAT dropout margin case still needs a battery or bench supply. If the firmware has already run sustained NETWORK streaming on these boards without resets, that de-facto closes the current-rating half of this item and should be recorded in measurements.md.

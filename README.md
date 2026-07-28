@@ -66,7 +66,7 @@ Scope output is 2× RCA flying-lead pads (X = DAC L, Y = DAC R, series R fitted 
 
 Controls per unit: power switch, mode button (NETWORK / LOCAL / HYBRID), filter-cutoff pot, 2 status LEDs. Controller: 1× Arduino UNO-Q (4 GB, Debian). Pin map and all constants: [src/esp32-slave/include/config.h](src/esp32-slave/include/config.h) — **canonical, do not improvise**.
 
-## Status (2026-07-22)
+## Status (2026-07-28)
 
 - [x] Research + feasibility (docs/research/)
 - [x] Design locked ([docs/DESIGN.md](docs/DESIGN.md))
@@ -76,7 +76,7 @@ Controls per unit: power switch, mode button (NETWORK / LOCAL / HYBRID), filter-
 - [x] Six controller bugs found by the feature-port study fixed and deployed 2026-07-22, including the one that had the daemon beaconing out of the USB tether instead of the AP — slave 121 now receives audio ([docs/…feasibility.md §1](docs/osci-render-feature-port-feasibility.md))
 - [x] Boots unattended 2026-07-22: `hyperosci-ap` now autoconnects (it never did — that, not the controller, was the real "no slaves discovered yet…"), the USB tether holds a fixed `10.42.0.5` alongside DHCP, and the dashboard names the AP-down case instead of showing an empty list. Cold boot to streaming: 18 s ([src/unoq-controller/STATUS.md](src/unoq-controller/STATUS.md))
 - [x] Survives a power cut with no laptop 2026-07-22: the live pattern persists to `~/hype_state.json` and is restored before the first audio block, presets keep one generation of undo, and a root `hyperosci-netwatch` timer re-ups the AP (and bounces it on the documented ath10k wedge). Regression checks in [src/unoq-controller/tests/](src/unoq-controller/tests/) — run them **on the board**
-- [ ] Carrier PCB designed & ordered (order gate ~Aug 1 — see [docs/PLAN.md](docs/PLAN.md)). ⛔ **Blocked as of 2026-07-28: the committed board is unrouted.** The pre-fab DFM pass (0.15 mm silk strokes, SW1's slots re-cut to a 2× aspect, legends kept off the module bodies) is done and passes every non-routing gate — but it moved copper, which invalidates the router seed, and the re-sweep needs a bigger machine than the laptop it was started on. Handoff: [`hw/carrier/layout-notes.md` → "Routing: not done yet"](hw/carrier/layout-notes.md)
+- [ ] Carrier PCB designed & ordered (order gate ~Aug 1 — see [docs/PLAN.md](docs/PLAN.md)). **Routed and gate-clean as of 2026-07-28** — the pre-fab DFM pass moved copper and killed router seed 11; a 16-variant re-sweep found exactly one clean result (**seed 33**, now the default) and the board is 1343 segments / 48 GND vias / 0 unconnected / 0 DRC violations, with the width tables regenerated from the routed copper. **One item still gates the gerber plot and it is not routing:** SW1's body/lever fit against the 1:1 paper doll — the SS12D00 was ordered 2026-07-27 and is not in hand. Detail: [`hw/carrier/layout-notes.md`](hw/carrier/layout-notes.md)
 - [ ] 4-slave sync demo (slaves 2–4 not yet on breadboards; 3 built slaves need reflashing for the lost-packets counter)
 - [ ] Assembly + venue rehearsal (show 2026-08-21)
 

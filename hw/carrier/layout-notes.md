@@ -1,31 +1,34 @@
 # carrier layout notes (board v1.1, notes updated 2026-07-28)
 
-> ## ⛔ WIP — the committed `carrier.kicad_pcb` is UNROUTED. Do not plot gerbers.
+> ## ✅ ROUTED — `carrier.kicad_pcb` is clean on **seed 33** (2026-07-28).
 >
-> The 2026-07-28 pre-fab pass (silk stroke → 0.15 mm, SW1 slot → 2× aspect, silk
-> off the module bodies) moved copper in three places: SW1's two slot pads out to
-> ±2.45 mm, SW1 itself 0.4 mm south, C3 0.79 mm north. **A router seed has to be
-> re-swept against that copper and has not been yet**, so the board is committed
-> straight out of `gen_board.py`: 2 segments, 38 seeded stitch vias, **58
-> unconnected items**. Everything that does not depend on routing passes — DRC 0
-> violations, ERC 0, `check_netlist.py` OK, `audit_board.py` all five gates.
+> The pre-fab pass (silk stroke → 0.15 mm, SW1 slot → 2× aspect, silk off the
+> module bodies) moved copper in three places: SW1's two slot pads out to
+> ±2.45 mm, SW1 itself 0.4 mm south, C3 0.79 mm north. That **killed seed 11**,
+> and the 16-variant re-sweep that followed found **exactly one clean variant**.
+> Seed 33 is now `route.py`'s default. Full account in **"Routing: how it was
+> re-swept"** at the bottom of this file.
 >
-> What that costs and how to finish it is in **"Routing: not done yet"** at the
-> bottom of this file. Read it before running anything.
+> **Still open before gerbers, and it is not routing:** SW1's body/lever fit
+> against the 1:1 paper doll — the SS12D00 was ordered 2026-07-27 and is not in
+> hand (VERIFY item 2 below). Everything else passes.
 
-Once routed, the target this board used to hit (and must hit again):
+What this board hits, measured 2026-07-28 on seed 33:
 `kicad-cli pcb drc --severity-all` reports **0 violations of any severity** and
-**0 unconnected items**. 1225 track segments, 50 GND vias, 30 GND through-hole
+**0 unconnected items**. **1343 track segments, 48 GND vias**, 30 GND through-hole
 pads. Worst GND stitch gap anywhere outside the antenna keep-out: **7.8 mm**
-(gate: 12 mm).
+(gate: 12 mm), at (7, 25). The pour came out **whole at phase D round 0 with zero
+repair vias** — which is the property a seed is actually selected on.
 
-**Zero 90° track corners.** The 2 acute ones are traces fanning out from a pad —
-SW2 pad 1 (`BTN_MODE`) and Q1 pad 3 (`VBAT_OUT`) — wide copper, no notch, not
-routed corners.
+**Zero 90° track corners.** The **3** acute ones are traces fanning out from a
+pad — `VSW` at (48.8, 28.8), `BTN_MODE` at (21.5, 43.1), `VBAT_SENSE` at
+(12.1, 3.8) — wide copper, no notch, not routed corners. (It was 2 on seed 11's
+board, at different places; the set is a property of the route, not a regression.)
 
-*Counts have moved twice: 1267/45 → 1228/50 when RV1's corrected footprint forced
-a fresh route on a new seed, and → 1225/50 when the TP4056 gained its USB-C-end
-mount row. Both are below; both re-routed on **seed 11**, which held.*
+*Counts have moved three times: 1267/45 → 1228/50 when RV1's corrected footprint
+forced a fresh route on a new seed, → 1225/50 when the TP4056 gained its USB-C-end
+mount row, and → **1343/48** when the pre-fab DFM pass forced seed 11 → 33. The
+first two held on seed 11; the third is why it no longer does.*
 
 **On schematic parity:** this used to claim "0 schematic-parity items". That was
 never measured — `kicad-cli pcb drc` only reports parity when passed
@@ -139,7 +142,13 @@ Two things were tried and rejected, recorded so they are not retried blind:
   against a global footprint library table that headless `kicad-cli` cannot see,
   and 41 `lib_footprint_issues` break the "0 violations" gate. Bare names are the
   lesser evil; the residual parity noise is cosmetic.
-- **Forcing VLOAD wide** — `route.py` gained a `ROUTE_WIDTH_FLOOR` env knob for
+- **Forcing VLOAD wide** — ⚠️ **HISTORICAL (seed 77, 2026-07-26). The trade described
+  below no longer exists:** on seed 33 VLOAD reaches 1.0 mm over its whole length with
+  no floor at all, and measures 19.5 mΩ — better than the 41.4 mΩ the floor was being
+  considered *to buy*. The knob still exists; the numbers under it do not apply to the
+  current board. Re-measure before reaching for it. Kept because the *failure mode* it
+  documents (wider power copper crowds the pour and severs it) is still real and is the
+  same one the seed sweep hunts. — `route.py` gained a `ROUTE_WIDTH_FLOOR` env knob for
   this (default off, so the committed board is unaffected). A 14-variant sweep
   says it *is* routable, and improves the power nets a lot; it is not adopted
   because it costs GND stitching, and the review's standing instruction days
@@ -192,7 +201,10 @@ Consequences that were not obvious:
   it fails as a severed pour**, so re-sweep whenever copper moves.
 
   A 24-variant sweep (6 seeds × 4 halo settings, `tools/search.py --spec`) put
-  the damage in context — only **3 of 24** came back fully clean:
+  the damage in context — only **3 of 24** came back fully clean. *(Historical:
+  this is the 2026-07-27 sweep that chose seed 11. Seed 11 was itself killed the
+  next day by the pre-fab DFM pass — see the 2026-07-28 sweep at the bottom of
+  this file. The table is kept because the pattern it shows repeated exactly.)*
 
   | variant | unconn | unrouted | gap | segments | |
   |---|---|---|---|---|---|
@@ -202,9 +214,13 @@ Consequences that were not obvious:
   | halo-off, **seed 77** | **2** | 0 | 8.6 | 1189 | ❌ the old default |
   | halo 1.3×4.0, any seed | 0 | 0 | 8.6 | 1672 | ⚠️ identical for all 6 seeds, and all 6 carried the mitre bug below |
 
-  Seed 11 is now `route.py`'s default, with 77 recorded beside it. ("halo-off"
+  Seed 11 became `route.py`'s default here, with 77 recorded beside it — **and was
+  itself replaced by 33 one day later**; see the bottom of this file. ("halo-off"
   is `ROUTE_GND_HALO_MM=0`; the repo default of 1.3 mm behaves the same, because
-  the halo's *cost* is 0 and that is what gates it.)
+  the halo's *cost* is 0 and that is what gates it — `route.py` wraps the whole
+  halo in `if HALO_COST > 0`.) Worth noting in hindsight: **seed 33 was already
+  clean here too**, second on the list. It was passed over for having 122 more
+  segments, and it is what the board runs on now.
 - **A latent router bug surfaced.** Five of the 24 variants carried one
   `track_dangling`: `mitre_board` was building a zero-length "mitre" at a
   degenerate vertex — two legs leaving the same point in the *same* direction, a
@@ -562,23 +578,40 @@ placement, because the board converges with no slack at all.
 Measured off the board, not recalled — an earlier version of this list was wrong
 in four of five clauses:
 
+*From `tools/measure_copper.py` on the routed board, seed 33, 2026-07-28.*
+
 | Net | Target | As built | Breakdown |
 |---|---|---|---|
-| BAT_PLUS, BAT_MINUS, VBAT_OUT, VBUS_CHG | 1.0 | **1.0** | never narrowed |
-| VSW | 1.0 | 0.6 | 60 mm @ 1.0, 54 mm @ 0.6 |
-| **VLOAD** | 1.0 | **0.3** | 56 mm @ 1.0, **91 mm @ 0.3** |
-| 3V3 | 0.6 | **0.6** | never narrowed |
+| BAT_PLUS, BAT_MINUS, VBAT_OUT, VBUS_CHG | 1.0 | **1.0** | never narrowed (74.8 / 19.9 / 18.3 / 51.5 mm) |
+| **VSW** | 1.0 | **0.3** | 51.8 mm @ 1.0, 74.4 @ 0.8, 23.1 @ 0.6, **60.0 @ 0.3** |
+| VLOAD | 1.0 | **1.0** | 82.6 mm, never narrowed |
+| 3V3 | 0.6 | **0.6** | never narrowed (88.7 mm) |
+| MIC_OUT | 0.3 | 0.3 | 67.8 mm |
 | DAC_L/R, SCOPE_X/Y | 0.5 | 0.4 | short pad fan-outs, 4–10 mm each |
 
-VLOAD is the one to know about: it is the SW1 → SuperMini-5V net that §6.4 wants
-at 1.0 mm *because of* the 0.35 A WiFi bursts, and 91 mm of it is at 0.3 mm.
-End to end that is **152 mΩ** — 53 mV at a 350 mA burst, 19 mV at the 125 mA
-NETWORK average. Acceptable as built for one reason worth stating explicitly:
-**C1 is 6.8 mΩ from the 5V pin**, on the load side of the thin run, so the bulk
-cap is not behind the resistance and the thin copper only carries the average
-while C1 recharges. Widening it is a v1.2 item; note the router already asks for
-1.0 mm here and steps down because it cannot get it, so a wider VLOAD needs
-floorplan room, not just a bigger number.
+**Read this table against the previous one before trusting any memory of it: VSW
+and VLOAD have swapped roles.** Every earlier version said VLOAD was the narrow
+net (91 mm @ 0.3, 152 mΩ) and VSW was fine. On seed 33 **VLOAD is 1.0 mm over its
+whole 82.6 mm and measures 19.5 mΩ** SW1 → SuperMini-5V, and VSW is the one
+carrying 60 mm of 0.3 mm copper.
+
+That is much less alarming than the breakdown looks, and the nodal number is why:
+**Q1 source → SW1 is 30.7 mΩ.** VSW is a fan-out node (D2, JP1, Q1, Q2, R12, R7,
+SW1, TP2) and most of the thin copper sits on *sense and bias* branches — R7's
+divider tap, Q2's base network, the TP2 testpoint — not the load path, which also
+has 15 vias giving it parallel routes. "60 mm @ 0.3" is not 60 mm of load current
+through 0.3 mm copper.
+
+Q1 source → 5V pin end to end is now **≈50 mΩ** (30.7 + 19.5, plus SW1's contact
+resistance, which is not copper): 17 mV at a 350 mA burst, 6 mV at the 125 mA
+NETWORK average, against the ~176 mΩ the old table implied. **C1 is 3.3 mΩ from
+the 5V pin**, still on the load side, so the bulk cap sources the burst locally
+regardless — the argument that made the old number acceptable survives the
+inversion intact.
+
+A caution the three stale generations of this table have earned: **it is wrong by
+default after any re-route, and it has twice been wrong in the flattering
+direction.** Regenerate, do not recall.
 
 ## VERIFY before ordering (paper-doll + part-in-hand)
 
@@ -674,43 +707,34 @@ checks with parts already in hand.
 - `tools/search.py` — parallel layout/router parameter sweep
 - `tools/check_netlist.py` — respin gate; run after any `design.py` change
 
-## Routing: not done yet (2026-07-28)
+## Routing: how it was re-swept (2026-07-28)
 
-The pre-fab pass moved copper, so the shipped seed had to be re-swept. It was
-attempted here and **abandoned unfinished** — this section is the handoff.
+The pre-fab pass moved copper, so the shipped seed had to be re-swept. **Done —
+seed 33 adopted.** This section is the record, kept because the failure modes in
+it recur every time copper moves.
 
-### What was measured
+### What killed seed 11
 
-`ROUTE_ATTEMPTS=1` at the default `ROUTE_SEED=11`, on the new copper:
+Three small moves: SW1's two slot pads out to ±2.45 mm, SW1 itself 0.4 mm south,
+C3 0.79 mm north. Re-swept on the new copper, seed 11 came back **1 unconnected
+/ 1 unrouted** — `BAT_PLUS`, a 0.127 mm stub and R1 pad 1 left off the net.
 
-```
-attempt 1: 1414 segments, 35 vias, 10 failures
-  ['3V3', 'DBG_TX', 'GATE', 'LED_MODE_A', 'TL431_K', 'VSW', 'VSW_SENSE']
-phase D round 5: 2 clusters (38 outlines)     <- pour never became single
-```
+Worth dwelling on: **seed 11 had held through two previous re-routes** (RV1's
+footprint correction, the TP4056 mount row). It was not a fragile choice. Sub-
+millimetre pad moves killed it anyway. There is no amount of "the seed has been
+fine so far" that substitutes for re-sweeping.
 
-One attempt is ~20–30 s, against the ~8 s/attempt this board used to cost. That
-is not mysterious: a *failed* A\* expands the whole grid before giving up, so a
-seed that fails 7 nets is several times more expensive per attempt than one that
-routes. The full 40-attempt ladder is therefore ~20 min of one core, not the
-"~5–6 min" pcb.md §9 still quotes — **fix that number once a seed is chosen.**
-
-Attempt 1 failing is not by itself a verdict: the promote ladder (attempts 1–8)
-and the shuffle (9–40) exist precisely because the first net order is arbitrary,
-and `best` keeps the best attempt, not the last. Seed 11 may still land. It was
-killed at ~19 min of CPU, still inside phase A, so **it has no verdict either
-way** — do not read the abandonment as "seed 11 is dead".
-
-### Why the sweep produced nothing
+### Why the first attempt produced nothing
 
 `tools/search.py --stage router --jobs 8` was run on an 8-core laptop. All 8
 first-wave variants hit `CARRIER_SEARCH_TIMEOUT` (default **1800 s**) and were
 recorded as `FAILED at timeout` — 8 jobs plus a foreground router on 8 cores is
-~0.8 core each, so 1800 s of wall is ~25 min of CPU, and a 40-attempt ladder on
-copper this hard does not fit in that. **The timeouts are a measurement artifact,
-not a statement about the seeds.** Any of those 16 variants may be fine.
+~0.8 core each, and a 40-attempt ladder on copper this hard does not fit. **Those
+timeouts were a measurement artifact, not a statement about the seeds** — the
+re-run proved it: three of those same variants routed to completion in 430–530 s
+once given real cores.
 
-### What to run (32-thread workstation)
+### What was run, and what it found
 
 ```sh
 cd hw/carrier
@@ -718,43 +742,67 @@ cd hw/carrier
 CARRIER_SEARCH_TIMEOUT=7200 /usr/bin/python3 -u tools/search.py --stage router --jobs 16
 ```
 
-Three things that are easy to get wrong:
+32-thread box, 1277 s wall for all 16. **Exactly one variant came back clean:**
 
-- **`CARRIER_SEARCH_TIMEOUT=7200`.** Without it the sweep silently returns
-  nothing but timeouts, which reads exactly like "no seed works".
+| variant | unconn | unrouted | gap | segments | |
+|---|---|---|---|---|---|
+| halo-off, **seed 33** | 0 | 0 | **7.81** | **1343** | ✅ adopted |
+| halo-off, seed 11 | 1 | 1 | 7.81 | 1196 | ❌ the old default (`BAT_PLUS`) |
+| halo 1.3×1.5, seed 33 | 1 | 1 | 7.81 | 1338 | ❌ `GATE` |
+| halo 1.0×1.5, seed 11 / 33 | 1 | 1 | 7.81 | 1351 / 1389 | ❌ `BTN_MODE` |
+| halo-off / 1.0×1.5, seed 22 | 1 | 1 | 8.6 | 1196 / 1267 | ❌ `DBG_TX` |
+| halo 1.3×4.0, seed 11 | 1 | 1 | 8.6 | 1496 | ❌ `TL431_K` |
+| halo 1.3×1.5, seed 22 | 1 | 1 | 8.6 | 1666 | ❌ `POT_WIPER` |
+| **seed 20260726**, any halo | 2–4 | 1–2 | 7.81–8.6 | 1177–1561 | ❌ phase D `STUCK`, severed `GND_main` |
+| halo 1.3×4.0, seed 33 / 22 | 2 | 2 | 8.6 | 1564 / 1636 | ❌ (seed 22 also 5 physical) |
+
+Three things that were easy to get wrong, and all three mattered:
+
+- **`CARRIER_SEARCH_TIMEOUT=7200`.** Without it the sweep returns nothing but
+  timeouts, which reads exactly like "no seed works".
 - **`--jobs 16`, not 32.** The variants are single-threaded but memory-hungry
-  (each holds a full `pcbnew` board plus two 552 × 394 obstacle grids), and
-  oversubscribing is what turned the laptop run into a timeout farm.
-- **`-u`.** `search.py` flushes per completed variant, but `route.py`'s own
-  per-attempt lines are block-buffered when redirected — without `-u` a
-  multi-hour run looks identical to a hung one for its entire length.
+  (each holds a full `pcbnew` board plus two 552 × 394 obstacle grids).
+- **`-u`.** `route.py`'s per-attempt lines are block-buffered when redirected;
+  without it a multi-hour run looks identical to a hung one.
 
-Adopt the winner, then: if it is not 11, re-run `gen_board.py` + `route.py`
-under it, update `SEED`'s default and the dated comment block above it in
-`tools/route.py:51`, and the `ROUTE_SEED` note in pcb.md §9.
+**The halo env vars did not need adopting.** `route.py` gates the entire halo
+behind `if HALO_COST > 0` and the repo default cost is 0, so the sweep's
+`halo-off` is behaviourally identical to the repo default. Seed 33 reproduces
+from `ROUTE_SEED=33` alone — verified by rebuilding from source twice, both
+landing on 1343 segments / 48 vias / 0 failures.
 
-If the whole 16-variant sweep comes back with failures, the knob to reach for
-next is `ROUTE_GND_HALO_MM=0.0` with more seeds (halo-off is already 4 of the
-16), and after that `ROUTE_ATTEMPTS=80` — the ladder plateaus at 8 and the
-remaining 32 are pure shuffle, so more shuffle is cheap insurance.
+### Timing, measured
 
-### Gates once it routes
+Solo on the 32-thread box, seed 33: **`gen_board.py` 7 s, `route.py` 251 s.** The
+ladder early-exits on the first zero-failure attempt (28 of 40 here), so a
+*working* seed is the cheap case. Failing seeds cost 430–1277 s each while
+sharing the box 16 ways. pcb.md §9's old "~5–6 min" is now replaced with these.
 
-`bash` the checks in pcb.md §9, in this order, and expect exactly this:
+### Gates, as measured on the routed board
 
-| Gate | Expect |
+| Gate | Result |
 |---|---|
-| `route.py` exit code | **0** — nonzero means unrouted nets, stitch failures, or a split pour |
-| `kicad-cli pcb drc --severity-all` | 0 violations, **0 unconnected** |
-| `kicad-cli sch erc --severity-all` | 0 violations |
-| `tools/check_netlist.py <exported .net>` | OK |
-| `tools/audit_board.py --verbose` | all five gates, incl. `silk shadow … 0 that should not be` |
-| silk stroke census | 0 items below 0.15 mm (was 70) |
-| drill file `G85` slots | 0.90 mm tool, endpoints 0.90 mm apart (was 0.54) |
-| `tools/measure_copper.py` | feeds the pcb.md §6.4 width table — see below |
+| `route.py` | 1343 segments, 48 vias, **0 failures**; phase D single cluster at round 0, **0 repair vias** |
+| `kicad-cli pcb drc --severity-all` | **0 violations, 0 unconnected** |
+| `--schematic-parity` | **69** (60 `footprint_symbol_mismatch` + 9 `net_conflict`) — unchanged from the pre-route baseline, i.e. the documented benign set |
+| `kicad-cli sch erc --severity-all` | **41, all `footprint_link_issues`** — the headless library-table artifact, **not** 0; real violations 0 |
+| `tools/check_netlist.py` | OK |
+| `tools/audit_board.py --verbose` | all five gates; `silk shadow 25 deliberate, 0 that should not be` |
+| silk stroke census | **0** items below 0.15 mm (was 70) |
+| drill `G85` slots | T4 = **0.900** tool; `X47.08→X47.98` and `X51.98→X52.88`, 0.90 mm travel each (was 0.54) |
+| `tools/measure_copper.py` | fed into pcb.md §6.4, §4.4 item 1 and the width table above — **all three now as-built** |
 
-The last one is the only gate that is not pass/fail: its numbers have to be
-copied into pcb.md §6.4 and §4.4 item 1, and into the width table in this file.
-Those three places currently hold **pre-route figures from the old board** and
-are known stale — that is the one documentation item the 2026-07-28 pass did not
-finish, because it cannot be finished until the board routes.
+⚠️ **The ERC row is the one to not misread.** The gate table used to say "0
+violations"; a headless checkout reports ~41 `footprint_link_issues` because
+`kicad-cli` cannot see the global footprint library table. Read ERC the way
+parity is read — diff the count and the *types* against this baseline, not
+against zero.
+
+### What is still open
+
+**SW1 (VERIFY item 2) — and it is the only thing left before gerbers.** The
+SS12D00 was ordered 2026-07-27 and is not in hand, so the body/lever fit against
+`paper-doll-1to1.pdf` cannot close. The footprint's slots take both 2.0 and
+2.54 mm pitch and the drill geometry is verified above, so the residual risk is
+mechanical fit only. Renders and the 1:1 paper doll were regenerated against the
+routed board on 2026-07-28 and are current.

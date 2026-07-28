@@ -196,8 +196,9 @@ On the carrier PCB the SCK socket pin is tied straight to the ground plane.
   `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Tap **X = LROUT, Y = ROUT, gnd = AGND**. It is
   **not** a 3-pin `L G R` header — the old docs assumed wrong.
 - **Deliverable output path (carrier board):** the carrier has *no* BNC or TRS jack. It
-  exposes two RCA flying-lead solder pad-pairs (signal + ground), fed through the 100 Ω series
-  resistors (R10/R11): **X = PCM5102A LROUT**, **Y = PCM5102A ROUT**. Signal chain is
+  exposes two RCA flying-lead solder pad-pairs (signal + ground), fed through the series
+  R10/R11 positions — **fitted as 0 Ω links** (pcb.md §3.2 / §10 Q2, closed 2026-07-28):
+  **X = PCM5102A LROUT**, **Y = PCM5102A ROUT**. Signal chain is
   board RCA pad → reused ~50 cm RCA cable (RCA male, salvaged from the old sigma-delta units)
   → BNC→RCA adapter already fitted on the scope → scope CH, in XY mode.
 - **Bench bring-up shortcut (recommended for W1–W2):** you can skip the carrier RCA pads
@@ -205,8 +206,10 @@ On the carrier PCB the SCK socket pin is tied straight to the ground plane.
   tip = X (LROUT), ring = Y (ROUT), sleeve = GND — via a 3.5 mm→2×RCA (or →2×BNC) cable. This
   needs no carrier at all, so early testing isn't gated on the PCB. Final units use the RCA pads.
 - Note: the module carries a ~470 Ω "471" output filter before these pins/jack (measured) —
-  the output is still ground-centered, so on the bench ramp decide whether R10/R11 want to be
-  0 Ω (module R already isolates) or 100 Ω.
+  the output is still ground-centered. **R10/R11 is settled: fit 0 Ω links** (pcb.md §10 Q2,
+  closed 2026-07-28). Do not spend bench time deciding it on the ramp — the module's own
+  470 Ω swamps a 100 Ω part, which moves amplitude by 0.01 % and phase at 10 kHz by ≲0.07°,
+  and does so identically on both channels, so the test has nothing to show.
 - Scope setup: **XY mode**, CH1 = X, CH2 = Y, both **DC coupled**, both **1 MΩ** input
   (never 50 Ω termination — the line-out stage can't drive it); on the bench use ×1 probes,
   on the finished unit the reused RCA cable into the scope's BNC→RCA adapter. 1 V/div, traces

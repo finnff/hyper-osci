@@ -38,7 +38,9 @@ where noted) **before** layout starts:
 3. **PCM5102A has an on-board output reconstruction filter** (`471` ≈ 470 Ω series parts +
    caps near the outputs), not bare DAC pins. This is a filter, **not** DC-blocking — the
    output stays ground-centered (DESIGN §5 assumption holds). Consequence is only for R10/R11:
-   with ~470 Ω already in series, decide 0 Ω vs 100 Ω on the Phase-4 bench ramp.
+   with ~470 Ω already in series, **fit 0 Ω links** — settled 2026-07-28 (pcb.md §10 Q2), and
+   *not* on the Phase-4 bench ramp, which cannot resolve it: 100 Ω against 470 Ω is 0.01 % of
+   amplitude and ≲0.07° of phase at 10 kHz, equally on both channels.
 4. **SuperMini LDO marking reads `S2LC`, not the expected `S2QB`.** Decode/confirm the
    current rating (need ≥ ~0.35 A for WiFi TX peaks) before trusting it. Not the feared
    250 mA `LLVB`, but not the verified 500 mA `S2QB` either.
@@ -103,7 +105,7 @@ Photos: [front](images/PCM5102A_FRONT.jpg) · [back](images/PCM5102A_BACK.jpg)
 | 9-pin header distance from 6-pin row | — | ~~PROVISIONAL (phone-measured): 1×6 row axis +2.54 mm from FLT, SCK collinear with the 1×9 row~~ **SUPERSEDED — the guess was 4.06 mm out.** Photogrammetry: SCK (J2 pin 1) sits **26.917 mm west and 0.583 mm south** of LROUT (J3 pin 1), i.e. the 1×6 column is *past* the FLT end of the 1×9 row and **not** collinear with it. Worst pin 0.180 mm off an ideal 2.54 mm socket. See §Photogrammetry | 2026-07-26 |
 | 3.5 mm jack overhang | may hang off carrier edge | **~1.6 mm** (jack makes total 18.6 vs 17 mm board) — hangs off edge, fine | 2026-07-18 |
 | Solder-bridge state (DESIGN §5) | 1=L, 2=L, 3=H, 4=L | Pads present on back: **`H1L H2L H3L H4L`** (+ `PCM5100/5101/5102` selector). State not readable from photo — **verify by continuity** against 1=L,2=L,3=H,4=L | _verify_ |
-| Series R/filter on L/R outputs? (trace or measure) | expect none (fit 0 Ω if present) | ⚠️ **Filter PRESENT** — `471` (≈470 Ω) series parts + caps sit between the DAC and the output pins/jack. Confirm whether LROUT/ROUT are pre- or post-filter; revisit R10/R11 100 Ω plan | 2026-07-18 |
+| Series R/filter on L/R outputs? (trace or measure) | expect none (fit 0 Ω if present) | ⚠️ **Filter PRESENT** — `471` (≈470 Ω) series parts + caps sit between the DAC and the output pins/jack. Confirm whether LROUT/ROUT are pre- or post-filter. **R10/R11 resolved 2026-07-28: fit 0 Ω links** (pcb.md §10 Q2) — the module's 470 Ω already does the isolating | 2026-07-18 |
 
 ## MAX4466
 
@@ -356,7 +358,7 @@ Two facts the millimetre tables cannot carry, both taken from the pixel coordina
 
 | Measurement | Nominal | Measured | Date |
 |---|---|---|---|
-| RCA output pads (X = PCM5102A L, Y = PCM5102A R): signal pad ↔ reused ~50 cm RCA cable tip; ground pad ↔ RCA shell | signal via R10/R11 (100 Ω series); ground pad = board GND, shell = GND | design item (no module to measure) — pads are simple signal+AGND lands. **Note:** analog source is now **LROUT/ROUT off the 9-pin header**, and a module-side 470 Ω filter exists (see PCM5102A ⚠️) — confirm R10/R11 value in that light | _design_ |
+| RCA output pads (X = PCM5102A L, Y = PCM5102A R): signal pad ↔ reused ~50 cm RCA cable tip; ground pad ↔ RCA shell | signal via R10/R11 (**0 Ω links**); ground pad = board GND, shell = GND | design item (no module to measure) — pads are simple signal+AGND lands. **Note:** analog source is now **LROUT/ROUT off the 9-pin header**, and a module-side 470 Ω filter exists (see PCM5102A ⚠️) — which is why R10/R11 settled at **0 Ω, closed 2026-07-28** (pcb.md §10 Q2) | _design_ |
 | SW1 slide-switch pin pitch | 2× 3-pin @ 2.0 or 2.54 mm | _ordered 2026-07-27 (SS12D00, 6 mm handle), not yet in hand._ Never an order gate — the footprint's slots take both pitches. On arrival check the pins against the paper doll **and** whether the part has locating lugs: `SW_Slide_SPDT_DualPitch` has the three signal holes only. **Slots re-cut 2026-07-28 to 1.80 × 0.90 mm (aspect 2.0, was 1.44 × 0.90 = 1.6)** — JLCPCB will not plate a slot under 2×, and a silent conversion to a round hole fits neither pitch. Pin window is now 2.00–2.90 mm from the middle pin | _pending_ |
 | TP4056 pad-row → module edge offsets | — | ✅ **CLOSED — the module seats as drawn.** Pad column sits 0.05 mm south of body centre vs 0.12 mm modelled ⇒ **Δ 0.07 mm against a 0.25 mm gate**. Also resolved the 26.9-vs-25.75 length contradiction: the west edge carries two **depanelization nubs** (+1.6 mm) that get **filed flush** at assembly. Full reduction and the raw A–F caliper readings in §Nubs | 2026-07-27 |
 | RV1 pot | (was undecided) | ✅ **RV097NS-B10K**, 5-pin **mono with switch**, **right-angle / side-adjust** (shaft parallel to the board, exiting the south edge — *not* vertical, as this row implied until 2026-07-27), body **27.3 × 9.5 × 11.3 mm**, metal shaft. **No knob** — turned by hand → enclosure needs only a shaft hole. Resolves Q3 + Q9 | 2026-07-18 |

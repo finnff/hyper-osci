@@ -1,18 +1,20 @@
 # HYPEROSCI Carrier PCB — v1.1 Specification
 
-> ## ⛔ 2026-07-28 — NOT ORDERABLE RIGHT NOW: the committed board is unrouted.
+> ## ✅ 2026-07-28 — routed and gate-clean on **seed 33**.
 >
-> The pre-fab DFM pass landed (silk stroke 0.12 → **0.15 mm**, SW1's plated slots
-> re-cut to JLC's 2× aspect, silk legends kept off the module bodies) and every
-> non-routing gate passes. But those fixes **moved copper**, which invalidates the
-> router seed, and the re-sweep did not finish. `carrier.kicad_pcb` is committed
-> straight out of `gen_board.py` with **58 unconnected items**. Do not plot
-> gerbers, and do not read §6.4's width table or §4.4's drop figures as as-built —
-> they are pre-pass numbers. The handoff, with the exact commands and the two
-> settings that made the first attempt fail, is in
-> [`layout-notes.md` → "Routing: not done yet"](../../hw/carrier/layout-notes.md).
+> The pre-fab DFM pass (silk stroke 0.12 → **0.15 mm**, SW1's plated slots re-cut
+> to JLC's 2× aspect, silk legends kept off the module bodies) moved copper, which
+> killed router seed 11. A 16-variant re-sweep found **exactly one clean result**
+> — `halo-off`, **seed 33** — now `route.py`'s default. The board is
+> **1343 segments, 48 GND vias, 0 unconnected, 0 DRC violations at every
+> severity**, ground pour whole with zero repair. §6.4's width table and §4.4's
+> drop figures have been **regenerated from the routed board** and are as-built.
+>
+> **One item still gates the gerber plot, and it is not routing:** SW1's
+> body/lever fit against the 1:1 paper doll. The SS12D00 was ordered 2026-07-27
+> and is not in hand. See `layout-notes.md` → VERIFY item 2.
 
-**Status:** layout v1.1 complete and gate-clean (2026-07-26) — see
+**Status:** layout v1.1 complete, routed and gate-clean (2026-07-28, seed 33) — see
 [`hw/carrier/layout-notes.md`](../../hw/carrier/layout-notes.md). This document is the spec
 of record for the fab order and the BOM. Pin map / constants mirror
 [`docs/DESIGN.md`](../DESIGN.md) §4 and
@@ -142,12 +144,14 @@ Every net on the board. Pin numbers match `config.h` exactly.
 | **LED_NET_A** | GPIO10 (`PIN_LED_NET`) | GPIO10 → R4 2.2 k → D4 green 3 mm anode; cathode → GND (active high) |
 | **LED_MODE_A** | GPIO20 (`PIN_LED_MODE`) | GPIO20 → R5 2.2 k → D5 amber 3 mm anode; cathode → GND (active high) |
 | **DBG_TX** | GPIO21 | → J7.1 (J7.2 = GND). Log-only header, no RX (GPIO20 is repurposed as LED) |
-| **DAC_L / SCOPE_X** | — | J3 `LROUT` → R10 100 Ω → X RCA signal pad |
-| **DAC_R / SCOPE_Y** | — | J3 `ROUT` → R11 100 Ω → Y RCA signal pad |
+| **DAC_L / SCOPE_X** | — | J3 `LROUT` → R10 **0 Ω link** → X RCA signal pad |
+| **DAC_R / SCOPE_Y** | — | J3 `ROUT` → R11 **0 Ω link** → Y RCA signal pad |
 | **J2 `SCK`** | — | **Tie to GND on the carrier.** This implements DESIGN §5's "SCK tied to GND" (DAC generates its clock via PLL from BCK) without a solder mod on each module. |
 
-R10/R11 (100 Ω series) protect the DAC from shorted/hot-plugged scope cables and isolate it
-from cable capacitance; into a 1 MΩ scope input the attenuation is 0.01 % — invisible.
+The R10/R11 footprints exist to protect the DAC from shorted/hot-plugged scope cables and to
+isolate it from cable capacitance — a job a 100 Ω series part would do, at an attenuation into
+a 1 MΩ scope input of 0.01 %, i.e. invisible. **They are fitted as 0 Ω links**, for the reason
+below.
 **Measured 2026-07-18:** the purple module already carries an output reconstruction filter
 (~470 Ω "471" series parts + caps) between the DAC and the `LROUT`/`ROUT` pins, and the
 output is **ground-centered** (no DC-blocking cap in the path). With ~470 Ω already in
@@ -332,9 +336,13 @@ Aug 11–16 window, where TP1 (VBUS_CHG) / TP2 (VSW) / TP3 (GATE) exist for exac
 every module lifts out of its socket. Until it passes unambiguously, ship on §4.5's plan A.
 
 1. State 1: measure the drop **across Q1 alone** (TP2 vs the cell +) at 150 mA — expect
-   < 20 mV. Do *not* measure cell→5V-pin and apply that number: the VLOAD copper adds a
-   measured 152 mΩ (§6.4), i.e. ~23 mV at 150 mA on top. If you see ~0.7 V across Q1, the
-   FET is not turning on — check the gate.
+   < 20 mV. Do *not* measure cell→5V-pin and apply that number: the copper from Q1's source to
+   the 5V pin adds a measured **≈50 mΩ** (30.7 mΩ VSW + 19.5 mΩ VLOAD, §6.4), i.e. **~7.5 mV
+   at 150 mA** on top. If you see ~0.7 V across Q1, the FET is not turning on — check the gate.
+   *(This adder read "152 mΩ / ~23 mV" until 2026-07-28. That figure was two re-routes stale
+   and would have had you hunting a 23 mV drop that is not there — which, on a 20 mV
+   acceptance threshold, is larger than the thing being measured. Re-run
+   `tools/measure_copper.py` and update this number after **every** re-route.)*
 2. State 2: scope the cell current while charging with load running — must show clean CC/CV,
    LED on TP4056 must reach "charged" (termination works only if load is truly disconnected).
 3. **State 4 — the one that matters, and the one the old procedure would have passed.**
@@ -740,32 +748,57 @@ These are the widths the router *asks* for. On a dense 2-layer board it cannot a
 them, so it steps down a ladder (1.0 → 0.8 → 0.6 → 0.4 → 0.3) at pinch points. The table
 therefore carries both the target and **what the board actually has** — measured, not assumed:
 
+*Regenerated from the board by `tools/measure_copper.py` on 2026-07-28, seed 33. **Re-run it
+after every re-route** — this table has gone stale three times, and twice it was stale in the
+flattering direction.*
+
 | Net class | Target | As built (min) | Note |
 |---|---|---|---|
 | BAT+ / BAT− / VBAT_OUT / VBUS_CHG | 1.0 mm | **1.0 mm** ✅ | never narrowed |
-| VSW | 1.0 mm | 0.6 mm | 60 mm at 1.0, 54 mm at 0.6 |
-| **VLOAD** | 1.0 mm | **0.3 mm** ⚠️ | 56 mm at 1.0, **91 mm at 0.3** — see below |
-| 3V3 | 0.6 mm | **0.6 mm** ✅ | never narrowed |
-| Signals (I2S, ADC, LEDs, buttons) | 0.3 mm | 0.3 mm ✅ | |
+| **VSW** | 1.0 mm | **0.3 mm** ⚠️ | 51.8 mm at 1.0, 74.4 at 0.8, 23.1 at 0.6, **60.0 at 0.3** — see below |
+| VLOAD | 1.0 mm | **1.0 mm** ✅ | 82.6 mm, never narrowed |
+| 3V3 | 0.6 mm | **0.6 mm** ✅ | never narrowed (88.7 mm) |
+| Signals (I2S, ADC, LEDs, buttons) | 0.3 mm | 0.3 mm ✅ | MIC_OUT 67.8 mm |
 | DAC_L/DAC_R, SCOPE_X/Y to RCA pads | 0.5 mm | 0.4 mm | short pad fan-outs only, over AGND |
 
-**The VLOAD narrowing is the one worth understanding**, because §6.4 asks for 1.0 mm on that
-net precisely for the 350 mA WiFi bursts. Measured end to end, **SW1 → SuperMini 5V pin is
-152 mΩ**, i.e. 53 mV at a 350 mA burst and 19 mV at the 125 mA NETWORK average. It is
-acceptable as built, for one specific reason: **C1 sits 6.8 mΩ from the 5V pin**, on the load
-side of the skinny run. The bulk cap — whose entire job is to source the burst locally — is
-therefore *not* behind the 152 mΩ; the thin copper carries only the average current while C1
-recharges between bursts. 19 mV is negligible against the 0.2–1 Ω battery loop already in the
-power budget.
+Pad-to-pad DC, by nodal solve over the real track graph (not a longest-path guess):
 
-Widening it is a **v1.2 decision, not an order blocker**, and it has been measured rather than
-guessed. `route.py` now takes a `ROUTE_WIDTH_FLOOR` env knob (default off); a 14-variant sweep
-found that flooring VSW and VLOAD at 0.6 mm on the current seed gives **41 mΩ instead of
-152 mΩ** on VLOAD and 8.5 mΩ instead of 24 mΩ on VSW, for +25 track segments and a stitch gap
-of 8.6 mm instead of 7.8 mm (gate: 12 mm). A hard 1.0 mm floor reaches 19.9 mΩ but widens the
-gap to 10.2 mm. Wider power copper crowds the ground pour — only 3 of 12 seeds stayed
-DRC-clean with a floor at all. The full table is in `layout-notes.md`; the as-built board keeps
-the tighter ground stitching.
+| Path | Measured |
+|---|---|
+| VLOAD SW1 → SuperMini 5V pin | **19.5 mΩ** |
+| VLOAD C1 + → SuperMini 5V pin | 3.3 mΩ |
+| VSW Q1 source → SW1 | **30.7 mΩ** |
+| BAT+ J8 → TP4056 B+ | 7.4 mΩ |
+| BAT− J8 → TP4056 B− | 10.0 mΩ |
+| VBAT_OUT TP4056 OUT+ → Q1 drain | 7.1 mΩ |
+| VBUS_CHG TP4056 IN+ → D2 anode | 26.2 mΩ |
+| 3V3 SuperMini → DAC VIN | 12.0 mΩ |
+
+**Which net is the compromised one has inverted, and that is worth reading carefully.** Every
+previous version of this table said VLOAD was the problem (91 mm at 0.3 mm, 152 mΩ) and VSW was
+fine. On seed 33 it is the other way round: **VLOAD is 1.0 mm over its whole 82.6 mm and
+measures 19.5 mΩ end to end**, while VSW carries 60 mm of 0.3 mm copper.
+
+VSW is nonetheless *not* the problem VLOAD used to be, and the reason is in the nodal number
+rather than the width breakdown. **Q1 source → SW1 measures 30.7 mΩ**, because VSW is a
+fan-out node — D2, JP1, Q1, Q2, R12, R7, SW1, TP2 — and most of the thin copper is on
+high-impedance *sense and bias* branches (R7's divider tap, Q2's base network, the TP2
+testpoint), not on the main current path. 15 vias give that path parallel routes. Do not read
+"60 mm at 0.3 mm" as 60 mm of load current through 0.3 mm copper; it isn't.
+
+End to end, Q1 source → SuperMini 5V pin is now **≈50 mΩ** (30.7 VSW + 19.5 VLOAD, plus SW1's
+own contact resistance, which is a mechanical part and not copper). That is **17 mV at a
+350 mA WiFi burst and 6 mV at the 125 mA NETWORK average** — against ~176 mΩ implied by the
+old table, and negligible beside the 0.2–1 Ω battery loop already in the power budget. **C1
+still sits 3.3 mΩ from the 5V pin**, on the load side, so the bulk cap sources the burst
+locally regardless of anything upstream — which was the real argument all along and survives
+the inversion unchanged.
+
+`route.py`'s `ROUTE_WIDTH_FLOOR` knob (default off) still exists, but the trade it was
+introduced to buy **no longer exists on this seed**: VLOAD reaches 1.0 mm throughout without
+any floor. Anyone reaching for it should re-measure first rather than trusting the seed-77-era
+sweep table that used to live here (it has been moved to `layout-notes.md` and marked as
+historical).
 
 ---
 
@@ -796,7 +829,7 @@ gerber plot** — the one that did (the TP4056 pad-row edge offset) closed 2026-
 - [x] Analog end is a **1×9** header (not 1×3), ⊥ to the 6-pin on the long edge. Silk
   (jack→digital): `LROUT AGND ROUT AGND A3V3 FMT XSMT DEMP FLT`. Taps: X=LROUT, Y=ROUT, gnd=AGND
 - [x] 3.5 mm jack overhang ~1.6 mm (hangs off edge — fine)
-- ⬜ **OPEN** Output filter present (~470 Ω "471") but ground-centered — confirm DC pass on the ramp test, and settle R10/R11 = 0 Ω vs 100 Ω. *Doable now on the USB rig with a scope; not order-blocking (footprint is identical either way).*
+- ⬜ **OPEN** Output filter present (~470 Ω "471") but ground-centered — confirm DC pass on the ramp test. *Doable now on the USB rig with a scope; not order-blocking.* **R10/R11 is no longer part of this box** — closed 2026-07-28 as 0 Ω links (§10 Q2). The ramp was never able to settle it: 100 Ω against the module's 470 Ω is 0.01 % of amplitude and ≲0.07° of phase at 10 kHz, identically on both channels.
 - ⬜ **OPEN** Confirm solder-bridge state per DESIGN §5 (1=L, 2=L, 3=H, 4=L) — H1L–H4L pads, verify by continuity. *Doable now with a DMM; if the rig already outputs audio, XSMT=H is de-facto proven.*
 
 **MAX4466 (off-board on a ~10 cm pigtail — carrier only needs the J4 3-pin header)**
@@ -928,13 +961,16 @@ not a netlist dump. Presentation lives in the generator; connectivity still come
 `design.py`, and the generator refuses to emit a wire whose endpoints disagree with it.
 
 Use **`/usr/bin/python3`** — `pcbnew` is only importable from KiCad's own interpreter, and a
-conda `python3` on `PATH` will fail to import it. Routing takes ~5–6 min *on a seed that
-works* and needs many seeded attempts to reach zero failures; attempts reporting failures is
-normal, do not abort early. On a seed that does **not** work it is several times slower — a
-failed A\* expands the whole grid before giving up — so budget ~20 min per 40-attempt ladder
-while hunting a seed, and give `tools/search.py` a `CARRIER_SEARCH_TIMEOUT` to match (its
-default 1800 s silently turns a slow sweep into a wall of `FAILED at timeout`).
-`gen_board.py` takes ~25 s, most of it re-counting each designator's remaining options after
+conda `python3` on `PATH` will fail to import it. **Measured 2026-07-28 on a 32-thread box,
+seed 33, nothing else running: `gen_board.py` 7 s, `route.py` 251 s (~4 min).** The ladder
+early-exits the moment an attempt reaches zero failures — seed 33 gets there on attempt 28 of
+40 — so a *working* seed is the cheap case and attempts reporting failures on the way are
+normal; do not abort early. On a seed that does **not** work it is several times slower, a
+failed A\* expanding the whole grid before giving up: the 2026-07-28 sweep's failing variants
+took 430–1277 s each *while sharing the box 16 ways*. Give `tools/search.py` a
+`CARRIER_SEARCH_TIMEOUT` to match (its default 1800 s silently turns a slow sweep into a wall
+of `FAILED at timeout` — which is exactly what happened on the first attempt, on a laptop).
+`gen_board.py` takes ~7 s, most of it re-counting each designator's remaining options after
 every placement — the board is dense enough that the *order* decides whether the silk fits at
 all (see layout-notes → Silkscreen), and ranking it statically is what used to lose SW1's and
 TP4/TP5's designators.
@@ -944,13 +980,20 @@ behind §6.4's table. Re-run it after any re-route rather than trusting the tabl
 §6.4 have gone stale twice, most recently when VLOAD went from 0.3 mm over 91 mm to 1.0 mm
 throughout and nothing said so.
 
-> **`ROUTE_SEED` is board-specific and goes stale.** The default is **11** (2026-07-27);
-> it was 77 until RV1's corrected footprint moved five pads and slid the part 2.5 mm north.
-> That alone was enough: with seed 77 the router's phase D ended `STUCK — 3 clusters left`
-> and DRC reported two unconnected `GND_main` islands. **A stale seed does not fail loudly —
-> it fails as a severed ground pour.** Whenever copper moves, re-sweep with
-> `/usr/bin/python3 tools/search.py --stage router` and adopt the winner, rather than
-> assuming the old seed still holds.
+> **`ROUTE_SEED` is board-specific and goes stale.** The default is **33** (2026-07-28); it
+> was 11, and 77 before that. Each change was forced by copper moving a fraction of a
+> millimetre: 77 died when RV1's corrected footprint moved five pads (phase D ended `STUCK —
+> 3 clusters left`, two unconnected `GND_main` islands), and 11 died when the pre-fab DFM pass
+> moved SW1's slot pads to ±2.45, SW1 itself 0.4 mm south and C3 0.79 mm north — it came back
+> 1 unconnected / 1 unrouted on `BAT_PLUS`. **A stale seed does not fail loudly — it fails as
+> a severed ground pour.** The 2026-07-28 sweep is the sharpest illustration so far: of 16
+> variants (4 seeds × 4 halo settings) **exactly one was clean.** Whenever copper moves,
+> re-sweep with `/usr/bin/python3 tools/search.py --stage router` and adopt the winner, rather
+> than assuming the old seed still holds.
+>
+> Note the halo knobs need not be set: `ROUTE_GND_HALO_COST` defaults to 0, and `route.py`
+> gates the whole halo behind `if HALO_COST > 0`, so the repo default is already behaviourally
+> identical to the sweep's `halo-off`. Seed 33 reproduces from `ROUTE_SEED=33` alone.
 
 The three gates, all of which must be clean before plotting gerbers:
 

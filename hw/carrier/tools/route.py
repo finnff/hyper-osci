@@ -48,7 +48,16 @@ board = pcbnew.LoadBoard(PCB)
 #              (6 seeds x 4 halo settings) found 11 clean at the default halo —
 #              1227 segments, worst stitch gap 7.81 mm, zero repair.
 #              A stale seed does not fail loudly, it fails as a severed pour.
-SEED = int(os.environ.get("ROUTE_SEED", "11"))
+#   seed 33  — chosen 2026-07-28, after the pre-fab DFM pass moved copper in
+#              three places (SW1's slot pads out to +/-2.45, SW1 0.4 mm south,
+#              C3 0.79 mm north).  That broke 11, which is worth stating
+#              plainly because 11 had held through two previous re-routes: it
+#              came back 1 unconnected / 1 unrouted (BAT_PLUS at R1 pad 1).
+#              A 16-variant sweep (4 seeds x 4 halo settings) left exactly ONE
+#              clean result — this one: 1343 segments, 48 GND vias, worst
+#              stitch gap 7.81 mm, phase D single cluster at round 0, zero
+#              repair.  Every other variant lost a net or severed the pour.
+SEED = int(os.environ.get("ROUTE_SEED", "33"))
 # The GND halo makes it expensive to route through the ring around a GND
 # through-hole, on the theory that a signal hugging one walls the pad off into
 # its own fill fragment.  Swept: it costs routability (1-2 nets left unrouted)
