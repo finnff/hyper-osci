@@ -136,12 +136,134 @@ slot paying for itself.
 The 6 mm handle never entered the fit — nothing sits above the switch, so handle length is
 an enclosure question.
 
-## Still open before you pay
+## ✅ ORDERED — JLCPCB, 2026-07-28
 
-Not a board question: load this zip in the fab's own online viewer **and** a second one
-(`gerbv` or tracespace) — check outline, drills present, silk not mirrored. That is the one
-item on §8.4 that cannot be asserted from here.
+Three days inside the Aug 1 gate. **Qty 10**, DHL Express **(DDP)**, Confirm Production File
+**on**. Landed **$45.42**.
 
-One check survives to assembly, not to ordering: whether the switch carries a locating lug.
-The drawing has no bottom view and dimensions no post, so paper cannot settle it;
-`SW_Slide_SPDT_DualPitch` has the three signal holes only, so clip any lug.
+### As ordered, and where it deviates from §8.3
+
+| | §8.3 says | Ordered | Why |
+|---|---|---|---|
+| Qty | 5 | **10** | €4.39 either way; 5 more spare bare boards for nothing |
+| Surface finish | HASL lead-free | **HASL with lead** | every joint on this board is hand-soldered, leaded wets better at a lower iron temperature, and nothing here is sold or RoHS-bound. §8.3 stated lead-free with no rationale anywhere in the doc |
+| Mask | green | **black** | aesthetic — the `48` on white silk. Costs nothing; the price is that black hides traces if `B−`/GND ever needs probing |
+| Order number | "specify location" | **Remove Mark** | JLC's current UI offers only Remove Mark or a 2D barcode. "Specify location" is no longer orderable, and removing beats letting CAM place it |
+
+Everything else matched: 2 layers, 70 × 50, FR-4 TG135, 1.6 mm, 1 oz, white silk, single PCB,
+flying-probe fully tested, tented vias, ±0.2 mm outline, no castellations / impedance control /
+stencil, no assembly.
+
+**Every capability option was left at its cheapest tier, and that is correct** — the board is
+nowhere near a limit: min trace 0.30 mm and clearance 0.25 mm against JLC's 0.127 mm floor,
+smallest drill 0.40 mm (the vias) against 0.30 mm, 0.20 mm annular ring against 0.13, copper
+to edge 0.50 mm against 0.20. Do not pay for High Precision PCB on this design.
+
+**Via Covering: Tented** matches the board file (`tenting front yes / back yes`), which is why
+the mask gerbers carry 124/116 apertures against 126/116 pads. Epoxy fill was considered and
+rejected: it would stop the via-in-pad wicking below, but that is already accepted and the fee
+is not.
+
+### PCB Remark submitted (JLC caps this field at 200 characters)
+
+```
+SW1 pads 1&3 are 1.80x0.90mm plated slots. Route as slots if possible. If not, substitute plated 0.90mm round holes at slot centres X47.53/X52.43 Y-46.40 - acceptable, do not hold the order.
+```
+
+The fallback is deliberate and safe, and the arithmetic is worth keeping. The real SS12D00 is
+2.5 mm pitch against a footprint drawn at 2.45, so each outer pin sits **0.05 mm outboard** of
+its slot centre. With the pin's 0.5 × 0.3 mm section, the worst corner is **0.335 mm** from the
+slot centre, so the minimum round hole that still fits is ⌀0.671. **⌀0.90 clears it by
+0.115 mm radially**, leaves a 0.50/0.80 mm annular ring in the 2.5 × 1.9 pad, and is the
+*same T4 tool already drilling SW1's centre hole* — so the substitution costs CAM nothing.
+It even improves hole-to-hole spacing, 1.10 mm → 1.55 mm.
+
+The position was pinned to the **slot centre (2.45 pitch)**, not the part's true 2.50: asking
+CAM to shift a hole 0.05 mm invites a misread, and the margin above already absorbs it.
+
+⚠️ **If they do substitute, SW1 assembly changes** — the pins land in fixed holes instead of a
+0.90 mm sliding window. Seat the switch before soldering, not after.
+
+### Shipping — why DDP, and why it cost what it did
+
+The **EU customs reform took effect 2026-07-01**, four weeks before this order. Every EU-bound
+shipment is now formally declared regardless of value, and B2C orders under €150 carry a flat
+**€3.00 temporary customs duty per line item**. The decisive detail is JLC's own: their IOSS
+collects import VAT but *"cannot manage the 'temporary customs duty'"* on **non-DDP** channels
+— so any non-DDP option means a doorstep invoice **plus the carrier's disbursement fee**, which
+is per-shipment and unrelated to value. On a $6 board that fee alone can exceed the goods.
+
+DHL Express (DDP) carried **no premium** over plain DHL Express, and was the fastest tier.
+
+| | Cost | Arrives | Slack to Aug 14 | Customs |
+|---|---|---|---|---|
+| **DHL Express (DDP)** ← taken | €18.23 | Aug 5–7 | +7 d | **prepaid** |
+| DHL Express | €18.23 | Aug 5–7 | +7 d | €3 + fee at door |
+| UPS Express Saver | €21.24 | Aug 6–10 | +4 d | €3 + fee at door |
+| FedEx Express | €21.57 | Aug 10–12 | +2 d | €3 + fee at door |
+| EuroPacket | €6.59 | Aug 7–13 | +1 d | €3 + fee at door |
+| Global Standard Direct | €1.32 | Aug 19–25 | **−11 d** | misses entirely |
+
+EuroPacket was the only genuine saving (~$20) and was declined: one day of worst-case margin,
+on a non-DDP postal channel, under a regime four weeks old. **§8.1's old advice to take FedEx
+was wrong** — FedEx was the most expensive express option *and* the slowest of the three.
+
+### Landed cost — the numbers reconcile, and the lesson is the ratio
+
+```
+goods (10 boards + confirm-production-file fee)   $  6.04
+freight                                           $ 28.02
+temporary customs duty                            $  3.47
+                                                  --------
+VAT base                                          $ 37.53  x 21% NL = $7.88  (billed $7.89) ✓
+                                                  --------
+grand total                                       $ 45.42                                   ✓
+```
+
+JLC's checkout displays this as "Shipping Estimate $31.49, Includes: … $7.89", which reads like
+a double charge. It is not — the VAT reconciles to the cent only if the estimate is freight +
+duty and VAT sits on top. **87 % of the order is shipment overhead.** Marginal boards are
+nearly free (10 boards is 0.24 kg against a ~0.5 kg minimum billable), so if a future run wants
+spares, buy them on the *same* shipment.
+
+⚠️ **Unresolved, and worth watching on the next order:** the shipping table quoted DHL DDP at
+**€18.23**, checkout billed **$28.02** freight. No plausible EUR/USD rate explains a $7.24 gap
+(it implies 1.54). Either a DDP surcharge folded into the line, or a table discount that did
+not carry into checkout.
+
+## Still open
+
+1. **Confirm the production file** — paid for (€0.91), so **production is paused until it is
+   approved**, by email to the registered address. JLC's article states no auto-proceed and no
+   expiry: the schedule below assumes a same-day response. The package has three folders —
+   `yg` (what we uploaded), `ok` (what they will actually build), `info` — so it is directly
+   diffable. Check `ok` for, in order of likelihood:
+   1. **the drill** — do X47.53 and X52.43 (Y−46.40) still carry `M15`/`M16` routed slots, or
+      did they become plain hits? Both acceptable; you need to know which, per the ⚠️ above.
+   2. **no order number anywhere** — we asked for Remove Mark.
+   3. **B.Silkscreen** — `48` and `ponkiePCBv1` present and unclipped. CAM sometimes trims silk
+      near mask openings; nearest is 0.48 mm so it should survive, and this is the one layer
+      with no automated gate.
+   4. **Edge.Cuts** — still one closed 70 × 50 rect.
+
+   `tools/plot_fab.py`'s gates can be re-asserted against JLC's `ok` gerbers instead of ours,
+   which turns this from eyeballing a render into an actual check.
+
+2. **Second viewer load** (`gerbv` or tracespace). Partly discharged already: JLC's own
+   uploader detected the outline as 50 × 70 mm, showed drills present, and rendered `48` /
+   `ponkiePCBv1` reading correctly on the back — so **not mirrored**. What a second viewer
+   still adds is copper/mask alignment.
+
+3. **On arrival, assembly not ordering:** whether the switch carries a locating lug. The
+   drawing has no bottom view and dimensions no post, so paper cannot settle it;
+   `SW_Slide_SPDT_DualPitch` has the three signal holes only, so clip any lug.
+
+### Expected schedule
+
+| | |
+|---|---|
+| Ordered | Tue Jul 28 |
+| Production file confirmed | ~Wed Jul 29 ← **gated on you** |
+| Build complete (3 days) | ~Mon Aug 3 |
+| **Arrives (DHL 2–4 business days)** | **Aug 5–7** |
+| Deadline | Fri Aug 14 — **7 days slack** |

@@ -17,6 +17,17 @@
 > change: 2.5 mm pitch inside the slot's 2.00–2.90 window, 8.5 × 3.7 body on the
 > pin centreline inside the 9.0 × 4.0 silk. See §7 and `layout-notes.md` →
 > VERIFY item 2.
+>
+> ## 🚀 2026-07-28 — **ORDERED at JLCPCB**, three days inside the Aug 1 gate.
+>
+> Qty **10**, DHL Express **(DDP)**, Confirm Production File **on**, landed
+> **$45.42**. Arrival **Aug 5–7** against the Aug 14 deadline — 7 days slack.
+> Full order record, the four §8.3 deviations, the SW1 slot remark and the
+> customs arithmetic: **[`hw/carrier/fab/README.md`](../../hw/carrier/fab/README.md)**.
+>
+> ⏳ **One thing is now gated on a human, and production is stopped until it
+> happens:** the production file must be confirmed by email before JLC starts
+> building. There is no auto-proceed and no expiry.
 
 **Status:** layout v1.1 complete, routed and gate-clean (2026-07-28, seed 33) — see
 [`hw/carrier/layout-notes.md`](../../hw/carrier/layout-notes.md). This document is the spec
@@ -38,7 +49,9 @@ DNP (do-not-populate) footprint so the decision moves to assembly time, not layo
 
 ## 1. Concept
 
-- **Board:** ~70 × 50 mm, 2-layer FR-4, 1.6 mm, 1 oz copper, HASL (lead-free), green.
+- **Board:** ~70 × 50 mm, 2-layer FR-4, 1.6 mm, 1 oz copper. ⚠️ **As actually ordered
+  2026-07-28 the finish is HASL *with lead* and the mask is *black***, not the lead-free/green
+  this line specified — both deliberate, see §8.3.
 - **Assembly:** hand-soldered by Finn. All through-hole **except** Q1 (SOT-23) and D2 (SMA) in
   the power path — both are trivially hand-solderable on enlarged hand-solder pads. THT
   alternates for both are specified in the BOM (§5) with shared/dual footprints.
@@ -887,6 +900,17 @@ path and $2-class base price edge it out, and there is no assembly service neede
 hand-soldered) so JLCPCB's SMT ecosystem isn't a factor either way. Total expected:
 **≈ €20–28 landed** for 5 boards. ⚠️ VERIFY final price at checkout.
 
+> ✅ **Placed 2026-07-28 — JLCPCB, qty 10, DHL Express (DDP). Landed $45.42.**
+> The vendor call held; the **cost estimate did not, and the reason is new**. This table
+> predates the EU customs reform that took effect **2026-07-01**: there is no longer a
+> de-minimis, every shipment is formally declared, and B2C orders under €150 carry a flat
+> **€3.00 temporary customs duty per line item**. The row above claiming "IOSS/DDP handled at
+> checkout for EU" is now only half true — JLC's IOSS collects VAT but **cannot** prepay that
+> duty on non-DDP channels, so **DDP is no longer optional** unless you want a doorstep invoice
+> plus the carrier's disbursement fee. Actual split: goods $6.04 · freight $28.02 · duty $3.47 ·
+> 21 % NL VAT $7.89. **87 % of the order is shipment overhead**, so buy spares on the same
+> shipment rather than a second one. Detail: [`hw/carrier/fab/README.md`](../../hw/carrier/fab/README.md).
+
 ### 8.2 Timeline (deadline math)
 
 | Date | Milestone |
@@ -895,10 +919,11 @@ hand-soldered) so JLCPCB's SMT ecosystem isn't a factor either way. Total expect
 | **Jul 27–28** | **RV1 row 2 is closed** — it was wrong, and the corrected geometry is in the board (§5 box); a paper-doll pass now only confirms a drawing. ✅ **Parts order placed 2026-07-27** (§5 box: plan-A subset, so R7/R8/R9/D1/D2/U1 were *not* bought; RV1 = the **5-pin *with switch*** variant). ✅ **TP4056 pad-row edge offset measured and CLOSED the same day** (§7) — Δ 0.07 mm on a 0.25 mm gate, layout unchanged. ✅ **2026-07-28: the TP4056 gained a second mount row** (§5 box) — J9 moved onto the module's `+` corner pad and J10 was added on the `IN−` corner, because four pins in one column left the USB-C jack on a 21.65 mm cantilever. **This one moved copper**: re-generated, re-routed and re-gated. **No open gates remain: plot gerbers.** |
 | ~~Jul 28–30~~ | ✅ Layout complete Jul 26 — v1.1, 0 DRC violations at every severity. The order can go out ~5 days early. |
 | **Jul 28** | ✅ **SW1 closed** from the SS12D00 drawing — 2.5 mm pitch, 0.05 mm off the slot window's centre; body 8.5 × 3.7 on the pin centreline, inside the silk with 0.25/0.15 mm a side. No part in hand, no paper doll, no layout change (§7). ✅ **Gerbers plotted, verified and committed** to `hw/carrier/fab/` — `tools/plot_fab.py` asserts §8.4 and will not write the zip if the board stops passing. **Nothing now gates the order except the two viewer loads below.** |
-| **Jul 31 – Aug 1** | **Upload gerbers, pay, DHL express** ← hard order-by date |
-| Aug 2–4 | Fab (24–48 h + weekend slack) |
-| Aug 5–11 | DHL to NL (3–7 days) |
-| Aug 11–13 | Solder 4 boards (an evening for all 4 — it's all THT + 2 easy SMD) |
+| ~~Jul 31 – Aug 1~~ | ✅ **ORDERED 2026-07-28**, three days early — JLCPCB, qty 10, DHL Express (DDP), $45.42 landed. Ordering early was not just tidiness: Aug 1 is a **Saturday**, and with the Confirm-Production-File pause it would have pushed arrival to Aug 13–17, straddling the deadline. |
+| **~Jul 29** | ⏳ **Confirm the production file** — paid for, and **production is stopped until it happens**. No auto-proceed, no expiry. Check the `ok` folder for the SW1 slots, no order number, intact back silk, closed outline (fab/README §Still open). |
+| Aug 3 | Fab complete (3-day build, starts only after confirmation) |
+| **Aug 5–7** | DHL Express (DDP) to NL, 2–4 business days — **7 days of slack** to the Aug 14 deadline |
+| Aug 7–13 | Solder 4 boards (an evening for all 4 — it's all THT + 2 easy SMD) |
 | **Aug 21** | Assembled, firmware bring-up on real carriers (show date; ~1 week slack after the ~Aug 1 order gate) |
 
 If boards arrive after ~Aug 16, the PLAN W4 battery test and rehearsal run on the breadboard/protoboard units (PLAN Risk 3 posture) and carrier assembly slips past Aug 21 — the PCB never gates the rehearsal.
@@ -908,11 +933,30 @@ of the 2026-07-26 review, **JP1 is the plan of record, not the fallback** (§4.5
 leave Q1/U1/Q2/D1 **and D2** unfitted, keep the "switch OFF before any USB" rule, and populate
 the TL431 block later only if the amended §4.4 passes on an assembled board.
 
-### 8.3 Order parameters
+### 8.3 Order parameters — ✅ ORDERED 2026-07-28
 
-2 layers · 70 × 50 mm · qty 5 · FR-4 TG135+ · 1.6 mm · 1 oz outer copper · HASL lead-free ·
-green mask, white silk · no castellations, no impedance control, no stencil ·
+Specified: 2 layers · 70 × 50 mm · qty 5 · FR-4 TG135+ · 1.6 mm · 1 oz outer copper ·
+HASL lead-free · green mask, white silk · no castellations, no impedance control, no stencil ·
 "Order number: specify location" (put the JLCPCB job number under the TP4056 module).
+
+**Ordered with four deviations, all deliberate:**
+
+| | Specified | Ordered | Why |
+|---|---|---|---|
+| Qty | 5 | **10** | €4.39 either way — five more spare bare boards for nothing |
+| Finish | HASL lead-free | **HASL with lead** | every joint is hand-soldered; leaded wets better at a lower iron temperature and nothing here is sold or RoHS-bound. The lead-free call was stated without rationale anywhere in this doc |
+| Mask | green | **black** | aesthetic (the `48` on white silk). Free; the price is that black hides traces if `B−`/GND ever needs probing — and §3.1 makes that a node worth probing |
+| Order number | "specify location" | **Remove Mark** | JLC's current UI offers only Remove Mark or a 2D barcode — "specify location" is no longer orderable |
+
+Also ordered, neither of which this section anticipated: **Confirm Production File** (€0.91 —
+cheap not as defect insurance but because it tells you *which* SW1 outcome you got before the
+board lands, which changes assembly) and a **PCB Remark** carrying the slot-substitution
+fallback. Both are recorded in full, with the fit arithmetic, in
+[`hw/carrier/fab/README.md`](../../hw/carrier/fab/README.md).
+
+Every JLC capability option was left at its cheapest tier and that is correct — min trace
+0.30 mm and clearance 0.25 mm against a 0.127 mm floor, smallest drill 0.40 mm against 0.30,
+copper-to-edge 0.50 mm against 0.20. **Do not pay for High Precision PCB on this design.**
 
 ### 8.4 Gerber checklist (what goes in the zip)
 
@@ -935,9 +979,14 @@ only if all of it holds**. Run it rather than the GUI; the settings below are no
       loads identically at JLCPCB and PCBWay (the X2 attributes still go out as `G04`
       comments, which is what fabs parse anyway). Protel extensions and precision 6 are the
       `kicad-cli` defaults and are correct.
-- [ ] Sanity-load the zip in JLCPCB's online gerber viewer **and** a second viewer
-      (e.g. `gerbv` or tracespace) — check outline, drills present, silk not mirrored.
-      ← **the only item here a human still has to do**
+- [x] ~~Sanity-load the zip in JLCPCB's online gerber viewer~~ — **done at upload,
+      2026-07-28.** JLC detected the outline as 50 × 70 mm, showed drills present, and
+      rendered `48` / `ponkiePCBv1` reading correctly on the back, so **not mirrored**.
+- [ ] Second viewer (`gerbv` or tracespace). What it still adds over the above is
+      copper/mask alignment. **Superseded in practice by the Confirm-Production-File
+      package**, which ships JLC's own `ok` gerbers — i.e. what will actually be built,
+      not what we uploaded. Diff that instead; `plot_fab.py`'s gates can be re-asserted
+      against it.
 - [x] No paste layers (no stencil; Q1's SOT-23 is on hand-solder pads). Nothing
       soldermask-defined — all THT pads mask-opened normally, verified as 124/116 mask
       regions against 126/116 pads, and F.Cu/B.Cu flash counts reconcile exactly

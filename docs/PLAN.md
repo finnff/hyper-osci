@@ -56,24 +56,38 @@ Goal: **Gerbers uploaded and paid by Aug 1**, and two slaves drawing the same pi
 > Detail: [`hw/carrier/layout-notes.md`](../hw/carrier/layout-notes.md).
 >
 > **No gates remain. The gerbers are plotted and verified** —
-> [`hw/carrier/fab/`](../hw/carrier/fab/), regenerate with `tools/plot_fab.py`. What is left
-> before paying is not a board question: load the zip in the fab's own viewer and a second
-> one. One on-arrival check survives and it is an assembly note, not an order gate — whether
+> [`hw/carrier/fab/`](../hw/carrier/fab/), regenerate with `tools/plot_fab.py`.
+>
+> ## 🚀 **ORDERED 2026-07-28 — the W2 exit gate is met, three days early.**
+>
+> JLCPCB, **qty 10**, DHL Express **(DDP)**, Confirm Production File on, **$45.42 landed**.
+> Arrival **Aug 5–7**; the Aug 14 deadline now has **7 days of slack**. Ordering early was
+> not tidiness — Aug 1 is a Saturday, and the confirmation pause on top of a lost weekend
+> would have pushed arrival to Aug 13–17. Full record, deviations, customs arithmetic:
+> [`hw/carrier/fab/README.md`](../hw/carrier/fab/README.md).
+>
+> ⏳ **Production is stopped until the production file is confirmed by email** (~Jul 29).
+> There is no auto-proceed and no expiry, so this is genuinely on the critical path.
+> **Every day of delay here is a day off the 7-day slack.**
+>
+> One on-arrival check survives and it is an assembly note, not an order gate — whether
 > the part carries a locating lug (the datasheet has no bottom view; the footprint has the
-> three signal holes only, so clip any lug).
+> three signal holes only, so clip any lug). A second now joins it: **if JLC substituted
+> round holes for SW1's slots, seat the switch before soldering** — it loses its 0.90 mm
+> sliding window.
 
 Deliverables:
 
 - [ ] KiCad schematic: carrier per DESIGN §3/§9 — socketed modules, power path (P-FET + Schottky load sharing per [hardware/pcb.md](hardware/pcb.md)), battery divider, switch, button, pot, LEDs, GPIO2 pull-up, ≥220 µF bulk, 2× RCA output pad-pairs (signal + ground, fed through series R10/R11 — **fitted as 0 Ω links**, since the DAC module already carries ~470 Ω of its own; pcb.md §10 Q2 — no board-mounted BNC/TRS).
 - [ ] Layout 70 × 50 mm, 2-layer, THT except Q1 (SOT-23) and D2 (SMA); footprints from photogrammetry (`hw/pin_locs` via `measured.py`), not W1 calipers. Defensive layout: 0R links / bodge points on anything unproven, module sockets mean a footprint error only costs an adapter.
 - [ ] Design review pass against `config.h` pin map (it is law) + DRC clean.
-- [ ] **ORDER: 2-layer × 5 boards at JLCPCB (default; PCBWay = fallback), DHL express, by Aug 1.** Build 4 units + 1 spare bare board (5 is the fab min qty anyway). Cost is trivial (~€2–10 board run + ~€15–20 express shipping ⚠️ VERIFY: exact quote at checkout).
+- [x] **ORDER: 2-layer boards at JLCPCB, DHL express, by Aug 1** — ✅ **placed 2026-07-28**, **qty 10** (not 5; same price, so five spare bare boards for nothing). The cost estimate here was low and the reason is structural, not inflation: the **EU customs reform of 2026-07-01** ended the de-minimis, so the €3.00/line-item duty and 21 % NL VAT are unavoidable and **DDP shipping is no longer optional**. Actual: goods $6.04 · freight $28.02 · duty $3.47 · VAT $7.89 = **$45.42**, of which **87 % is shipment overhead**. See [hardware/pcb.md](hardware/pcb.md) §8.1.
 - [ ] **Python test-streamer** running on the UNO-Q — no laptop (this is the seed of the UNO-Q app, see [../src/unoq-controller/README.md](../src/unoq-controller/README.md)): implements [protocol.md](protocol.md) — 988 B `HYPE_AUDIO` packets every 5 ms unicast to each slave on port 5000, `HYPE_SYNC` beacon every 500 ms on 5001, listens for 1 Hz status on 5002 and prints a live stats table (RSSI, buffer depth, drops, underruns, clock offset).
 - [ ] Wire mic/pot/etc. onto a second breadboard slave (modules are socketed later; breadboard is fine now).
 - [ ] **2-slave sync test:** stream the same pattern to both, verify ±5 ms — probe both DACs' Y outputs on a 2-channel scope, or toggle a GPIO at each 240-frame block boundary and measure skew.
 - [ ] Jitter-buffer behaviour: kill the stream mid-play → LOCAL fallback within 1 s (`STREAM_TIMEOUT_MS`); restore → resync.
 
-**Exit gate:** order confirmation email from the fab, dated ≤ Aug 1.
+**Exit gate:** order confirmation email from the fab, dated ≤ Aug 1. ✅ **MET 2026-07-28.**
 
 ## Week 3 — Aug 1–8: 4-slave sync + UNO-Q port (while PCBs ship)
 
@@ -88,7 +102,7 @@ Deliverables:
 - [ ] 4 slaves on the UNO-Q AP, sustained stats run; log RSSI / loss / underruns per slave and compare against the W2 2-slave numbers.
 - [ ] Overnight soak: 4 slaves + UNO-Q streaming 8+ h, zero crashes, log stats.
 - [ ] Firmware hardening: battery thresholds (`VBAT_*` in config.h), `HYPE_CMD` handling (set_mode / identify / set_gain / reboot), slave-id console override.
-- [ ] Track PCB shipping daily. **If no tracking movement by Aug 6 → activate Risk 3 plan B now, not on ~Aug 16.**
+- [ ] Track PCB shipping daily. **If no tracking movement by Aug 6 → activate Risk 3 plan B now, not on ~Aug 16.** Ordered 2026-07-28 with DDP, so customs is prepaid and a customs *hold* is the one delay mode already bought out; expected arrival **Aug 5–7**. ⏳ **Before any of that: the production file must be confirmed by email (~Jul 29) or the build never starts** — check that first, it is the only thing between the order and the fab floor.
 
 ## Week 4–5 — Aug 8–21: assemble, integrate, soak, rehearse
 

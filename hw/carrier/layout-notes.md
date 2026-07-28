@@ -13,6 +13,18 @@
 > 2026-07-28 off the SS12D00 datasheet — no part in hand, no paper doll, no
 > layout change (VERIFY item 2 below). The fab package is plotted and committed
 > to `fab/`; regenerate it with `tools/plot_fab.py`.
+>
+> ## 🚀 **ORDERED 2026-07-28** — JLCPCB, qty 10, DHL Express (DDP), $45.42.
+>
+> Arriving **Aug 5–7**. This layout is now frozen in copper: **any edit to
+> `design.py` from here produces a board that is not the one being fabbed.**
+> Order record and the four spec deviations: [`fab/README.md`](fab/README.md).
+>
+> ⚠️ **One assembly note came out of the order.** SW1's pads 1 and 3 are plated
+> slots, and the PCB remark permits JLC to substitute ⌀0.90 round holes if their
+> process cannot route them (it fits — the 2.5 mm-pitch pin clears a 0.90 hole at
+> the 2.45 slot centre by 0.115 mm radially). If they did substitute, the switch
+> loses its 0.90 mm sliding window: **seat SW1 before soldering, not after.**
 
 What this board hits, measured 2026-07-28 on seed 33:
 `kicad-cli pcb drc --severity-all` reports **0 violations of any severity** and
