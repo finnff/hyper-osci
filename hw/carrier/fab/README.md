@@ -1,7 +1,27 @@
 # Fab package — HYPEROSCI carrier v1.1
 
-Generated 2026-07-28 from `carrier.kicad_pcb` at commit `ddcbc13` (router seed 33),
+Generated 2026-07-28 from `carrier.kicad_pcb` at commit `c1c3b11` (router seed 33),
 working tree clean. **Upload `hyperosci-carrier-v1.1-gerbers.zip`.**
+
+> **Re-plotted 2026-07-28 for the back-silk artwork.** The first set was plotted at
+> `ddcbc13`, one commit before the `48` mark and `ponkiePCBv1` wordmark were added to
+> B.Silkscreen, so its `carrier-B_Silkscreen.gbo` had **zero region fills** — the artwork
+> was simply not in it. Nothing warned about this: the board was correct, every gate
+> passed, and `plot_fab.py`'s own checks are copper/drill geometry, which did not change.
+> **Any edit to a plotted layer silently invalidates this directory; re-run `plot_fab.py`.**
+>
+> Two things that make a diff of this directory confusing, both benign:
+>
+> - **The copper is unchanged and that was verified, not assumed.** Aperture draws are
+>   identical (F.Cu 1952 = 1952, B.Cu 1168 = 1168), and the zone fills in the board file
+>   are identical between the two commits to 1e-6 mm² (F.Cu 1720.834491, B.Cu 1943.652053)
+>   with the same outline counts.
+> - **Gerbers are not byte-reproducible across KiCad builds.** The first set came off
+>   `10.0.5-1.fc44`, this one off `10.0.5-10.0.5~ubuntu24.04.1`. The two emit pour region
+>   vertices with ~3 nm differences (e.g. `18804538` vs `18804535`) and one outline drops
+>   3 collinear points, 382 → 379. That is rounding, not geometry. Do not read a large
+>   `git diff` on `carrier-F_Cu.gtl` as copper having moved — compare aperture draws and
+>   fill areas, not bytes.
 
 Regenerate with `/usr/bin/python3 tools/plot_fab.py` from `hw/carrier/` — do not hand-edit
 the gerbers. That script re-runs DRC, plots, asserts every mechanical item on the
