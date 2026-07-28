@@ -947,7 +947,24 @@ kicad-cli sch export pdf -o carrier-schematic.pdf carrier.kicad_sch
 kicad-cli pcb render --side top    -w 1544 -h 1152 --quality high -o render-top.png    carrier.kicad_pcb
 kicad-cli pcb render --side bottom -w 1544 -h 1152 --quality high -o render-bottom.png carrier.kicad_pcb
 kicad-cli pcb export pdf --layers F.Cu,F.Silkscreen,F.Fab,Edge.Cuts -o paper-doll-1to1.pdf carrier.kicad_pcb
+# back-silk artwork — only when the source image changes (needs potrace):
+/usr/bin/python3 tools/gen_artwork.py art/484848-mono.png art/484848.json
 ```
+
+**The gerber plot, which nothing here used to spell out:**
+
+```bash
+kicad-cli pcb export gerbers --no-protel-ext -o gerbers/ \
+  -l F.Cu,B.Cu,F.Silkscreen,B.Silkscreen,F.Mask,B.Mask,Edge.Cuts carrier.kicad_pcb
+kicad-cli pcb export drill --format excellon --excellon-separate-th -o gerbers/ carrier.kicad_pcb
+```
+
+> ⚠️ **`B.Silkscreen` has to be in that list explicitly.** It is easy to plot the
+> front-only set — the paper-doll export above is deliberately front-only — and
+> the back silk then just does not exist in the order. That silently drops the
+> board's version string *and* the back artwork, and neither DRC nor any gate in
+> this repo will complain, because the board file is fine; only the plot is
+> wrong. Check the gerber set has a `B_Silkscreen`/`.GBS` member before upload.
 
 > **The renders show 3D bodies only for parts that have a model.** The seven custom
 > `HYPEROSCI.pretty` footprints (RV1, SW1, D2, J5, J6, J9, JP1 and the testpoints) carry

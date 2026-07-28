@@ -706,6 +706,47 @@ checks with parts already in hand.
   §6.4 table can be regenerated from the board instead of from memory
 - `tools/search.py` — parallel layout/router parameter sweep
 - `tools/check_netlist.py` — respin gate; run after any `design.py` change
+- `tools/gen_artwork.py` — traces a 1-bit image into `art/*.json` silk polygons
+- `art/484848-mono.png`, `art/484848.json` — the back-silk mark (source + traced)
+
+## Back silkscreen artwork (2026-07-28)
+
+The back carried **2 silk items against the front's 374**, and the fab prints
+that layer whether or not anything is on it, so the space was already paid for.
+It now holds the `48` mark and a `ponkiePCBv1` wordmark.
+
+Placement was searched, not eyeballed: the largest pad-clear rectangle on B.Cu
+is **14.5 × 15.0 mm at (26.8, 9.2)**. The mark takes the top 10.4 mm (its traced
+aspect is 1.393) and the wordmark sits in the 4.6 mm underneath, so the two read
+as one lockup. *Both* windows quoted during the search — a 14.8 × 15.2 mm block
+and a 22 × 4 mm "via-free banner" — were found by independent searches and
+**overlap**; only one of them can hold artwork, which is why the wordmark ended
+up under the mark rather than in a separate strip.
+
+Four things worth knowing before touching it:
+
+- **It is not copper.** Adding, moving or removing silk artwork cannot
+  invalidate `ROUTE_SEED`. Verified rather than assumed: regenerating with the
+  artwork in place re-routed to *the same* 1343 segments / 48 vias / 0 failures,
+  and `measure_copper.py` returned identical widths.
+- **It is board-level graphics, not a footprint, and that is deliberate.** A
+  footprint with no schematic symbol is an `extra_footprint` under
+  `--schematic-parity`, which would move the documented 69-item baseline for a
+  decoration. Parity stayed at exactly 69 (60 + 9) with the artwork in.
+- **Back-layer graphics are stored in top-view coordinates**, so `back_art()`
+  mirrors in X. Without that the mark reads backwards on the physical board.
+  The check is `render --side bottom`, not the editor.
+- **`bitmap2component` was not used** — it is GUI-only, does nothing under
+  xvfb, and emits an opaque `.kicad_mod` nothing here could regenerate.
+  `gen_artwork.py` uses `potrace` (`-a 0 -n`, so polygons rather than Béziers),
+  keyholes the holes — KiCad graphics have no hole primitive, and without it the
+  counters of the `8` fill solid — and simplifies to ~0.03 mm, an order of
+  magnitude under what the fab holds. 822 → 324 vertices, no visible change.
+  `potrace` is needed only to re-trace; `gen_board.py` reads the committed JSON.
+
+⚠️ **The plot has to include `B.Silkscreen`** or none of this ships — see
+pcb.md §9. No gate in this repo catches that, because the board is correct and
+only the gerber set is wrong.
 
 ## Routing: how it was re-swept (2026-07-28)
 

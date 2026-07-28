@@ -542,6 +542,50 @@ def back_text(s, x, y, size=0.8, rot=0):
         t.SetTextAngleDegrees(rot)
     board.Add(t)
 
+# Artwork lives with the repo, not with CARRIER_BASE: tools/search.py builds
+# variants in scratch dirs that only symlink HYPEROSCI.pretty, and silk has no
+# bearing on what a router variant is being judged on anyway.
+ART = os.path.normpath(os.path.join(HERE, "..", "art"))
+
+def back_art(name, x, y, w, mirror=True):
+    """Stamp traced artwork (tools/gen_artwork.py) onto B.SilkS.
+
+    (x, y) is the top-left corner in mm and `w` the width; the height follows
+    the traced aspect ratio.  Back-layer graphics are stored in top-view
+    coordinates, so the polygons are mirrored in X here — without that the logo
+    reads backwards when you look at the actual back of the board.
+
+    These are board-level graphics on purpose.  As a footprint the logo would
+    have no schematic symbol and `drc --schematic-parity` would report an
+    `extra_footprint`, moving a baseline that is documented as 69 and read by
+    diffing.  Board drawings are not parity-checked.
+    """
+    path = os.path.join(ART, name)
+    if not os.path.exists(path):
+        print(f"  artwork {name}: missing, skipped")
+        return None
+    art = json.load(open(path))
+    s = w / art["unit_w"]
+    h = art["unit_h"] * s
+    for ring in art["polygons"]:
+        chain = pcbnew.SHAPE_LINE_CHAIN()
+        for u, v in ring:
+            bx = x + (art["unit_w"] - u) * s if mirror else x + u * s
+            chain.Append(mm(bx, y + v * s))
+        chain.SetClosed(True)
+        sps = pcbnew.SHAPE_POLY_SET()
+        sps.AddOutline(chain)
+        sh = pcbnew.PCB_SHAPE(board)
+        sh.SetShape(pcbnew.SHAPE_T_POLY)
+        sh.SetPolyShape(sps)
+        sh.SetFilled(True)
+        sh.SetWidth(0)
+        sh.SetLayer(pcbnew.B_SilkS)
+        board.Add(sh)
+    print(f"  artwork {name}: {len(art['polygons'])} polygons, "
+          f"{w:.1f} x {h:.1f} mm at ({x}, {y})")
+    return (x, y, w, h)
+
 def court(ref):
     """(cx, cy, half_w, half_h) of a placed footprint's courtyard."""
     bb = fps[ref].GetCourtyard(pcbnew.F_CrtYd).BBox()
@@ -682,6 +726,15 @@ place_text("UNIT #__", 11.0, 6.5, 0.9, name="unit box")
 # clear — running vertically between the two SuperMini rows.
 back_text("JLCJLCJLCJLC", 2.3, 17.0, 0.8, rot=90)
 back_text("HYPEROSCI v1.1", 3.9, 17.0, 0.8, rot=90)
+
+# Back-silk artwork.  The back carried 2 items against the front's 374 and the
+# fab prints it regardless, so this space was already paid for.  The window is
+# the largest pad-clear rectangle on B.Cu, found by search rather than by eye:
+# 14.5 x 15.0 mm at (26.8, 9.2).  The mark takes the top 10.4 mm of it and the
+# wordmark sits in the 4.6 mm left underneath, which keeps them a single lockup.
+# Nothing here is copper: adding or moving it cannot invalidate ROUTE_SEED.
+back_art("484848.json", 26.8, 9.2, 14.5)
+back_text("ponkiePCBv1", 34.05, 22.6, 1.25)
 
 # --- reference designators ---------------------------------------------------
 # Mounting holes carry no BOM line, so their designators are pure clutter.
