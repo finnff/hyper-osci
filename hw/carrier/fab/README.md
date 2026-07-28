@@ -73,6 +73,35 @@ same zip loads identically at JLCPCB and PCBWay.
 | Drill total | 212 plated, 0 unplated; T1 ⌀0.400 × 96 = the via count |
 | **SW1 slots** (`pcb.md` §7) | **T4 = 0.900, `G00X47.08→G01X47.98` and `G00X51.98→G01X52.88` — 0.90 mm travel each, aspect 2.0** |
 
+## Back-silk artwork — checked separately, because no gate covers it
+
+The `48` mark plots as **4 filled G36 regions**, and every silk check this project has is
+about *stroke* width. A filled polygon has none, so the DFM question — is any ink narrower
+than JLC's 0.15 mm floor — was answered by rasterising the plotted gerber at 5 µm and
+opening it morphologically:
+
+| Opening disk | ⇒ min feature width | Ink kept | Features left |
+|---|---|---|---|
+| 0.075 mm | 0.150 mm ← JLC floor | 99.90 % | 4 of 4 |
+| 0.125 mm | 0.250 mm | 99.77 % | 4 of 4 |
+
+Nothing drops out well past the floor, and the ~0.1 % shortfall is corner rounding. A raw
+skeleton measurement looks much worse — 1.4 % of ridge points under 0.15 mm, bottoming out
+at 0.010 mm — and is **the wrong test**: skeletons run into every convex corner, where
+width goes to zero by construction. Use the opening result.
+
+The rest of the layer: the wordmark is stroked text at **0.1875 mm**, and the two
+pre-existing legends are unchanged at **0.15 mm**. Both clear the floor.
+
+**The `%ADD10C,0.000000*%` aperture is not a zero-width pen.** It appears only on this
+layer and only ever selected *inside* G36 regions, where the Gerber spec says the current
+aperture is unused; zero draws and zero flashes reference it. It is normal KiCad output for
+polygon fills. Do not "fix" it.
+
+**No silk over exposed copper:** none of the 116 B.Mask openings intersect the artwork's
+bounding box, nearest 0.48 mm. The placement search that chose the spot looked at pad-clear
+area on B.Cu; this confirms the result against the mask, which is the layer that matters.
+
 ## Known and accepted
 
 **Via-in-pad on 5 SMD pads:** `Q1.1`, `Q1.2`, `TP2.1`, `TP3.1`, `TP4.1`. ⌀0.8 vias on a
