@@ -108,7 +108,16 @@ footprint("RCA_FlyingLead_Pads",
            rect(-2.1, -2.1, 2.1, 7.2, "F.CrtYd", 0.05)])
 
 # --- 2. SW1 dual-pitch SPDT slide (pcb.md §5: SK12D07-class 1A, pitch unknown
-# until the part arrives — slots accept BOTH 2.0 and 2.54 mm pin pitch).
+# when this was drawn — slots accept BOTH 2.0 and 2.54 mm pin pitch).
+#
+# RESOLVED 2026-07-28, and the slot earned its keep: the ordered SS12D00 is
+# 2.5 mm pitch, which is NEITHER of the two values above.  A hole drilled for
+# either guess would have been wrong; the slot puts the pin 0.05 mm off centre.
+# Body is 8.5 x 3.7 on the pin centreline, inside the 9.0 x 4.0 silk.  The
+# descr below still says "VERIFY vs real part" and is deliberately left alone:
+# editing it would only take effect on a re-run, and re-running this rewrites
+# every UUID, which forces gen_board + route and throws away seed 33.  The
+# verified numbers live in layout-notes.md VERIFY item 2, not in a string.
 #
 # The slot LENGTH is set by JLCPCB, not by us: a plated slot must be at least
 # 2x as long as it is wide, or the fab raises a DFM query (costly against the

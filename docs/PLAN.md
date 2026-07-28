@@ -46,13 +46,21 @@ Goal: **Gerbers uploaded and paid by Aug 1**, and two slaves drawing the same pi
 > severity**, ERC clean of real violations, `check_netlist` OK, `audit_board` all five gates,
 > silk strokes all ≥ 0.15 mm, and SW1's plated slots plot as 0.90 mm travel on the 0.900 tool.
 >
-> ⚠️ **One item still gates the gerber plot, and it is mechanical, not electrical:** SW1's
-> body/lever fit against `paper-doll-1to1.pdf`. The SS12D00 was **ordered 2026-07-27 and is
-> not in hand**, so this cannot close until it arrives — and it is now the *only* thing
-> between this board and the fab order. If the part will not arrive before Aug 1, that is the
-> decision to take deliberately: the footprint's slots accept both 2.0 and 2.54 mm pitch and
-> the drill geometry is verified, so the residual risk is body/lever clearance alone.
+> ✅ **SW1 closed 2026-07-28 from the SS12D00 datasheet — no layout change.** It did not
+> need the part in hand, and it did not need the paper doll: the drawing gives **2.5 mm pin
+> pitch**, which lands 0.05 mm off the centre of the slot's 2.00–2.90 mm window, and a
+> **8.5 × 3.7 mm body on the pin centreline**, which sits inside the 9.0 × 4.0 silk with
+> 0.25/0.15 mm per side. Nothing overhangs it (TP4056 body 2.51 mm away, J8 0.96 mm, south
+> board edge 1.75 mm) and the 1.5 mm actuator sweeps X 48.23–51.73 with 3.46 mm of nail room
+> to J8. Handle length never entered it — nothing sits above the switch.
 > Detail: [`hw/carrier/layout-notes.md`](../hw/carrier/layout-notes.md).
+>
+> **No gates remain. The gerbers are plotted and verified** —
+> [`hw/carrier/fab/`](../hw/carrier/fab/), regenerate with `tools/plot_fab.py`. What is left
+> before paying is not a board question: load the zip in the fab's own viewer and a second
+> one. One on-arrival check survives and it is an assembly note, not an order gate — whether
+> the part carries a locating lug (the datasheet has no bottom view; the footprint has the
+> three signal holes only, so clip any lug).
 
 Deliverables:
 
@@ -126,7 +134,7 @@ passes on an assembled carrier.
 | Female headers, 2.54 mm, fixed sizes: 1×8 / 1×6 / 1×9 / 1×3 | 12 / 6 / 6 / 6 | ✅ ordered 2026-07-27 | **Bought as a 155-piece assortment (4/6/8/10/12/16/20/40), which has no 1×9 and no 1×3** — cut J3 from a 10-pin and J4 from a 4-pin, accepting the destroyed position. SuperMini 2× 1×8, PCM5102A 1×6 + **1×9** (analog end is a 9-pin header, measured 2026-07-18), MAX4466 1×3 — parts for 6 boards, per [hardware/pcb.md](hardware/pcb.md) §5. **Fixed sizes — female strips don't snap cleanly** (each cut destroys a position), so order the exact lengths, not 40-pin strips to cut. |
 | **Machined single-pin sockets (turned-pin)** | 30 | ✅ in stock | **TP4056 J5/J6/J9/J10 — 6 per board** (was 4; the USB-C-end mount row was added 2026-07-28, pcb.md §5). ⚠️ **Not 1×2 female headers**: the module's pads measure 0 / 3.526 / 10.960 / 14.066 mm, so nothing on a 2.54 grid mates with them (photogrammetry 2026-07-26). Singles broken off a machined DIP socket also work. Alternative: solder wires and give up removability. |
 | 10 kΩ potentiometer, PCB-mount, linear | 5 | ✅ ordered 2026-07-27 | 5 pcs = 4 boards + 1 spare, no margin for a wrong variant — paper-doll the first one that arrives. **RESOLVED 2026-07-18 — RV097NS-B10K**, body 27.3 × 9.5 × 11.3 mm. **No knobs to order** — the metal shaft is turned directly by hand. ⚠️ **Order the "5-pin mono *with switch*", right-angle variant specifically** — sellers use "RV097NS" for a vertical/bracket-lug part too, and its holes do not line up (pcb.md §5 box, corrected 2026-07-27). |
-| Slide switch, SPDT, THT (power) | 5 | ✅ ordered 2026-07-27 (×20) | **SS12D00, 6 mm handle.** Revised call: the earlier "1 A part required, WiFi TX peaks ~0.35 A" compared a peak current against a **make/break rating specified at 50 VDC** — at the ~4 V this switch interrupts there is no arc, and 0.35 A through the contacts is thermally irrelevant. 6 mm handle so the actuator clears the enclosure wall. On arrival: check pins against the paper doll, and clip any locating lug — the footprint has the 3 signal holes only. |
+| Slide switch, SPDT, THT (power) | 5 | ✅ ordered 2026-07-27 (×20) | **SS12D00, 6 mm handle.** Revised call: the earlier "1 A part required, WiFi TX peaks ~0.35 A" compared a peak current against a **make/break rating specified at 50 VDC** — at the ~4 V this switch interrupts there is no arc, and 0.35 A through the contacts is thermally irrelevant. 6 mm handle so the actuator clears the enclosure wall. ✅ **Fit closed 2026-07-28 from the drawing** — 2.5 mm pitch, 0.05 mm off the centre of the slot window; body 8.5 × 3.7 on the pin centreline, inside the silk with 0.25/0.15 mm a side; handle length is an enclosure question only, since nothing sits above the switch. On arrival, one thing left and it is assembly, not ordering: clip any locating lug — the drawing has no bottom view and the footprint has the 3 signal holes only. |
 | Tactile button 6×6 mm THT | 10 | ✅ in stock | MODE button + spares. |
 | LED 3 mm green + amber | 5 + 5 | ✅ in stock | + 2.2 kΩ series resistors (per config.h note). |
 | Resistors: 100 kΩ ×10, 10 kΩ ×10, 2.2 kΩ ×10 | — | ✅ in stock | Divider, pull-ups, LED series. Bin checked 2026-07-27. |

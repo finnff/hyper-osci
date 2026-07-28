@@ -9,9 +9,10 @@
 > Seed 33 is now `route.py`'s default. Full account in **"Routing: how it was
 > re-swept"** at the bottom of this file.
 >
-> **Still open before gerbers, and it is not routing:** SW1's body/lever fit
-> against the 1:1 paper doll — the SS12D00 was ordered 2026-07-27 and is not in
-> hand (VERIFY item 2 below). Everything else passes.
+> **✅ Nothing is open before gerbers.** SW1 was the last item and it closed
+> 2026-07-28 off the SS12D00 datasheet — no part in hand, no paper doll, no
+> layout change (VERIFY item 2 below). The fab package is plotted and committed
+> to `fab/`; regenerate it with `tools/plot_fab.py`.
 
 What this board hits, measured 2026-07-28 on seed 33:
 `kicad-cli pcb drc --severity-all` reports **0 violations of any severity** and
@@ -618,8 +619,28 @@ direction.** Regenerate, do not recall.
 1. ~~J2↔J3 DAC socket geometry is PROVISIONAL~~ — **RESOLVED**, measured; the
    old guess was 4.06 mm out. Still worth a paper-doll check:
    `paper-doll-1to1.pdf` is current.
-2. **SW1 pitch unknown** until the part arrives — footprint is dual-pitch
-   (slots accept 2.0 AND 2.54 mm), but verify the body/lever fits.
+2. ~~**SW1 pitch unknown** until the part arrives~~ — **RESOLVED 2026-07-28
+   from the SS12D00 mechanical drawing**, without the part and without the
+   paper doll, and nothing in the layout moved.
+   **Pitch is 2.5 mm** — neither of the two the footprint was drawn for, and
+   that is exactly why the slot was drawn instead of a hole. It lands 0.05 mm
+   off the centre of the 2.00–2.90 mm window, the most comfortable place in it.
+   **Pins are 0.5 × 0.3 mm**, so the 0.90 mm slot width leaves 0.30 mm a side
+   and the ⌀0.9 centre hole swallows the middle pin.
+   **Body is 8.5 × 3.7 mm on the pin centreline** (centreline confirmed against
+   the part), which sits inside the 9.0 × 4.0 silk with 0.25 mm a side in X and
+   0.15 in Y, and inside the 10.0 × 5.0 courtyard with 0.75 / 0.65.
+   **Nothing overhangs it:** the TP4056 body stops 2.51 mm north, J8's
+   courtyard 0.96 mm east, the south board edge 1.75 mm south. The 1.5 mm
+   square actuator sweeps X 48.23–51.73 over its 2 mm of travel with 3.46 mm of
+   nail room to J8. Handle length never entered the fit — nothing sits above
+   the switch, so the 6 mm handle is an enclosure question only.
+   **Function checks out too:** the datasheet's middle terminal is the common,
+   and the board has pad 2 = VLOAD on the middle, pad 1 = VSW, pad 3 netless.
+   *Still open, but at assembly rather than before ordering:* whether the part
+   has a locating lug. The drawing has no bottom view and dimensions no post,
+   so this is the one thing paper cannot settle; the footprint has the three
+   signal holes only, so clip any lug.
    **Re-cut 2026-07-28:** the slots were 1.44 × 0.90 mm, an aspect of 1.6, and
    **JLCPCB will not plate a slot under 2×**. That gets you a DFM query against
    the order date, or a silent conversion to a round ⌀0.9 hole at one fixed x —
@@ -841,9 +862,21 @@ against zero.
 
 ### What is still open
 
-**SW1 (VERIFY item 2) — and it is the only thing left before gerbers.** The
-SS12D00 was ordered 2026-07-27 and is not in hand, so the body/lever fit against
-`paper-doll-1to1.pdf` cannot close. The footprint's slots take both 2.0 and
-2.54 mm pitch and the drill geometry is verified above, so the residual risk is
-mechanical fit only. Renders and the 1:1 paper doll were regenerated against the
-routed board on 2026-07-28 and are current.
+**Nothing.** SW1 (VERIFY item 2) was the last item and it closed 2026-07-28,
+from the SS12D00 mechanical drawing rather than the part or the paper doll — see
+that item for the numbers. Renders and the 1:1 paper doll were regenerated
+against the routed board on 2026-07-28 and are current.
+
+Worth stating why the doll was not needed, because the plan had budgeted an
+evening for it: every quantity that decides the fit is *dimensioned on the
+drawing*, and comparing two numbers beats eyeballing a print. The doll answers
+"does this look right", which is the question you ask when you do not have the
+drawing. It stays the right tool for RV1, whose lug geometry was reconstructed
+rather than read.
+
+The fab package is plotted, verified and committed to `fab/`. Two things remain
+before paying, neither of them a board question: load the zip in the fab's own
+viewer and a second one, and — on arrival, at assembly — check whether the part
+carries a locating lug. The datasheet has no bottom view, so that one cannot be
+read off paper; `SW_Slide_SPDT_DualPitch` has the three signal holes only, so
+any lug must be clipped. It is an assembly note, not an order gate.

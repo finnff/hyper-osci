@@ -86,9 +86,33 @@ expect a bead on B.Cu. Not a fab constraint and not worth risking the seed-33 ro
 The §8.4 checklist item as written — "no vias inside RCA/JST pads" — passes: no
 through-hole pad on the board has a via inside it.
 
+## SW1 — closed 2026-07-28
+
+The last gate, and it closed off the SS12D00 mechanical drawing rather than the part or
+the paper doll. Nothing in the layout moved, so these gerbers are unaffected.
+
+| | Part | Board | Margin |
+|---|---|---|---|
+| Pin pitch | **2.5 mm** | slot window 2.00–2.90 from the centre pin | lands 0.05 mm off slot centre |
+| Pin section | 0.5 × 0.3 mm | slots 1.80 × 0.90, centre hole ⌀0.9 | 0.30 mm a side across the slot |
+| Body | 8.5 × 3.7 mm, pins on the centreline | silk 9.0 × 4.0, courtyard 10.0 × 5.0 | 0.25 mm a side in X, 0.15 in Y |
+| Clearance | — | TP4056 body 2.51 mm N · J8 courtyard 0.96 mm E · board edge 1.75 mm S | nothing overhangs |
+| Actuator | 1.5 mm sq, 2 mm travel | sweeps X 48.23–51.73 | 3.46 mm of nail room to J8 |
+| Function | middle terminal = common | pad 2 = VLOAD, pad 1 = VSW, pad 3 netless | correct |
+
+The pitch is the interesting one: 2.5 mm is **neither** of the two values the footprint was
+drawn around, and it still lands in the most comfortable part of the window. That is the
+slot paying for itself.
+
+The 6 mm handle never entered the fit — nothing sits above the switch, so handle length is
+an enclosure question.
+
 ## Still open before you pay
 
-`SW1`'s body/lever fit against `paper-doll-1to1.pdf`. The SS12D00 was ordered 2026-07-27
-and is not in hand. The drill geometry is verified above and the footprint takes both
-2.0 and 2.54 mm pitch, so the residual risk is mechanical clearance alone — but it is
-unclosed, and the order gate is Aug 1. See `layout-notes.md` and `docs/PLAN.md`.
+Not a board question: load this zip in the fab's own online viewer **and** a second one
+(`gerbv` or tracespace) — check outline, drills present, silk not mirrored. That is the one
+item on §8.4 that cannot be asserted from here.
+
+One check survives to assembly, not to ordering: whether the switch carries a locating lug.
+The drawing has no bottom view and dimensions no post, so paper cannot settle it;
+`SW_Slide_SPDT_DualPitch` has the three signal holes only, so clip any lug.

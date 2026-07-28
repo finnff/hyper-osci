@@ -10,9 +10,13 @@
 > severity**, ground pour whole with zero repair. §6.4's width table and §4.4's
 > drop figures have been **regenerated from the routed board** and are as-built.
 >
-> **One item still gates the gerber plot, and it is not routing:** SW1's
-> body/lever fit against the 1:1 paper doll. The SS12D00 was ordered 2026-07-27
-> and is not in hand. See `layout-notes.md` → VERIFY item 2.
+> **✅ No gates remain — the gerbers are plotted, verified and committed** to
+> `hw/carrier/fab/` (`tools/plot_fab.py` regenerates them and refuses to write
+> the zip unless the board still passes). SW1, the last one, closed 2026-07-28
+> from the SS12D00 datasheet without the part in hand and without a layout
+> change: 2.5 mm pitch inside the slot's 2.00–2.90 window, 8.5 × 3.7 body on the
+> pin centreline inside the 9.0 × 4.0 silk. See §7 and `layout-notes.md` →
+> VERIFY item 2.
 
 **Status:** layout v1.1 complete, routed and gate-clean (2026-07-28, seed 33) — see
 [`hw/carrier/layout-notes.md`](../../hw/carrier/layout-notes.md). This document is the spec
@@ -857,7 +861,7 @@ gerber plot** — the one that did (the TP4056 pad-row edge offset) closed 2026-
 
 **Bought parts**
 - [x] RCA output pads (X/Y): design item, nothing to measure — simple signal+AGND pad-pairs (~2 mm) for the reused ~50 cm RCA cable leads
-- ⬜ **OPEN** SW1 slide-switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — **ordered 2026-07-27 (SS12D00, 6 mm handle), not yet in hand**, so still not resolvable; it was never an order gate. Mitigated: the footprint carries **both** 2.0 and 2.54 mm slots, so the residual risk is body/lever fit only. **On arrival, check two things:** the pins against the paper doll, and whether the part carries locating lugs or posts — `SW_Slide_SPDT_DualPitch` has the **three signal holes only**, so any lug must be clipped.
+- [x] SW1 slide-switch pin pitch — ✅ **CLOSED 2026-07-28 from the SS12D00 mechanical drawing**, without the part in hand, without the paper doll, and with no layout change. **The pitch is 2.5 mm** — neither of the two values the footprint was drawn around, which is the vindication of drawing a slot instead of a hole: it lands 0.05 mm off the centre of the 2.00–2.90 mm window. Pins are 0.5 × 0.3 mm (0.30 mm a side in a 0.90 mm slot; the ⌀0.9 centre hole takes the middle pin). Body is **8.5 × 3.7 mm on the pin centreline**, inside the 9.0 × 4.0 silk with 0.25 mm a side in X and 0.15 in Y. Nothing overhangs it — TP4056 body 2.51 mm north, J8 courtyard 0.96 mm east, south board edge 1.75 mm — and the 1.5 mm actuator sweeps X 48.23–51.73 with 3.46 mm of nail room to J8. The 6 mm handle never entered the fit; nothing sits above the switch, so it is an enclosure question only. The datasheet's middle terminal is the common, matching pad 2 = VLOAD / pad 1 = VSW / pad 3 netless. **One thing moved to assembly rather than closing:** whether the part carries a locating lug or post. The drawing has no bottom view and dimensions none, so paper cannot settle it — `SW_Slide_SPDT_DualPitch` has the **three signal holes only**, so clip any lug. That is a stuffing note, not an order gate.
   ⚠️ **The slots were re-cut 2026-07-28 and this is a fab constraint, not a preference.** They were 1.44 × 0.90 mm — aspect 1.6, and **JLCPCB will not plate a slot under 2×**. The outcome is either a DFM query against the order date or a silent conversion to a round ⌀0.9 hole at one fixed x, at which point *neither* pitch fits and the boards are scrap. They are now **1.80 × 0.90 (aspect 2.0)** centred at ±2.45 mm, so a pin may sit anywhere **2.00–2.90 mm** from the middle pin — still both pitches, with the copper dragged as far outboard as that allows. The pad stayed 2.5 mm long deliberately: growing it with the slot leaves 0.20 mm to the centre pad, which clears JLCPCB's 0.127 mm floor but *not* this board's own 0.25 mm netclass clearance. **Verify on the drill file, not the board:** the routed slots must read `G00X47.08 → G01X47.98` and `G00X51.98 → G01X52.88` — 0.90 mm of travel on the 0.900 mm tool, where it used to be 0.54.
 - [x] RV1 row-2 geometry — **was** the least-certain footprint on the board, and it **was wrong**. Redrawn 2026-07-27 from the seller's mechanical drawing + KiCad's ALPS RK097 stock footprint: SPST at ⌀1.0, 5.0 mm apart, 6.25 mm behind the pot row; mounting surface 5.0 mm in front of it, on the board edge. *A 1:1 paper-doll check with the pot in hand is still worth ten minutes — but it is now confirming a drawing, not a guess.*
 - [x] RV1 = **RV097NS-B10K**, 5-pin **mono with switch**, right-angle, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — footprint drawn 2026-07-18, **corrected 2026-07-27** (§5 box). ×5 ordered 2026-07-27; paper-doll the first one that arrives (§9), since 5 pieces is 4 boards plus one spare and there is no margin for a wrong variant.
@@ -890,6 +894,7 @@ hand-soldered) so JLCPCB's SMT ecosystem isn't a factor either way. Total expect
 | ~~≤ Jul 27~~ | ✅ Caliper session (§7) done Jul 18; photogrammetry Jul 26. **§4.4 is not an order gate and has moved** to the assembled carrier (Aug 11–16) — it cannot run on the current bench (no battery or TP4056 in circuit, Q1 is SOT-23). |
 | **Jul 27–28** | **RV1 row 2 is closed** — it was wrong, and the corrected geometry is in the board (§5 box); a paper-doll pass now only confirms a drawing. ✅ **Parts order placed 2026-07-27** (§5 box: plan-A subset, so R7/R8/R9/D1/D2/U1 were *not* bought; RV1 = the **5-pin *with switch*** variant). ✅ **TP4056 pad-row edge offset measured and CLOSED the same day** (§7) — Δ 0.07 mm on a 0.25 mm gate, layout unchanged. ✅ **2026-07-28: the TP4056 gained a second mount row** (§5 box) — J9 moved onto the module's `+` corner pad and J10 was added on the `IN−` corner, because four pins in one column left the USB-C jack on a 21.65 mm cantilever. **This one moved copper**: re-generated, re-routed and re-gated. **No open gates remain: plot gerbers.** |
 | ~~Jul 28–30~~ | ✅ Layout complete Jul 26 — v1.1, 0 DRC violations at every severity. The order can go out ~5 days early. |
+| **Jul 28** | ✅ **SW1 closed** from the SS12D00 drawing — 2.5 mm pitch, 0.05 mm off the slot window's centre; body 8.5 × 3.7 on the pin centreline, inside the silk with 0.25/0.15 mm a side. No part in hand, no paper doll, no layout change (§7). ✅ **Gerbers plotted, verified and committed** to `hw/carrier/fab/` — `tools/plot_fab.py` asserts §8.4 and will not write the zip if the board stops passing. **Nothing now gates the order except the two viewer loads below.** |
 | **Jul 31 – Aug 1** | **Upload gerbers, pay, DHL express** ← hard order-by date |
 | Aug 2–4 | Fab (24–48 h + weekend slack) |
 | Aug 5–11 | DHL to NL (3–7 days) |
@@ -911,17 +916,40 @@ green mask, white silk · no castellations, no impedance control, no stencil ·
 
 ### 8.4 Gerber checklist (what goes in the zip)
 
-- [ ] `F.Cu`, `B.Cu` (gerbers)
-- [ ] `F.Mask`, `B.Mask`
-- [ ] `F.Silkscreen`, `B.Silkscreen`
-- [ ] `Edge.Cuts` (single closed outline, 70 × 50 mm, corner radius 2 mm optional)
-- [ ] Drill: PTH + NPTH, Excellon, merged file fine for JLCPCB
-- [ ] Plot with KiCad's built-in **JLCPCB preset** (KiCad 9: File → Fabrication Outputs →
-      Gerbers → "JLCPCB" plot preset), which sets protel extensions + correct precision
+**✅ Plotted 2026-07-28 — `hw/carrier/fab/`.** Every item below except the viewer load is
+now asserted by `tools/plot_fab.py`, which re-runs DRC, plots, checks, and **writes the zip
+only if all of it holds**. Run it rather than the GUI; the settings below are not defaults.
+
+- [x] `F.Cu`, `B.Cu` (gerbers)
+- [x] `F.Mask`, `B.Mask`
+- [x] `F.Silkscreen`, `B.Silkscreen`
+- [x] `Edge.Cuts` — verified a single closed 4-segment outline at exactly 70.000 × 50.000 mm,
+      with all copper inside it by ≥ 0.5 mm (no corner radius used)
+- [x] Drill: PTH + NPTH merged, Excellon, mm/decimal, absolute origin
+- [x] ~~Plot with KiCad's built-in **JLCPCB preset**~~ — **superseded.** The preset is a GUI
+      feature and `kicad-cli` has no equivalent flag, so `plot_fab.py` sets the settings
+      explicitly. Two of them are load-bearing rather than cosmetic:
+      **`--excellon-oval-format route`**, because `kicad-cli` defaults to `alternate` and
+      under that default SW1's plated slots **do not appear as slots at all** — the check in
+      §7 would have had nothing to read, silently; and **`--no-x2 --no-netlist`**, so one zip
+      loads identically at JLCPCB and PCBWay (the X2 attributes still go out as `G04`
+      comments, which is what fabs parse anyway). Protel extensions and precision 6 are the
+      `kicad-cli` defaults and are correct.
 - [ ] Sanity-load the zip in JLCPCB's online gerber viewer **and** a second viewer
-      (e.g. `gerbv` or tracespace) — check outline, drills present, silk not mirrored
-- [ ] Confirm: no paste layers needed (no stencil), no vias inside RCA/JST pads,
-      soldermask-defined nothing (all THT pads mask-opened normally)
+      (e.g. `gerbv` or tracespace) — check outline, drills present, silk not mirrored.
+      ← **the only item here a human still has to do**
+- [x] No paste layers (no stencil; Q1's SOT-23 is on hand-solder pads). Nothing
+      soldermask-defined — all THT pads mask-opened normally, verified as 124/116 mask
+      regions against 126/116 pads, and F.Cu/B.Cu flash counts reconcile exactly
+      (222 = 126 pads + 96 vias; 212 = 116 THT + 96 vias).
+- [x] No vias inside RCA/JST pads — **passes**: no through-hole pad on the board has a via
+      in it. ⚠️ Five **SMD** pads do, which this checklist never asked about: `Q1.1`, `Q1.2`,
+      `TP2.1`, `TP3.1`, `TP4.1`, all ⌀0.8 on a 0.4 mm drill within 0.07 mm of pad centre. The
+      three testpoints are intentional — that via *is* how the pad reaches its net. Q1's two
+      are a router artifact and are **not new**: every routed revision since `4c362ff` has
+      had them, and seed 33 has one fewer than `e6943b5` did. Accepted. Consequence is
+      hand-soldering only — solder wicks to B.Cu through 0.4 mm, so feed extra and expect a
+      bead.
 
 ---
 
