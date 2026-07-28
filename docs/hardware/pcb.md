@@ -1,5 +1,17 @@
 # HYPEROSCI Carrier PCB — v1.1 Specification
 
+> ## ⛔ 2026-07-28 — NOT ORDERABLE RIGHT NOW: the committed board is unrouted.
+>
+> The pre-fab DFM pass landed (silk stroke 0.12 → **0.15 mm**, SW1's plated slots
+> re-cut to JLC's 2× aspect, silk legends kept off the module bodies) and every
+> non-routing gate passes. But those fixes **moved copper**, which invalidates the
+> router seed, and the re-sweep did not finish. `carrier.kicad_pcb` is committed
+> straight out of `gen_board.py` with **58 unconnected items**. Do not plot
+> gerbers, and do not read §6.4's width table or §4.4's drop figures as as-built —
+> they are pre-pass numbers. The handoff, with the exact commands and the two
+> settings that made the first attempt fail, is in
+> [`layout-notes.md` → "Routing: not done yet"](../../hw/carrier/layout-notes.md).
+
 **Status:** layout v1.1 complete and gate-clean (2026-07-26) — see
 [`hw/carrier/layout-notes.md`](../../hw/carrier/layout-notes.md). This document is the spec
 of record for the fab order and the BOM. Pin map / constants mirror
@@ -106,7 +118,7 @@ Every net on the board. Pin numbers match `config.h` exactly.
 |---|---|
 | **BAT+** | J8.1 (JST +) → **J6.1** `B+`. Also top of battery divider R1. On this USB-C TP4056 module, `B+` and `OUT+` are the same copper (protection is low-side) — ✅ measured 0 Ω 2026-07-18. |
 | **BAT−** | J8.2 (JST −) → **J5.2** `B−` **only**. ⚠️ **B− must NOT join GND** — the DW01/FS8205 protection switches the low side between B− and OUT−. Shorting them defeats protection (✅ measured open 2026-07-18). Silk warning next to J5. |
-| **GND** | **J5.1** `OUT−` = system ground: SuperMini GND, J2 GND, J2 SCK (see below), C1−, C2, C3, C5, R2, R6, R8, U1 anode, SW2 pin B, RV1 CCW end **and both ends of RV1's integrated SPST (pads 4/5 — see §5)**, LED cathodes, TP4056 `IN−` (same node module-internally), mounting-hole pads (fenced, see §6). Because the protection FET is in the **cell-negative** leg, every carrier load — including the R1/R2 divider — returns through it and is genuinely cut at the DW01's 2.4 V trip. |
+| **GND** | **J5.1** `OUT−` = system ground: SuperMini GND, J2 GND, J2 SCK (see below), C1−, C2, C3, C5, R2, R6, R8, U1 anode, SW2 pin B, RV1 CCW end **and both ends of RV1's integrated SPST (pads 4/5 — see §5)**, LED cathodes, mounting-hole pads (fenced, see §6). ⚠️ **`J10` (TP4056 `IN−`) is deliberately NOT on this list** — this row used to end "TP4056 `IN−` (same node module-internally)", which contradicts §2, `design.py` (`J10 = {"1": None}`) and the board itself. `IN− ≡ OUT−` has never been measured on this module, and wiring it to GND on that assumption shorts across the DW01/FS8205. Because the protection FET is in the **cell-negative** leg, every carrier load — including the R1/R2 divider — returns through it and is genuinely cut at the DW01's 2.4 V trip. |
 | **VBAT_OUT** | J6.2 `OUT+` → Q1 **drain** + **JP1 pin 1** (the §4.4 escape hatch). |
 | **VSW** | Q1 **source** + D2 cathode + sense divider top (R7) + **R12** + **Q2 emitter** + **JP1 pin 2** + SW1 pin 1 + testpoint TP2. Note this node is **upstream of SW1**: it is live off the cell through Q1 whenever a battery is connected, whatever position the switch is in (§4.3 state 6). |
 | **VLOAD** | SW1 pin 2 → SuperMini `5V` pin, C1 (220 µF) +, C2 (100 nF), **D3 anode (DNP)**. |
@@ -139,8 +151,10 @@ from cable capacitance; into a 1 MΩ scope input the attenuation is 0.01 % — i
 **Measured 2026-07-18:** the purple module already carries an output reconstruction filter
 (~470 Ω "471" series parts + caps) between the DAC and the `LROUT`/`ROUT` pins, and the
 output is **ground-centered** (no DC-blocking cap in the path). With ~470 Ω already in
-series, keep the R10/R11 footprints but **fit 0 Ω** if the Phase-4 bench ramp (wiring.md)
-confirms the module R is genuinely in-line — only populate 100 Ω if you want extra isolation.
+series, keep the R10/R11 footprints but **fit 0 Ω wire links** — §10 Q2, closed 2026-07-28.
+The Phase-4 bench ramp cannot decide this: 100 Ω against the module's 470 Ω moves the phase
+at 10 kHz by ≲0.07° and the amplitude by 0.01 %, identically on both channels, so there is
+nothing to see. Populate 100 Ω only if a future cable turns out to need the isolation.
 
 GPIO8 and GPIO9 socket positions are **not connected** on the carrier (onboard LED / BOOT
 button, both strapping pins — DESIGN §4).
@@ -441,8 +455,8 @@ Quantities are per board; build 4 (a 5th possible later), order parts for ~6 (sp
 | R7 | 1 | **8.2 k 1 %** | metal film | axial | sense divider top — see the §4.2 divider table before committing |
 | R8 | 1 | **10 k 1 %** | metal film | axial | sense divider bottom |
 | R9 | 1 | **1 k** | generic | axial | TL431 cathode drive (2.2 k left the part below its 1 mA `I_KA(min)`) |
-| R10, R11 | 2 | 100 Ω | generic | axial | DAC → RCA-pad series |
-| C1 | 1 | 220 µF ≥ 10 V electrolytic | e.g. Rubycon/Chang 220 µF 16 V | radial 6.3 mm | VLOAD bulk |
+| R10, R11 | 2 | **0 Ω wire link** (100 Ω optional) | offcut of component lead, or a 0 Ω axial | axial | DAC → RCA-pad series. §10 Q2, closed 2026-07-28: the module already has ~470 Ω of its own, so 100 Ω more is 0.01 % of amplitude and ≲0.07° of phase — *equally on both channels*. Fit the link: it lies flat, and R10 stands at the DAC's corner where the standing-axial height is itself unverified |
+| C1 | 1 | 220 µF ≥ 10 V electrolytic, **low ESR (≤ 0.5 Ω @ 100 kHz)** | e.g. Rubycon ZLH / Panasonic FR 220 µF 16 V — a 105 °C low-impedance part, not a general-purpose can | radial 6.3 mm | VLOAD bulk. **ESR is the spec that matters here, not the value** — at a 50 µs burst it sets the dip almost entirely, and 1000 µF of high-ESR is worse than 220 µF of low. See power-budget §4.3. |
 | C2, C4, C5 | 3 | 100 nF X7R | generic | 2.54 mm radial | decoupling |
 | C3 | 1 | 100 nF X7R | generic | 2.54 mm radial | across R2 (ADC filter) |
 | SW1 | 1 | SPDT slide | **SS12D00, 6 mm handle — ✅ ordered 2026-07-27** (alternative: SK12D07-class, 1 A) | THT | power. ⚠️ **Accepted deviation** — this doc previously said the 1 A part was *required* because the SS12D00's 0.3 A is below the ≈0.35 A WiFi TX peak. That compares a peak current against a **make/break rating specified at 50 VDC**, and arc energy scales with the voltage being interrupted: at the ~4 V this switch actually breaks there is no arc to speak of, and 0.35 A through the contacts is a thermal non-event. Revisit only if contact resistance climbs in service. **6 mm handle** chosen so the actuator clears the enclosure wall — no length had ever been specified |
@@ -661,12 +675,18 @@ Hard placement rules:
 8. Bulk C1 within 10 mm of the SuperMini 5V pin. 220 µF is the WiFi-burst reservoir.
 9. Battery divider R1/R2/C3 near the SuperMini (short GPIO1 trace), not near the battery —
    the 100 k source impedance wants a short ADC trace.
-10. Silk: board name `HYPEROSCI carrier v1.1`, date, a blank `UNIT #__` box, polarity marks
-    on J8/C1/D-series, `B- is NOT GND` warning at J5. Every legend and every reference
-    designator is *placed by search* (`gen_board.py`), not by a footprint's default
-    offset: each string walks a ring of candidate spots outward and takes the first that
-    clears the pads, the board edge and everything already placed, shrinking to the
-    0.8 mm DRC floor before it gives up. Anything with nowhere to sit fails the build.
+10. Silk: board name `HYPEROSCI carrier v1.1`, a blank `UNIT #__` box, polarity marks
+    on J8/C1/D-series, a `NOT GND` warning on the J5 `B-` pad. Every legend and every
+    reference designator is *placed by search* (`gen_board.py`), not by a footprint's
+    default offset: each string walks a ring of candidate spots outward and takes the
+    first that clears the pads, the board edge and everything already placed, shrinking
+    to the 0.8 mm DRC floor before it gives up. Anything with nowhere to sit fails the
+    build. All strokes are **0.15 mm**, JLCPCB's silkscreen minimum.
+    ⚠️ **The three module bodies are silk keep-outs** (since 2026-07-28) — a third of the
+    board, and the search used to treat it as free space, so the battery warnings and the
+    board's own name were printed where a fitted module hides them. What may still sit
+    there: the module-name legends, the names of pads the module itself covers, and a
+    part's designator under *its own* module. `audit_board.py` gates it.
     The fab's order number goes on the **back**, inside the antenna keep-out — the one
     strip of the board guaranteed to carry neither pour nor stitching vias.
 
@@ -697,7 +717,11 @@ in spec.
 
 ### 6.3 Star ground (analog)
 
-- The AGND island carries: J3 `G`, the X and Y RCA ground pads, J4 mic GND, C4.
+- The AGND island carries: J3 `G`, the X and Y RCA ground pads, J4 mic GND, C4 — **and
+  `H2`**, whose 6.4 mm GND pad at (66.0, 4.0) falls on the island side of the moat. That is
+  harmless with the plastic case and brass inserts this build uses, but it is a second path:
+  **any metal standoff tying two mounting holes together gives the star ground a return that
+  does not go through the neck.** Nylon or brass-into-plastic only.
 - It joins the main GND pour at **exactly one neck**, ~3 mm wide, at **x 32–35, y ≈ 13.5**
   (east of the J2 `GND` pin at (25.15, 18.36), not immediately beside it — the neck has to
   clear the DAC socket).
@@ -801,6 +825,7 @@ gerber plot** — the one that did (the TP4056 pad-row edge offset) closed 2026-
 **Bought parts**
 - [x] RCA output pads (X/Y): design item, nothing to measure — simple signal+AGND pad-pairs (~2 mm) for the reused ~50 cm RCA cable leads
 - ⬜ **OPEN** SW1 slide-switch pin pitch (SS12-style: 2× 3-pin @ 2.0 mm? some are 2.54) — **ordered 2026-07-27 (SS12D00, 6 mm handle), not yet in hand**, so still not resolvable; it was never an order gate. Mitigated: the footprint carries **both** 2.0 and 2.54 mm slots, so the residual risk is body/lever fit only. **On arrival, check two things:** the pins against the paper doll, and whether the part carries locating lugs or posts — `SW_Slide_SPDT_DualPitch` has the **three signal holes only**, so any lug must be clipped.
+  ⚠️ **The slots were re-cut 2026-07-28 and this is a fab constraint, not a preference.** They were 1.44 × 0.90 mm — aspect 1.6, and **JLCPCB will not plate a slot under 2×**. The outcome is either a DFM query against the order date or a silent conversion to a round ⌀0.9 hole at one fixed x, at which point *neither* pitch fits and the boards are scrap. They are now **1.80 × 0.90 (aspect 2.0)** centred at ±2.45 mm, so a pin may sit anywhere **2.00–2.90 mm** from the middle pin — still both pitches, with the copper dragged as far outboard as that allows. The pad stayed 2.5 mm long deliberately: growing it with the slot leaves 0.20 mm to the centre pad, which clears JLCPCB's 0.127 mm floor but *not* this board's own 0.25 mm netclass clearance. **Verify on the drill file, not the board:** the routed slots must read `G00X47.08 → G01X47.98` and `G00X51.98 → G01X52.88` — 0.90 mm of travel on the 0.900 mm tool, where it used to be 0.54.
 - [x] RV1 row-2 geometry — **was** the least-certain footprint on the board, and it **was wrong**. Redrawn 2026-07-27 from the seller's mechanical drawing + KiCad's ALPS RK097 stock footprint: SPST at ⌀1.0, 5.0 mm apart, 6.25 mm behind the pot row; mounting surface 5.0 mm in front of it, on the board edge. *A 1:1 paper-doll check with the pot in hand is still worth ten minutes — but it is now confirming a drawing, not a guess.*
 - [x] RV1 = **RV097NS-B10K**, 5-pin **mono with switch**, right-angle, body 27.3 × 9.5 × 11.3 mm, metal shaft (no knob) — footprint drawn 2026-07-18, **corrected 2026-07-27** (§5 box). ×5 ordered 2026-07-27; paper-doll the first one that arrives (§9), since 5 pieces is 4 boards plus one spare and there is no margin for a wrong variant.
 
@@ -903,8 +928,21 @@ not a netlist dump. Presentation lives in the generator; connectivity still come
 `design.py`, and the generator refuses to emit a wire whose endpoints disagree with it.
 
 Use **`/usr/bin/python3`** — `pcbnew` is only importable from KiCad's own interpreter, and a
-conda `python3` on `PATH` will fail to import it. Routing takes ~5–6 min and needs many seeded
-attempts to reach zero failures; attempts reporting failures is normal, do not abort early.
+conda `python3` on `PATH` will fail to import it. Routing takes ~5–6 min *on a seed that
+works* and needs many seeded attempts to reach zero failures; attempts reporting failures is
+normal, do not abort early. On a seed that does **not** work it is several times slower — a
+failed A\* expands the whole grid before giving up — so budget ~20 min per 40-attempt ladder
+while hunting a seed, and give `tools/search.py` a `CARRIER_SEARCH_TIMEOUT` to match (its
+default 1800 s silently turns a slow sweep into a wall of `FAILED at timeout`).
+`gen_board.py` takes ~25 s, most of it re-counting each designator's remaining options after
+every placement — the board is dense enough that the *order* decides whether the silk fits at
+all (see layout-notes → Silkscreen), and ranking it statically is what used to lose SW1's and
+TP4/TP5's designators.
+
+`tools/measure_copper.py` reports the as-built track widths and the pad-to-pad DC resistance
+behind §6.4's table. Re-run it after any re-route rather than trusting the table: the widths in
+§6.4 have gone stale twice, most recently when VLOAD went from 0.3 mm over 91 mm to 1.0 mm
+throughout and nothing said so.
 
 > **`ROUTE_SEED` is board-specific and goes stale.** The default is **11** (2026-07-27);
 > it was 77 until RV1's corrected footprint moved five pads and slid the part 2.5 mm north.
@@ -920,7 +958,7 @@ The three gates, all of which must be clean before plotting gerbers:
 |---|---|---|
 | `check_netlist.py` (against a `kicad-cli sch export netlist` dump) | design.py ↔ schematic both ways, `config.h` GPIO map, §2/§3 invariants | pass |
 | `kicad-cli pcb drc --severity-all` | clearance, connectivity, silk, courtyards | **0 at every severity** |
-| `audit_board.py` | module pin-fit vs photogrammetry (0.25 mm), part heights under sockets, silk collisions, 90° corners, stitch gap | 0 fails |
+| `audit_board.py` | module pin-fit vs photogrammetry (0.25 mm), part heights under sockets, silk collisions, 90° corners, stitch gap, **and legends printed where a fitted module hides them** | 0 fails |
 
 Add `--schematic-parity` to the DRC call when you change a BOM value — it is **opt-in** and no
 gate requests it by default, which is how stale value strings could otherwise sit in the board
@@ -954,8 +992,19 @@ header, not 1×3.)*
 1. **Rprog mod on TP4056 (1 A → 500 mA):** the plan mandates 5 V/2 A chargers so the 1 A
    default is safe, but the Rprog swap (one 0402/0603 resistor per module) is still your call —
    optional, not mandated (§4.3 state 2). *(Measured Rprog = 1.19 kΩ ⇒ ~1 A, as expected.)*
-2. **R10/R11 value:** the module carries its own ~470 Ω output filter (§3.2, measured) — decide
-   0 Ω vs 100 Ω on the Phase-4 bench ramp. Not a layout blocker (footprint stays either way).
+2. ~~**R10/R11 value**~~ — **CLOSED 2026-07-28: fit 0 Ω, as wire links.** The module already
+   carries its own ~470 Ω output filter (§3.2, measured), so the only question was what another
+   100 Ω does. Answer: nothing you can see. Into a 50 cm RCA cable plus a scope input (20–200 pF),
+   adding 100 Ω moves the phase at 10 kHz by **0.007°–0.07°** and costs **0.01 %** of amplitude
+   into 1 MΩ — and it does so *identically on X and Y*, so the X-Y figure itself is untouched.
+   There is no bench ramp that can resolve that, so there is nothing to decide on one.
+   The tie-breaker is mechanical: R10 stands at the PCM5102A's south-east corner, and a standing
+   DIN0207 is **9 mm** tall (`design.py`) against an 8.3 mm socket standoff. It only passes
+   `audit_board.py`'s clearance gate because `PART_HEIGHT_MM` there still calls that package
+   **7.5 mm** — i.e. by assumption, not by measurement. A **0 Ω wire link lies flat**, and the
+   question stops existing. (Fit 100 Ω only if a future cable turns out to need the isolation;
+   the footprint is unchanged either way, and the height discrepancy above should then be
+   reconciled in `audit_board.py` first.)
 3. **Populate the §4 load-share block, or bridge JP1?** Decided by the amended §4.4 test on an
    assembled carrier, not before the order. Default per §4.5 is **JP1** — and note the two
    are not symmetric in effort: the block is 10 parts you can add later, JP1 is a bridge you

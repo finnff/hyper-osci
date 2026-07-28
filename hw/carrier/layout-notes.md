@@ -1,9 +1,23 @@
 # carrier layout notes (board v1.1, notes updated 2026-07-28)
 
-Fully routed and clean: `kicad-cli pcb drc --severity-all` reports **0 violations
-of any severity** and **0 unconnected items**. 1225 track segments, 50 GND vias,
-30 GND through-hole pads. Worst GND stitch gap anywhere outside the antenna
-keep-out: **7.8 mm** (gate: 12 mm).
+> ## ⛔ WIP — the committed `carrier.kicad_pcb` is UNROUTED. Do not plot gerbers.
+>
+> The 2026-07-28 pre-fab pass (silk stroke → 0.15 mm, SW1 slot → 2× aspect, silk
+> off the module bodies) moved copper in three places: SW1's two slot pads out to
+> ±2.45 mm, SW1 itself 0.4 mm south, C3 0.79 mm north. **A router seed has to be
+> re-swept against that copper and has not been yet**, so the board is committed
+> straight out of `gen_board.py`: 2 segments, 38 seeded stitch vias, **58
+> unconnected items**. Everything that does not depend on routing passes — DRC 0
+> violations, ERC 0, `check_netlist.py` OK, `audit_board.py` all five gates.
+>
+> What that costs and how to finish it is in **"Routing: not done yet"** at the
+> bottom of this file. Read it before running anything.
+
+Once routed, the target this board used to hit (and must hit again):
+`kicad-cli pcb drc --severity-all` reports **0 violations of any severity** and
+**0 unconnected items**. 1225 track segments, 50 GND vias, 30 GND through-hole
+pads. Worst GND stitch gap anywhere outside the antenna keep-out: **7.8 mm**
+(gate: 12 mm).
 
 **Zero 90° track corners.** The 2 acute ones are traces fanning out from a pad —
 SW2 pad 1 (`BTN_MODE`) and Q1 pad 3 (`VBAT_OUT`) — wide copper, no notch, not
@@ -441,12 +455,86 @@ Every legend and every reference designator is placed by search, not by a
 footprint's default offset. Each string walks a 16-direction ring outward and
 takes the first spot clearing the pads, the board edge and everything already
 placed, shrinking toward the 0.8 mm DRC text floor before it gives up; if it
-still cannot sit anywhere, a bounded local sweep and then a whole-board sweep
-run before the build fails. Module outlines are corner brackets on
+still cannot sit anywhere, a local sweep and then a wider — but still bounded,
+see below — sweep run before the build fails. Module outlines are corner brackets on
 F.Silkscreen (the full rectangle stays on F.Fab) so they no longer rule a line
 through every socket inside them.
 
-Two placements are deliberate rather than searched:
+Every stroke is **0.15 mm**, not 0.12 — JLCPCB's minimum silkscreen line width.
+Below it the fab may thin the stroke or drop the item, and until 2026-07-28
+*all 70 text items on the board*, every refdes and every safety legend, were at
+0.12. Text **height** stays at 0.8 mm, which is JLC's absolute minimum (1.0 mm
+is only recommended): raising it would grow every bounding box on a board that,
+as the rest of this section explains, has no room to give.
+
+### The module shadow (2026-07-28)
+
+The three socketed modules cover **1180 mm² of a 3500 mm² board**, and until
+2026-07-28 the placement search did not know they existed — `module_outline()`
+draws them with `claim=False` and its return value was discarded. So the search
+treated that third of the board as prime empty silk, and put the battery
+warnings, the pad names and the board's own name under it. **Silk you cannot
+read once the unit is assembled is silk that is not there.**
+
+The bodies are now in a `shadowed` list that `_free()` honours, with one
+exemption. Some legends are read *before* the modules drop in, and for those
+the shadow is not a problem:
+
+- the module-name and orientation legends (`ESP32-C3 SuperMini`, `GY-PCM5102A`,
+  `TP4056`, `USB-C`) — they say what goes here and which way round;
+- `IN+` / `IN-` on the TP4056's mount row, and `OUT-` / `B-` / `B+` / `OUT+` on
+  J5/J6: these name pads the module physically sits on top of, so there is no
+  reading of them that happens with it fitted;
+- a **designator, under its own module only**. By the time you read it the part
+  is in your hand. Straying into a *neighbour's* shadow is still a failure —
+  that is the same defect as SW2's designator landing inside RV1's outline.
+
+`audit_board.py`'s `silk shadow` section is the assertion that this stays true.
+Run against the pre-fix board it reports **13 failures**; against this one, 0.
+
+### Three other things the same pass fixed
+
+- **The whole-board sweep is now bounded** (`SCAN_REACH = 12 mm`). An unbounded
+  sweep does not fail, it *wanders*: `VERIFY CELL POLARITY` came out 34 mm from
+  the battery connector, in the middle of the R6/R12 field, and `B- is NOT GND`
+  14.7 mm from the pad it warns about. A legend that has left its subject behind
+  is worse than a missing one, because it reads as a caption for whatever it
+  landed on. Past the reach it is now reported instead.
+- **Designators are placed most-constrained-first**, re-counting the free spots
+  after each placement, instead of alphabetically. Alphabetical is
+  first-come-first-served by accident of name, which is exactly why SW1, SW2,
+  TP4 and TP5 — late letters, crowded south — kept losing their last spot to a
+  part that had a dozen others. (The old REF_PREFER note about placing TP3
+  before SW2 was this same problem, handled one collision at a time.)
+- **A designator may fall back into its own courtyard.** "Do not sit on your own
+  part" is a legibility preference, not a rule, and it is the weakest one here;
+  `occupied` still keeps it off the pads and off every other legend.
+
+### What had to give
+
+Blocking a third of the board costs more silk area than the board has. Three
+legends were rewritten rather than dropped, and two parts moved 0.4 and 0.8 mm:
+
+- **`VERIFY CELL POLARITY` is gone**, replaced by **`+ cell -`** placed in the
+  strip between the TP4056's south edge and SW1 — the only free silk that is
+  both next to J8 and still visible with the modules fitted. J8 has no clear
+  silk on any side of it: module north, its own connector outline south, SW1
+  west, H4's 6.4 mm pad east. **SW1 moved 0.4 mm south (y → 46.4)** to make that
+  strip 1.86 mm tall instead of 1.46, which is what a line of 0.8 mm text needs.
+- **`B- is NOT GND` became a `NOT GND` pad legend on J5.2**, directly under the
+  `B-` label. Two lines of it in the open strip west of the module do fit, but
+  only at the cost of another designator, and at the pad is where the eye
+  actually is when a probe is about to go somewhere it should not.
+- **The board name lost its date and moved to the mid-south band.** Outside the
+  shadows there is no 12 × 3 mm patch anywhere; two shorter lines fit at
+  (27.0, 37.3). The date is in git and on the back silk.
+- **C3 moved 0.79 mm north (y → 2.0).** Between its own body silk and the DAC's
+  north edge there was a 1.6 mm gap, and a designator is 1.86 mm tall — C3 was
+  the one part on the board with literally nowhere to put its name.
+
+Result: **`SILK_UNPLACED 0`**, which is the build's own hard gate.
+
+### Deliberate rather than searched
 
 - The **fab's order number** goes on the *back*, inside the antenna keep-out.
   That strip carries no pour and no stitching by construction, so it is the one
@@ -455,6 +543,19 @@ Two placements are deliberate rather than searched:
   instance. Placed by the ring search they drifted inboard until they sat
   nearer each other than their own pads — and "which pair is X" is the single
   question that legend exists to answer.
+- **`+ cell -`**, the board name and `UNIT #__` now carry fixed anchors too, for
+  the reasons above.
+
+### Still at 0.12 mm: 282 footprint outlines
+
+The 0.15 mm floor covers everything `gen_board.py` draws — all 78 text items and
+its own module brackets. It does **not** reach the silk that stock KiCad
+footprints carry, which is 0.12 mm by library convention: 282 part-body outlines
+and polarity marks. In practice JLCPCB prints those fine (it is the same silk on
+every KiCad board they build), and they are decoration rather than information,
+so this is an accepted residual rather than an open defect. If it ever matters,
+bump them in the footprint loop in `gen_board.py` — but expect to re-fight the
+placement, because the board converges with no slack at all.
 
 ## Nets narrowed at pinch points (width fallback, §6.4 policy)
 
@@ -486,6 +587,18 @@ floorplan room, not just a bigger number.
    `paper-doll-1to1.pdf` is current.
 2. **SW1 pitch unknown** until the part arrives — footprint is dual-pitch
    (slots accept 2.0 AND 2.54 mm), but verify the body/lever fits.
+   **Re-cut 2026-07-28:** the slots were 1.44 × 0.90 mm, an aspect of 1.6, and
+   **JLCPCB will not plate a slot under 2×**. That gets you a DFM query against
+   the order date, or a silent conversion to a round ⌀0.9 hole at one fixed x —
+   at which point *neither* pitch fits and the boards are scrap. They are now
+   **1.80 × 0.90 (aspect 2.0)** centred at ±2.45, so a pin may sit 2.00–2.90 mm
+   from the middle pin. The pad stayed 2.5 mm long: growing it with the slot
+   left 0.20 mm to the centre pad, which clears JLCPCB's 0.127 mm floor but not
+   this board's own 0.25 mm netclass clearance — four DRC violations on a gate
+   that has to read zero. Check it on the drill file, not the board: the routed
+   slots should be `G00X47.08 → G01X47.98` and `G00X51.98 → G01X52.88`, i.e.
+   0.90 mm of travel on the 0.900 tool (it was 0.54).
+   **SW1 also moved 0.4 mm south, to y = 46.4** — see the silkscreen section.
 3. ~~**RV1 (RV097NS) bracket lug geometry** is from the generic RV09 drawing —
    least-certain footprint on the board~~ — **RESOLVED 2026-07-27, and it was
    wrong.** The part is *5-pin mono with switch*, right-angle: row 2 is an SPST
@@ -522,9 +635,16 @@ floorplan room, not just a bigger number.
    far end of a 21.65 mm lever is how you damage the output pads.
 6. Antenna keepout (x < 6, y 6–28) is pour-free on both layers; a few thin
    signal traces may pass the region edge (soft-penalised, not forbidden).
-7. **R10** is a standing axial (≈7.5 mm) at x 54.35…59.49, y 4.83…7.88, and the
-   DAC body reaches x 55.62 / y 6.22 — so its corner *is* under the module, with
-   0.8 mm to spare against the 8.3 mm standoff. Not much. Seat it low.
+7. **R10** is a standing axial at x 54.35…59.49, y 4.83…7.88, and the DAC body
+   reaches x 55.62 / y 6.22 — so its corner *is* under the module. Whether it
+   clears depends on a number nothing has measured: `audit_board.py` calls a
+   standing `R_Axial_DIN0207` **7.5 mm** and passes it with 0.8 mm of margin
+   against the 8.3 mm standoff, while `design.py` calls the same package
+   **9 mm**, which would not fit at all. **Fit R10/R11 as 0 Ω wire links**
+   (pcb.md §10 Q2, closed 2026-07-28) — flat, so the question stops existing,
+   and electrically indistinguishable from 100 Ω given the module's own ~470 Ω
+   output filter. If a future build populates real resistors here, reconcile
+   `PART_HEIGHT_MM` against a caliper first and seat them low.
 8. **TO-92 lead order for U1 and Q2** — added 2026-07-26. `design.py` wires U1 as
    pad 1 = REF, pad 2 = ANODE, pad 3 = CATHODE (onsemi numbering). TI numbers the
    same TO-92 package pin 1 = K, pin 2 = A, pin 3 = REF, and since the anode is
@@ -547,6 +667,94 @@ checks with parts already in hand.
 - `render-top.png`, `render-bottom.png` — 3D previews
 - `tools/design.py` — single source of truth (nets, parts, deviations)
 - `tools/measured.py` — module geometry from `hw/pin_locs` photogrammetry
-- `tools/audit_board.py` — geometry gate (module fit, silk, routing, clearance)
+- `tools/audit_board.py` — geometry gate (module fit, silk, routing, clearance,
+  and — since 2026-07-28 — legends printed where a fitted module hides them)
+- `tools/measure_copper.py` — as-built track widths and pad-to-pad DC, so the
+  §6.4 table can be regenerated from the board instead of from memory
 - `tools/search.py` — parallel layout/router parameter sweep
 - `tools/check_netlist.py` — respin gate; run after any `design.py` change
+
+## Routing: not done yet (2026-07-28)
+
+The pre-fab pass moved copper, so the shipped seed had to be re-swept. It was
+attempted here and **abandoned unfinished** — this section is the handoff.
+
+### What was measured
+
+`ROUTE_ATTEMPTS=1` at the default `ROUTE_SEED=11`, on the new copper:
+
+```
+attempt 1: 1414 segments, 35 vias, 10 failures
+  ['3V3', 'DBG_TX', 'GATE', 'LED_MODE_A', 'TL431_K', 'VSW', 'VSW_SENSE']
+phase D round 5: 2 clusters (38 outlines)     <- pour never became single
+```
+
+One attempt is ~20–30 s, against the ~8 s/attempt this board used to cost. That
+is not mysterious: a *failed* A\* expands the whole grid before giving up, so a
+seed that fails 7 nets is several times more expensive per attempt than one that
+routes. The full 40-attempt ladder is therefore ~20 min of one core, not the
+"~5–6 min" pcb.md §9 still quotes — **fix that number once a seed is chosen.**
+
+Attempt 1 failing is not by itself a verdict: the promote ladder (attempts 1–8)
+and the shuffle (9–40) exist precisely because the first net order is arbitrary,
+and `best` keeps the best attempt, not the last. Seed 11 may still land. It was
+killed at ~19 min of CPU, still inside phase A, so **it has no verdict either
+way** — do not read the abandonment as "seed 11 is dead".
+
+### Why the sweep produced nothing
+
+`tools/search.py --stage router --jobs 8` was run on an 8-core laptop. All 8
+first-wave variants hit `CARRIER_SEARCH_TIMEOUT` (default **1800 s**) and were
+recorded as `FAILED at timeout` — 8 jobs plus a foreground router on 8 cores is
+~0.8 core each, so 1800 s of wall is ~25 min of CPU, and a 40-attempt ladder on
+copper this hard does not fit in that. **The timeouts are a measurement artifact,
+not a statement about the seeds.** Any of those 16 variants may be fine.
+
+### What to run (32-thread workstation)
+
+```sh
+cd hw/carrier
+/usr/bin/python3 tools/gen_footprints.py && /usr/bin/python3 tools/gen_board.py
+CARRIER_SEARCH_TIMEOUT=7200 /usr/bin/python3 -u tools/search.py --stage router --jobs 16
+```
+
+Three things that are easy to get wrong:
+
+- **`CARRIER_SEARCH_TIMEOUT=7200`.** Without it the sweep silently returns
+  nothing but timeouts, which reads exactly like "no seed works".
+- **`--jobs 16`, not 32.** The variants are single-threaded but memory-hungry
+  (each holds a full `pcbnew` board plus two 552 × 394 obstacle grids), and
+  oversubscribing is what turned the laptop run into a timeout farm.
+- **`-u`.** `search.py` flushes per completed variant, but `route.py`'s own
+  per-attempt lines are block-buffered when redirected — without `-u` a
+  multi-hour run looks identical to a hung one for its entire length.
+
+Adopt the winner, then: if it is not 11, re-run `gen_board.py` + `route.py`
+under it, update `SEED`'s default and the dated comment block above it in
+`tools/route.py:51`, and the `ROUTE_SEED` note in pcb.md §9.
+
+If the whole 16-variant sweep comes back with failures, the knob to reach for
+next is `ROUTE_GND_HALO_MM=0.0` with more seeds (halo-off is already 4 of the
+16), and after that `ROUTE_ATTEMPTS=80` — the ladder plateaus at 8 and the
+remaining 32 are pure shuffle, so more shuffle is cheap insurance.
+
+### Gates once it routes
+
+`bash` the checks in pcb.md §9, in this order, and expect exactly this:
+
+| Gate | Expect |
+|---|---|
+| `route.py` exit code | **0** — nonzero means unrouted nets, stitch failures, or a split pour |
+| `kicad-cli pcb drc --severity-all` | 0 violations, **0 unconnected** |
+| `kicad-cli sch erc --severity-all` | 0 violations |
+| `tools/check_netlist.py <exported .net>` | OK |
+| `tools/audit_board.py --verbose` | all five gates, incl. `silk shadow … 0 that should not be` |
+| silk stroke census | 0 items below 0.15 mm (was 70) |
+| drill file `G85` slots | 0.90 mm tool, endpoints 0.90 mm apart (was 0.54) |
+| `tools/measure_copper.py` | feeds the pcb.md §6.4 width table — see below |
+
+The last one is the only gate that is not pass/fail: its numbers have to be
+copied into pcb.md §6.4 and §4.4 item 1, and into the width table in this file.
+Those three places currently hold **pre-route figures from the old board** and
+are known stale — that is the one documentation item the 2026-07-28 pass did not
+finish, because it cannot be finished until the board routes.

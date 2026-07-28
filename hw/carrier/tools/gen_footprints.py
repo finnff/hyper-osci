@@ -109,14 +109,34 @@ footprint("RCA_FlyingLead_Pads",
 
 # --- 2. SW1 dual-pitch SPDT slide (pcb.md §5: SK12D07-class 1A, pitch unknown
 # until the part arrives — slots accept BOTH 2.0 and 2.54 mm pin pitch).
-# Copper sits outboard (drill offset inward) so pad-pad clearance is 0.22mm. ---
+#
+# The slot LENGTH is set by JLCPCB, not by us: a plated slot must be at least
+# 2x as long as it is wide, or the fab raises a DFM query (costly against the
+# order date) or silently converts it to a round hole — and a round 0.9mm hole
+# at one fixed x accepts NEITHER pitch.  At 0.90mm wide that forces >= 1.80mm
+# long, up from the 1.44 this footprint carried until 2026-07-28 (aspect 1.6).
+#
+# A 1.80 x 0.90 slot's two end arcs are 0.90mm apart, so a pin may sit anywhere
+# within +/-0.45mm of the hole centre.  Centring at 2.45 puts that window at
+# 2.00..2.90 from the switch's middle pin, which covers a 2.0mm-pitch part and
+# a 2.54 one (SS12D00) alike.  2.45 is the LARGEST centre that still reaches
+# 2.00, and largest is what we want: it drags the copper as far outboard as the
+# pitch allows.  The old drill offset was buying that same headroom and is no
+# longer needed.
+#
+# The PAD stays 2.5mm long, not 2.9.  Growing it with the slot leaves only
+# 0.20mm to the centre pad, and while that clears JLCPCB's 0.127mm floor it is
+# under this board's own 0.25mm netclass clearance — four DRC violations, on
+# the gate that has to read zero before gerbers go out.  At 2.5 the gap is
+# 0.40mm and the annular ring is still 0.35mm on the long axis, 0.50 across
+# (JLCPCB wants 0.15). ---
 footprint("SW_Slide_SPDT_DualPitch",
           "SPDT slide switch, slotted outer pads accept 2.0mm or 2.54mm pitch (SS12/SK12 class) - VERIFY vs real part",
-          [pad_tht(1, -2.27, 0, (2.5, 1.9), (1.44, 0.9), "oval", (-0.2, 0)),
+          [pad_tht(1, -2.45, 0, (2.5, 1.9), (1.80, 0.9), "oval"),
            pad_tht(2, 0, 0, 1.6, 0.9),
-           pad_tht(3, 2.27, 0, (2.5, 1.9), (1.44, 0.9), "oval", (0.2, 0)),
+           pad_tht(3, 2.45, 0, (2.5, 1.9), (1.80, 0.9), "oval"),
            rect(-4.5, -2.0, 4.5, 2.0),
-           text("1", -2.47, -2.9, size=0.8),
+           text("1", -2.45, -2.9, size=0.8),
            rect(-5.0, -2.5, 5.0, 2.5, "F.CrtYd", 0.05),
            text("dual-pitch 2.0/2.54", 0, 3.5, "F.Fab", 0.8)])
 

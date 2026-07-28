@@ -42,7 +42,7 @@ Goal: **Gerbers uploaded and paid by Aug 1**, and two slaves drawing the same pi
 
 Deliverables:
 
-- [ ] KiCad schematic: carrier per DESIGN §3/§9 — socketed modules, power path (P-FET + Schottky load sharing per [hardware/pcb.md](hardware/pcb.md)), battery divider, switch, button, pot, LEDs, GPIO2 pull-up, ≥220 µF bulk, 2× RCA output pad-pairs (signal + ground, fed through 100 Ω series R10/R11 — no board-mounted BNC/TRS).
+- [ ] KiCad schematic: carrier per DESIGN §3/§9 — socketed modules, power path (P-FET + Schottky load sharing per [hardware/pcb.md](hardware/pcb.md)), battery divider, switch, button, pot, LEDs, GPIO2 pull-up, ≥220 µF bulk, 2× RCA output pad-pairs (signal + ground, fed through series R10/R11 — **fitted as 0 Ω links**, since the DAC module already carries ~470 Ω of its own; pcb.md §10 Q2 — no board-mounted BNC/TRS).
 - [ ] Layout 70 × 50 mm, 2-layer, THT except Q1 (SOT-23) and D2 (SMA); footprints from photogrammetry (`hw/pin_locs` via `measured.py`), not W1 calipers. Defensive layout: 0R links / bodge points on anything unproven, module sockets mean a footprint error only costs an adapter.
 - [ ] Design review pass against `config.h` pin map (it is law) + DRC clean.
 - [ ] **ORDER: 2-layer × 5 boards at JLCPCB (default; PCBWay = fallback), DHL express, by Aug 1.** Build 4 units + 1 spare bare board (5 is the fab min qty anyway). Cost is trivial (~€2–10 board run + ~€15–20 express shipping ⚠️ VERIFY: exact quote at checkout).

@@ -106,7 +106,8 @@ Series resistances upstream of the LDO (*est.*): FS8205 dual FET ~50 mΩ + slide
 This is exactly why the `config.h` thresholds sit where they do:
 
 - **`VBAT_WARN_MV 3450`** — the point where the LDO enters dropout under NETWORK steady load. The rail is still healthy, but the operator gets notice (~90–120 min left on the selected 2000 mAh cell; ~45–60 min on a legacy 1000 mAh).
-- **`VBAT_WIFI_OFF_MV 3300`** — during a 335 mA burst at VBAT = 3.3 V the rail dips toward ≈ 2.87 V, below the 3.0 V WiFi-TX minimum. The C3 IDF default brownout threshold is **2.51 V** (`ESP_BROWNOUT_DET_LVL_SEL_7`; selectable 2.51 / 2.64 / 2.76 / 2.92 / 3.10 / 3.27 V), so a 2.87 V dip does *not* trip the default detector — raising it to `SEL_4` (2.92 V) in sdkconfig is a firmware task if the "brownout catches the sag" reasoning is to hold. Killing the radio at 3.30 V removes the bursts *before* they cause spontaneous resets, and drops draw to LOCAL levels; the `VBAT_WIFI_OFF_MV = 3300` conclusion stands regardless of the brownout level.
+- **`VBAT_WIFI_OFF_MV 3300`** — during a 335 mA burst at VBAT = 3.3 V the rail dips toward ≈ 2.87 V, below the 3.0 V WiFi-TX minimum. The C3 IDF default brownout threshold is **2.51 V** (`ESP_BROWNOUT_DET_LVL_SEL_7`; selectable 2.51 / 2.64 / 2.76 / 2.92 / 3.10 / 3.27 V), so a 2.87 V dip does *not* trip the default detector. Killing the radio at 3.30 V removes the bursts *before* they cause spontaneous resets, and drops draw to LOCAL levels.
+- ⚠️ **Do not raise the brownout level to `SEL_4` (2.92 V).** Earlier revisions of this section suggested it, to make "the brownout catches the sag" literally true. Run the numbers on the drop this section just derived (0.43 V at 335 mA) and it does the opposite: SEL_4 trips whenever VBAT − 0.43 < 2.92, i.e. **below VBAT ≈ 3.35 V** — and the radio does not go off until 3.30 V, so between **3.30 and 3.35 V the unit resets mid-show while it is still in NETWORK mode**, before the WARN → WIFI_OFF ladder has any chance to act. On an aged cell (loop 0.5–1 Ω, +170–335 mV of sag) that band widens to roughly 3.30–3.65 V, which is most of an evening. The IDF default **SEL_7 (2.51 V)** does not trip until VBAT ≈ **2.94 V**, by which point the DW01 cut-off at 2.4 V is the next thing to happen anyway. Keep the default; the firmware ladder is the mechanism, not the brownout detector.
 - Aged cells or long leads push the loop toward 0.5–1 Ω, adding 170–335 mV of burst sag — another reason the radio-off threshold is deliberately conservative.
 
 ### 4.3 Why the ≥220 µF bulk capacitor is required
@@ -117,7 +118,16 @@ The SuperMini and its LDO carry only small ceramics (~1–10 µF). A 300+ mA TX 
 - halves the effective source impedance at WiFi-burst timescales;
 - damps the L·di/dt spike from battery leads.
 
-220 µF is the floor, not a target — if week-1 scope measurements (§7 item 4) still show >100 mV of rail dip during WiFi connect at VBAT = 3.5 V, go to 470 µF. This mirrors Espressif's long-standing guidance for battery-fed ESP designs.
+220 µF is the floor, not a target — but **if week-1 scope measurements (§8 item 4) show a dip you do not like, more capacitance is the wrong lever.** Model the cap branch (ESR in series with C) in parallel with the battery loop and step it with a 335 mA burst: at t = 50 µs the dip is
+
+| | ESR 1.0 Ω | ESR 0.5 Ω | ESR 0.1 Ω |
+|---|---:|---:|---:|
+| **220 µF**, loop 0.2 Ω | 57.8 mV | 53.2 mV | 46.1 mV |
+| **1000 µF**, loop 0.2 Ω | 56.3 mV | — | 29.2 mV |
+| **220 µF**, loop 1.0 Ω | 185.5 mV | 143.1 mV | 87.3 mV |
+| **1000 µF**, loop 1.0 Ω | 171.6 mV | — | 44.0 mV |
+
+Read down the first column: going 220 → 1000 µF buys **1.5 mV** on a fresh cell and 14 mV on a tired one. Read across: dropping ESR from 1.0 to 0.1 Ω buys **12 mV** and **98 mV**. On a 50 µs timescale the cap has barely begun to discharge, so its *capacitance* is not what is holding the rail up — its **ESR** is, because that is what sets the impedance the burst sees at t = 0. **Specify C1 as a low-ESR part** (≤0.5 Ω at 100 kHz — a 105 °C low-impedance electrolytic, or a polymer/solid can) and leave the value at 220 µF. A cheap 1000 µF general-purpose can is *worse* than a good 220 µF one. This is the same conclusion as Espressif's long-standing guidance for battery-fed ESP designs, arrived at from the numbers rather than from the rule of thumb.
 
 ---
 
@@ -178,7 +188,7 @@ Goal: replace every *est.* in this file with a measured number and close DESIGN 
 | 1 | LDO identity on all 4 SuperMinis | loupe/photo of the SOT-23-5 marking (ME6211 = "S2QB"-style Microne code; beware "LLVB" = 250 mA part) | §4.1 ⚠️ |
 | 2 | Average current: LOCAL idle, LOCAL playing, NETWORK streaming, HYBRID | bench supply at 3.70 V into the 5V pin (battery out, switch off); read supply's mA display, cross-check with DMM. **Caveat:** DMM mA-range burden (~1–2 Ω) distorts the rail — use the 10A range or a 0.1 Ω shunt + mV reading. USB power meter only as a coarse cross-check (linear LDO ⇒ its mA ≈ rail mA, but ~10 mA resolution and it can't see bursts) | §2 table, §3 battery lives |
 | 3 | TX burst profile (peak mA, duration, repetition) | scope across 0.1 Ω shunt in the supply lead during streaming and during WiFi connect. **Requires a scope: the handheld ANENG A9002 DMM cannot resolve sub-ms bursts, so without a scope on hand the §2 burst figures stay modeled/estimated, not bench-measured.** | §2 burst table |
-| 4 | Rail droop / brownout onset | supply sweep 4.2 → 2.8 V in 0.1 V steps under NETWORK load; scope 3V3 rail AC-coupled during WiFi connect at 3.5 V and 3.3 V, **with and without the 220 µF**; record the VBAT at which the unit resets | §4.2 dropout math, §4.3 cap sizing, DESIGN §12 item 4 |
+| 4 | Rail droop / brownout onset | supply sweep 4.2 → 2.8 V in 0.1 V steps under NETWORK load; scope 3V3 rail AC-coupled during WiFi connect at 3.5 V and 3.3 V, **with and without the 220 µF**; record the VBAT at which the unit resets. **If the dip is worse than §4.3 predicts, the suspect is C1's ESR, not its value** — swap cans rather than adding µF, and note that a step *edge* taller than ~40 mV that recovers within a few µs is ESR by definition | §4.2 dropout math, §4.3 cap sizing, DESIGN §12 item 4 |
 | 5 | ME6211 dropout curve | supply into 5V pin, fixed resistive load steps (50/120/300 mA), record VIN at which 3V3 sags 1 % | §4.2 extrapolation ⚠️ |
 | 6 | Real usable capacity + threshold validation | full 4.2 V charge, run NETWORK streaming, log `vbat_mv` from 1 Hz status packets until deep sleep; integrate runtime × current; **watch DAC output amplitude during the battery-rundown test** (PCM5102A drops below its recommended supply minimums through the LOCAL low-battery band — §3) | §3 table, §5 ladder |
 | 7 | Divider/ADC accuracy | DMM VBAT vs reported `vbat_mv` at ~3.0/3.3/3.7/4.2 V per unit → NVS scale factors | §7 calibration |

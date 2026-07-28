@@ -43,6 +43,12 @@ ZONE_MIN_MM = float(os.environ.get("CARRIER_ZONE_MIN", "0.15"))
 STITCH_SEED_PITCH = float(os.environ.get("CARRIER_SEED_PITCH", "7.0"))
 
 REF_SIZE = 0.8          # reference designator text height, mm
+# JLCPCB's minimum silkscreen line width is 0.15mm; below it the fab may thin
+# the stroke or drop the item outright, and every refdes and safety legend on
+# this board was drawn at 0.12.  Height stays at 0.8 (also a JLC minimum, and
+# 1.0 is only *recommended*) — raising it would grow every bounding box on an
+# already-dense board, which the placement search below cannot absorb.
+SILK_W = 0.15
 # FP_OVERRIDE (standing axials) now lives in design.py so gen_schematic.py sees
 # the same answer — see the note there.
 
@@ -110,7 +116,11 @@ P = {
     "C1": (26.0, 29.5, 90),           # pads run north: +VLOAD @ anchor
     "C2": (17.5, 28.5, 0),            # VLOAD bypass, 5mm from the 5V pin
     # battery sense divider, NW near GPIO1 (JA1.7 @ 5.08, JA1 row)
-    "R1": (9.5, 3.81, 0), "R2": (15.5, 3.81, 0), "C3": (24.13, 2.79, 0),
+    # C3 moved north 0.79mm on 2026-07-28: at 2.79 its own body silk and the
+    # DAC's north edge left a 1.6mm gap under it, and its designator is 1.86mm
+    # tall, so C3 was the one part on the board with literally nowhere to put
+    # its name.  Nothing else constrains this cap — it is a 100nF across R2.
+    "R1": (9.5, 3.81, 0), "R2": (15.5, 3.81, 0), "C3": (24.13, 2.0, 0),
     "R3": (17.16, 17.0, 180),         # GPIO2 pull-up between the rows: pad1/3V3 east, pad2/GPIO2 west
     # DAC -> RCA series R, standing, in the island strip north of J3
     "R10": (55.88, 6.35, 0), "R11": (44.45, 4.06, 180),
@@ -124,7 +134,14 @@ P = {
     # Moving RV1 south again would leave the body overhanging unsupported.
     "D4": (9.9, 46.99, 0), "D5": (15.5, 46.99, 0),
     "SW2": (21.5, 43.0, 0),           # anchor = pad1 corner (pads +x/+y)
-    "RV1": (36.8, 45.0, 0), "SW1": (49.98, 46.0, 0),
+    # SW1 moved south 0.4mm on 2026-07-28.  The strip between the TP4056's
+    # south edge (y 42.04) and SW1's courtyard is the ONLY free silk that is
+    # both next to J8 and still visible with the modules fitted, and at y=46.0
+    # it was 1.46mm — 0.4mm short of a line of 0.8mm text.  This is what puts
+    # the battery-polarity legend on the board instead of under the charger.
+    # The switch is operated from above, so its y is not a mechanical constraint
+    # the way RV1's is; 46.4 still leaves 1.05mm of board south of its courtyard.
+    "RV1": (36.8, 45.0, 0), "SW1": (49.98, 46.4, 0),
     "R4": (8.9, 40.9, 0), "R5": (14.5, 41.28, 0),
     "TP1": (67.31, 21.59, 0), "TP2": (39.0, 30.0, 0),
     "TP3": (21.0, 37.5, 0), "TP4": (37.5, 28.0, 0),
@@ -219,7 +236,7 @@ for ref, c in COMPONENTS.items():
                 g.SetTextThickness(FromMM(0.22))
     r = fp.Reference()
     r.SetTextSize(VECTOR2I(FromMM(REF_SIZE), FromMM(REF_SIZE)))
-    r.SetTextThickness(FromMM(0.12))
+    r.SetTextThickness(FromMM(SILK_W))
     r.SetLayer(pcbnew.F_SilkS)
     board.Add(fp)
     fps[ref] = fp
@@ -276,7 +293,7 @@ def _mk_text(s, size, rot, layer=pcbnew.F_SilkS):
     t.SetText(s)
     t.SetLayer(layer)
     t.SetTextSize(VECTOR2I(FromMM(size), FromMM(size)))
-    t.SetTextThickness(FromMM(max(0.12, size * 0.15)))
+    t.SetTextThickness(FromMM(max(SILK_W, size * 0.15)))
     if rot:
         t.SetTextAngleDegrees(rot)
     return t
@@ -295,12 +312,24 @@ def _text_wh(t):
     b = _text_box(t, 0, 0)
     return b[2] - b[0], b[3] - b[1]
 
+# Silk inside a module's footprint can only be read with that module OUT of its
+# socket.  That is fine for anything you read while stuffing the board and
+# useless for anything you read afterwards, so the three bodies go into
+# `shadowed` rather than `occupied`, and `SHADOW_OK` lifts the ones a given
+# placement is allowed to sit in.  See the split at the module legends below.
+shadowed = []                      # module bodies: [(x0, y0, x1, y1), ...]
+SHADOW_OK = []                     # bodies exempt for the placement in progress
+
+def _hits(b, o):
+    return b[0] < o[2] and o[0] < b[2] and b[1] < o[3] and o[1] < b[3]
+
 def _free(b):
     if b[0] < EDGE_CLR or b[1] < EDGE_CLR or b[2] > 70 - EDGE_CLR \
             or b[3] > 50 - EDGE_CLR:
         return False
-    return not any(b[0] < o[2] and o[0] < b[2] and b[1] < o[3] and o[1] < b[3]
-                   for o in occupied)
+    if any(_hits(b, o) for o in shadowed if o not in SHADOW_OK):
+        return False
+    return not any(_hits(b, o) for o in occupied)
 
 # Seed the occupancy map: exposed copper (silk over a pad is a real defect),
 # then every graphic the footprints themselves put on the front silk.
@@ -338,7 +367,7 @@ RING = [(0, 1), (0, -1), (1, 0), (-1, 0),
         (0.5, 1), (-0.5, 1), (0.5, -1), (-0.5, -1),
         (1, 0.5), (1, -0.5), (-1, 0.5), (-1, -0.5)]
 
-def silk_line(x1, y1, x2, y2, layer=pcbnew.F_SilkS, w=0.12, claim=True):
+def silk_line(x1, y1, x2, y2, layer=pcbnew.F_SilkS, w=SILK_W, claim=True):
     s = pcbnew.PCB_SHAPE(board)
     s.SetShape(pcbnew.SHAPE_T_SEGMENT)
     s.SetStart(mm(x1, y1)); s.SetEnd(mm(x2, y2))
@@ -348,7 +377,7 @@ def silk_line(x1, y1, x2, y2, layer=pcbnew.F_SilkS, w=0.12, claim=True):
         occupied.append((min(x1, x2) - w - SILK_CLR, min(y1, y2) - w - SILK_CLR,
                          max(x1, x2) + w + SILK_CLR, max(y1, y2) + w + SILK_CLR))
 
-def silk_rect(x1, y1, x2, y2, layer=pcbnew.F_SilkS, w=0.12, claim=True):
+def silk_rect(x1, y1, x2, y2, layer=pcbnew.F_SilkS, w=SILK_W, claim=True):
     for a, b in [((x1, y1), (x2, y1)), ((x2, y1), (x2, y2)),
                  ((x2, y2), (x1, y2)), ((x1, y2), (x1, y1))]:
         silk_line(a[0], a[1], b[0], b[1], layer, w, claim)
@@ -378,10 +407,10 @@ def _arm(cx, cy, ux, uy, arm):
     """
     L = arm
     while L >= 0.8:
-        b = (min(cx, cx + ux * L) - 0.12 - SILK_CLR,
-             min(cy, cy + uy * L) - 0.12 - SILK_CLR,
-             max(cx, cx + ux * L) + 0.12 + SILK_CLR,
-             max(cy, cy + uy * L) + 0.12 + SILK_CLR)
+        b = (min(cx, cx + ux * L) - SILK_W - SILK_CLR,
+             min(cy, cy + uy * L) - SILK_W - SILK_CLR,
+             max(cx, cx + ux * L) + SILK_W + SILK_CLR,
+             max(cy, cy + uy * L) + SILK_W + SILK_CLR)
         if _free(b):
             silk_line(cx, cy, cx + ux * L, cy + uy * L)
             return
@@ -389,6 +418,7 @@ def _arm(cx, cy, ux, uy, arm):
 
 MIN_TEXT = 0.8          # KiCad's default minimum-text-height DRC rule
 LOCAL_REACH = 3.5       # how far a designator may stray from its courtyard, mm
+SCAN_REACH = 12.0       # and how far a free-floating legend may stray, mm
 
 def _sweep(t, x0, y0, x1, y1, ax, ay, step, keep):
     """Grid-search a window for the free spot nearest (ax, ay).
@@ -423,7 +453,7 @@ def _sizes(size, shrink):
     return out
 
 def find_spot(s, ax, ay, size, halo=(0.0, 0.0), prefer=(), rot=0, shrink=True,
-              scan=False):
+              scan=False, own=False):
     """Nearest clear patch of silk for `s`, anchored on (ax, ay) + `halo`.
 
     Returns (x, y, size, box) or None.  Offsets are computed from the text's
@@ -454,14 +484,34 @@ def find_spot(s, ax, ay, size, halo=(0.0, 0.0), prefer=(), rot=0, shrink=True,
                      ax, ay, 0.25, keep)
         if got:
             return (got[1], got[2], sz, got[3])
+    # `keep` — "do not sit on your own part" — is a legibility preference, not
+    # a rule.  For a designator it is also the weakest one on the board: you
+    # read a designator while stuffing, when the part is still in the bag, so
+    # printing it inside its own courtyard costs nothing (`occupied` still
+    # keeps it off the pads and off every other legend).  Try it before giving
+    # up — SW1, SW2 and the two testpoints have nowhere else left to go.
+    if own:
+        for sz in _sizes(size, shrink):
+            t = _mk_text(s, sz, rot)
+            got = _sweep(t, ax - halo[0] - LOCAL_REACH, ay - halo[1] - LOCAL_REACH,
+                         ax + halo[0] + LOCAL_REACH, ay + halo[1] + LOCAL_REACH,
+                         ax, ay, 0.25, None)
+            if got:
+                return (got[1], got[2], sz, got[3])
     if not scan:
         return None
-    # Legends that are not tied to one part get a whole-board sweep: take the
-    # free spot nearest the preferred anchor rather than giving up.
+    # Legends that are not tied to one part get a wider sweep — but a BOUNDED
+    # one.  It used to be the whole board, and a whole-board sweep does not
+    # fail, it wanders: `VERIFY CELL POLARITY` came out 34 mm from the battery
+    # connector, in the middle of the R6/R12 field, where it warns about
+    # nothing.  A legend that has left its subject behind is worse than a
+    # legend that is missing, because it reads as a label for whatever it
+    # landed on.  Past SCAN_REACH, say so instead.
     for sz in _sizes(size, shrink):
         t = _mk_text(s, sz, rot)
-        got = _sweep(t, EDGE_CLR, EDGE_CLR, 70 - EDGE_CLR, 50 - EDGE_CLR,
-                     ax, ay, 0.5, None)
+        got = _sweep(t, max(EDGE_CLR, ax - SCAN_REACH), max(EDGE_CLR, ay - SCAN_REACH),
+                     min(70 - EDGE_CLR, ax + SCAN_REACH),
+                     min(50 - EDGE_CLR, ay + SCAN_REACH), ax, ay, 0.5, None)
         if got:
             return (got[1], got[2], sz, got[3])
     return None
@@ -487,7 +537,7 @@ def back_text(s, x, y, size=0.8, rot=0):
     t.SetLayer(pcbnew.B_SilkS)
     t.SetMirrored(True)
     t.SetTextSize(VECTOR2I(FromMM(size), FromMM(size)))
-    t.SetTextThickness(FromMM(max(0.12, size * 0.15)))
+    t.SetTextThickness(FromMM(max(SILK_W, size * 0.15)))
     if rot:
         t.SetTextAngleDegrees(rot)
     board.Add(t)
@@ -499,13 +549,23 @@ def court(ref):
     x1, y1 = bb.GetRight() / 1e6, bb.GetBottom() / 1e6
     return ((x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2)
 
-def label(ref, s, size=0.8, prefer=()):
-    """Legend for a specific part — must land next to it, so no board sweep."""
-    cx, cy, hw, hh = court(ref)
-    return place_text(s, cx, cy, size, (hw, hh), prefer, scan=False,
-                      name=f"label {s} @{ref}")
+def label(ref, s, size=0.8, prefer=(), under=False, rot=0):
+    """Legend for a specific part — must land next to it, so no board sweep.
 
-def pad_label(ref, num, s, size=0.8, prefer=()):
+    `under=True` lets it sit in the shadow of whatever module covers `ref`:
+    correct when the legend is read while the part is being stuffed and wrong
+    when it is read on a finished unit.  `rot=90` is for the parts whose only
+    remaining gap is a tall thin one.
+    """
+    cx, cy, hw, hh = court(ref)
+    SHADOW_OK[:] = in_shadow((cx - hw, cy - hh, cx + hw, cy + hh)) if under else []
+    try:
+        return place_text(s, cx, cy, size, (hw, hh), prefer, rot=rot, scan=False,
+                          name=f"label {s} @{ref}")
+    finally:
+        SHADOW_OK.clear()
+
+def pad_label(ref, num, s, size=0.8, prefer=(), under=False):
     """Legend for one pad — same rule, anchored on the pad instead."""
     p = [q for q in fps[ref].Pads() if q.GetNumber() == num][0]
     bb = p.GetBoundingBox()
@@ -513,8 +573,12 @@ def pad_label(ref, num, s, size=0.8, prefer=()):
     cy = (bb.GetTop() + bb.GetBottom()) / 2e6
     hw = (bb.GetRight() - bb.GetLeft()) / 2e6
     hh = (bb.GetBottom() - bb.GetTop()) / 2e6
-    return place_text(s, cx, cy, size, (hw, hh), prefer, scan=False,
-                      name=f"pad label {s} @{ref}.{num}")
+    SHADOW_OK[:] = in_shadow((cx - hw, cy - hh, cx + hw, cy + hh)) if under else []
+    try:
+        return place_text(s, cx, cy, size, (hw, hh), prefer, scan=False,
+                          name=f"pad label {s} @{ref}.{num}")
+    finally:
+        SHADOW_OK.clear()
 
 # --- module bodies, straight off the measured outlines ----------------------
 def body(ref, pad, box):
@@ -538,21 +602,62 @@ place_text("GY-PCM5102A", (DAC_BODY[0] + DAC_BODY[2]) / 2, 20.0, 0.9,
            name="PCM5102A legend")
 place_text("TP4056", 57.0, 33.5, 0.9, name="TP4056 legend")
 place_text("USB-C", 66.0, 30.0, 0.8, name="USB-C legend")
+
+# --- from here on, the module bodies are in shadow ---------------------------
+# Until 2026-07-28 they were not there at all: `module_outline()` draws them
+# with claim=False and its return value was discarded, so the placement search
+# did not know the modules existed.  Its phase-3 whole-board sweep treated that
+# 1180 mm^2 of a 3500 mm^2 board as prime empty silk, and moved
+# `VERIFY CELL POLARITY` 12 mm onto the TP4056, `B- is NOT GND` and `OUT+`
+# under it as well, and the board's own name under the SuperMini.  Silk you
+# cannot read once the unit is assembled is silk that is not there.
+#
+# The five legends ABOVE this line stay inside on purpose: they name the module
+# and say which way round it goes, which you read while stuffing the board.  So
+# does anything else read before the modules drop in — see SHADOW_OK below.
+shadowed.extend((ESP_BODY, DAC_BODY, CHG_BODY))
+
+def in_shadow(box):
+    """The module bodies `box` overlaps — i.e. what is over this part."""
+    return [b for b in shadowed if _hits(box, b)]
+
 # TP4056 output pads: which of the four is which is not guessable, and B- is
 # the one that gets a board killed if it is mistaken for GND.
+#
+# These four are pre-assembly legends, and not by choice: J5/J6 are the sockets
+# the TP4056 plugs INTO, so the module covers the very pads they name.  There
+# is no reading of "OUT+" that happens with the module fitted.  Three of the
+# four clear the body westward anyway; OUT+ is the odd one out, boxed in by
+# RV1's courtyard to the west (2.07 mm of gap) and the module everywhere else,
+# so it takes the east side of its own pad rather than being flung 7 mm away
+# to the far side of the module, which is where the unbounded search put it.
 WEST = ((-1, 0), (-1, -0.5), (-1, 0.5))
-pad_label("J5", "1", "OUT-", prefer=WEST)
-pad_label("J5", "2", "B-", prefer=WEST)
-pad_label("J6", "1", "B+", prefer=WEST)
-pad_label("J6", "2", "OUT+", prefer=WEST)
-place_text("B- is NOT GND", 38.8, 32.0, 0.8, name="B- warning")
+pad_label("J5", "1", "OUT-", prefer=WEST, under=True)
+pad_label("J5", "2", "B-", prefer=WEST, under=True)
+pad_label("J6", "1", "B+", prefer=WEST, under=True)
+pad_label("J6", "2", "OUT+", prefer=WEST, under=True)
+# The B- warning is the one legend on this board that gets a unit killed if
+# it is missed, and as a free-floating string it never landed anywhere
+# useful: anchored at (38.8, 32.0) with the whole board to sweep it came
+# out at (26.5, 40.0), 14.7 mm from the pad, reading as a caption for
+# R6/R12.  It goes ON the pad instead, directly under the "B-" legend.
+pad_label("J5", "2", "NOT GND", prefer=((0, 1), (0, -1)), under=True)
 # X/Y are printed by the footprint itself (see the X1/Y1 case above) — the
 # north edge has no room for a free-floating letter that stays next to its pad.
-label("J9", "IN+", 0.8, prefer=((0, -1), (-1, 0)))
-label("J10", "IN-", 0.8, prefer=((0, 1), (-1, 0)))
-label("J8", "+ cell -", 0.8, prefer=((0, -1),))
-place_text("VERIFY\nCELL\nPOLARITY", 62.5, 46.5, 0.8, name="cell warning")
-label("SW1", "PWR", 0.8, prefer=((0, -1),))
+# J9/J10 are the TP4056's far mount row: they are *inside* the module footprint
+# by construction, so their legends have nowhere outside it to go — and nowhere
+# they need to be.  You read "which of these two is IN+" when you solder the
+# sockets, which is before the module exists on the board.
+label("J9", "IN+", 0.8, prefer=((0, -1), (-1, 0)), under=True)
+label("J10", "IN-", 0.8, prefer=((0, 1), (-1, 0)), under=True)
+# Battery polarity.  J8 itself has no free silk on any side: the TP4056 body
+# stops 0.5 mm north of its pads, its own connector outline fills the south,
+# SW1 is west and H4's 6.4 mm pad is east.  So the legend goes in the one strip
+# that is both free and visible with the unit assembled — between the module's
+# south edge and SW1, 3 mm west of J8's pins — instead of under the module,
+# which is where every previous build put it.
+place_text("+ cell -", 51.9, 43.0, 0.8, name="cell polarity", scan=False)
+label("SW1", "PWR", 0.8, prefer=((0, -1),), rot=90)
 label("RV1", "CUTOFF", 0.8, prefer=((0, -1),))
 # SW2 and D5 are both "MODE", and the placer put the two words side by side —
 # on the render they read as one part labelled MODE MODE.  The button is the
@@ -561,9 +666,14 @@ label("RV1", "CUTOFF", 0.8, prefer=((0, -1),))
 label("SW2", "MODE SW", 0.8, prefer=((0, -1),))
 label("D4", "NET", 0.8, prefer=((0, -1),))
 label("D5", "MODE", 0.8, prefer=((0, -1),))
-place_text("HYPEROSCI carrier\nv1.1  2026-07", 8.0, 27.0, 0.8,
-           name="board name")
-place_text("UNIT #__", 8.0, 22.5, 0.9, name="unit box")
+# The board's own name used to be two lines at (8.0, 27.0) — which is inside
+# the SuperMini, so on an assembled unit it did not exist.  The one patch left
+# that is both big enough and in the open is the mid-south band between the
+# sense divider and RV1, so it goes there.  The date goes with it: it is in
+# git, it is on the back silk, and the two lines it costs are the difference
+# between fitting here and not fitting anywhere.
+place_text("HYPEROSCI\ncarrier v1.1", 27.0, 37.3, 0.8, name="board name")
+place_text("UNIT #__", 11.0, 6.5, 0.9, name="unit box")
 # The fab's order number goes on the BACK, and specifically into the antenna
 # keep-out strip: v1.0 had it landing across Q1/JP1/D3, and anywhere else on
 # the back is stitched with vias (which is what silk_over_copper catches).
@@ -582,21 +692,54 @@ REF_PREFER = {
     "JB1": ((0, -1),), "JA1": ((0, 1),), "J2": ((-1, 0),), "J3": ((0, -1),),
     "J5": ((-1, 0),), "J6": ((-1, 0),), "J4": ((1, 0),),
     "R10": ((0, -1),), "R11": ((0, -1),),
-    # TP3 goes early and westward, because SW2's designator wants the same gap.
-    # SW2 is boxed in by D5/R5/TP3 and the board edge, and before the body-fill
-    # above its designator walked ~9 mm east, landing INSIDE RV1's outline where
-    # it read as the pot's label. With the fill it settles at SW2's north-east
-    # corner instead -- but it gets there by taking TP3's spot, so TP3 is placed
-    # first (REF_PREFER members go before everything else). Both then fit.
+    # TP3 wants to go westward, because SW2's designator wants the same gap.
     "TP3": ((-1, 0), (0, -1)),
 }
-for ref in sorted(fps, key=lambda r: (r not in REF_PREFER, r)):
-    r = fps[ref].Reference()
-    if ref in HIDE_REF:
-        r.SetVisible(False)
-        continue
+
+def _freedom(ref):
+    """How many spots this designator still has — 0 means it is already stuck."""
     cx, cy, hw, hh = court(ref)
-    spot = find_spot(ref, cx, cy, REF_SIZE, (hw, hh), REF_PREFER.get(ref, ()))
+    SHADOW_OK[:] = in_shadow((cx - hw, cy - hh, cx + hw, cy + hh))
+    t = _mk_text(ref, REF_SIZE, 0)
+    n, gy = 0, cy - hh - LOCAL_REACH
+    while gy <= cy + hh + LOCAL_REACH:
+        gx = cx - hw - LOCAL_REACH
+        while gx <= cx + hw + LOCAL_REACH:
+            if _free(_text_box(t, gx, gy)):
+                n += 1
+            gx += 0.5
+        gy += 0.5
+    SHADOW_OK.clear()
+    return n
+
+for ref in HIDE_REF:
+    fps[ref].Reference().SetVisible(False)
+
+# Order matters more here than any single direction preference, and it used to
+# be alphabetical — first-come-first-served by accident of name.  That is why
+# SW1, SW2, TP4 and TP5 (all late letters, all in the crowded south) kept
+# losing their last remaining spot to a part that had a dozen others; the
+# REF_PREFER note about placing TP3 before SW2 was this problem, handled one
+# collision at a time.  Serve the most constrained first instead, re-counting
+# after every placement because each one takes options away from its
+# neighbours.  Costs ~20 s on a 47-designator board and settles the whole
+# class of bug.
+_todo = [ref for ref in fps if ref not in HIDE_REF]
+while _todo:
+    _rank = {ref: _freedom(ref) for ref in _todo}
+    ref = min(_todo, key=lambda r: (r not in REF_PREFER, _rank[r], r))
+    _todo.remove(ref)
+    r = fps[ref].Reference()
+    cx, cy, hw, hh = court(ref)
+    # A part that lives under a module may keep its designator in that module's
+    # shadow: you read it while stuffing the board, and by then the part is
+    # visible too.  What it may NOT do is stray into a *neighbouring* module's
+    # shadow, which is the same defect as SW2's designator landing inside RV1's
+    # outline — hence in_shadow() of this part's own courtyard, not all three.
+    SHADOW_OK[:] = in_shadow((cx - hw, cy - hh, cx + hw, cy + hh))
+    spot = find_spot(ref, cx, cy, REF_SIZE, (hw, hh), REF_PREFER.get(ref, ()),
+                     own=True)
+    SHADOW_OK.clear()
     if spot is None:
         unplaced.append(f"designator {ref}")
         r.SetVisible(False)
@@ -605,7 +748,7 @@ for ref in sorted(fps, key=lambda r: (r not in REF_PREFER, r)):
     r.SetPosition(mm(x, y))
     r.SetTextAngleDegrees(0)
     r.SetTextSize(VECTOR2I(FromMM(sz), FromMM(sz)))
-    r.SetTextThickness(FromMM(max(0.12, sz * 0.15)))
+    r.SetTextThickness(FromMM(max(SILK_W, sz * 0.15)))
     occupied.append(b)
 
 # ---- zones ------------------------------------------------------------------

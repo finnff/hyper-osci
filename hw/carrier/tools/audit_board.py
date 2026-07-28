@@ -12,6 +12,7 @@ This does.
   2. silk         — kicad-cli DRC silk violations, grouped by what to go fix
   3. routing      — 90-degree track corners, GND via count, worst stitch gap
   4. clearance    — parts too tall to live under a socketed module
+  5. silk shadow  — legends printed where a fitted module hides them
 
 Run from hw/carrier/:  python3 tools/audit_board.py [--no-drc] [--verbose]
 Exit status is non-zero if a gate fails.
@@ -338,13 +339,83 @@ def check_clearance(board, verbose):
 
 
 # ---------------------------------------------------------------------------
+# 5. silk under a module
+# ---------------------------------------------------------------------------
+# Front-silk strings that are ALLOWED to sit inside a module body, because you
+# read them while stuffing the board rather than afterwards: the module's own
+# name and orientation, and the names of pads that module physically covers.
+# Anything else printed there is invisible on an assembled unit — which is how
+# `VERIFY CELL POLARITY` and `+ cell -` came to be printed under the charger,
+# and the board's own name under the SuperMini.  gen_board.py enforces this at
+# placement time; this is the assertion that says it stayed enforced.
+SHADOW_OK_TEXT = {
+    "ESP32-C3 SuperMini", "GY-PCM5102A", "TP4056", "USB-C",   # which module, which way round
+    "IN+", "IN-",                                             # the mount row, under the module
+    "OUT-", "OUT+", "B-", "B+", "NOT GND",                    # J5/J6 pads, under the module
+}
+
+
+def _tbox(item):
+    bb = item.GetBoundingBox()
+    return (bb.GetLeft() / 1e6, bb.GetTop() / 1e6,
+            bb.GetRight() / 1e6, bb.GetBottom() / 1e6)
+
+
+def _overlap(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def check_shadow(board, verbose):
+    boxes = module_boxes(board)
+    lines, fails, ok = [], [], 0
+    for it in board.GetDrawings():
+        if it.GetClass() != "PCB_TEXT" or it.GetLayer() != pcbnew.F_SilkS:
+            continue
+        box = _tbox(it)
+        hit = [n for n, b in boxes.items() if _overlap(box, b)]
+        if not hit:
+            continue
+        if it.GetText() in SHADOW_OK_TEXT:
+            ok += 1
+            continue
+        fails.append(f"silk {it.GetText()!r} is printed under the {hit[0]} — "
+                     f"invisible with the module fitted")
+    # A designator may hide under the module that covers its own part: by the
+    # time you read it, that part is in your hand.  Under a *neighbour's*
+    # module it is just lost.
+    for fp in board.GetFootprints():
+        r = fp.Reference()
+        if not r.IsVisible() or r.GetLayer() != pcbnew.F_SilkS:
+            continue
+        crt = fp.GetCourtyard(pcbnew.F_CrtYd).BBox()
+        own = (crt.GetLeft() / 1e6, crt.GetTop() / 1e6,
+               crt.GetRight() / 1e6, crt.GetBottom() / 1e6)
+        for name, b in boxes.items():
+            if not _overlap(_tbox(r), b):
+                continue
+            if _overlap(own, b):
+                ok += 1
+                continue
+            fails.append(f"designator {fp.GetReference()} is printed under the "
+                         f"{name}, which is not its own module")
+    METRICS["silk_shadowed"] = ok
+    METRICS["silk_shadow_fails"] = len(fails)
+    lines.append(f"  {ok} legends deliberately under a module, "
+                 f"{len(fails)} that should not be")
+    if verbose and fails:
+        lines += ["    " + f for f in fails]
+    return lines, fails
+
+
+# ---------------------------------------------------------------------------
 def main():
     verbose = "--verbose" in sys.argv
     as_json = "--json" in sys.argv
     board = load()
     sections = [("module fit", check_fit(board, verbose)),
                 ("routing", check_routing(board, verbose)),
-                ("clearance", check_clearance(board, verbose))]
+                ("clearance", check_clearance(board, verbose)),
+                ("silk shadow", check_shadow(board, verbose))]
     if "--no-drc" not in sys.argv:
         sections.insert(1, ("silkscreen", check_silk(verbose)))
     fails = []
