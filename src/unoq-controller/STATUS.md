@@ -405,12 +405,26 @@ Remedy ladder (tested in order): controller restart ✗, slave reboot ✗ (fresh
 NOT reset the AP's rate state), **AP bounce ✓**:
 
     sudo nmcli c down hyperosci-ap && sleep 3 && sudo nmcli c up hyperosci-ap
-    sudo systemctl restart hyperosci-controller   # its multicast SYNC socket dies with the iface
+
+**The controller restart that used to follow is not needed** (re-verified
+2026-07-31, bounced with the daemon left running). `bind_egress()` handles it:
+`[net] sync send failed (Errno 101); recreating socket` → `egress UNAVAILABLE`
+→ `bound` 4 s later → slave rediscovered 2 s after that, no intervention. The
+line is kept out of the ladder because restarting costs a rebuffer on every
+scope for nothing.
+
+**Give it time before you judge it.** Measured 60 s after a bounce the rig
+looks *worse* than before — 72% ENOBUFS, slave rx 15/s, buffer at 0 — because
+the station is still reassociating and rate control has not ramped. Measured
+again at ~5 min: 0% ENOBUFS, rx 210/s, buffer full at 450 ms, `source=network`
+in 100% of samples. Do not stack a second remedy on top of the first inside
+that window; `hyperosci-netwatch`'s 300 s cooldown (§ above) exists for the
+same reason.
 
 **Show runbook:** if all scopes fall back to mic and `rx/s` is ~0 while WiFi shows
-connected — bounce the AP, then restart the controller. ~15 s total. (SSH via USB
-tether survives the bounce; the AP bounce is invisible to nothing except the slaves,
-which rejoin in ~5 s.)
+connected — bounce the AP and wait. ~5 min to full recovery, most of it ramp.
+(SSH via USB tether survives the bounce; the AP bounce is invisible to nothing
+except the slaves, which rejoin in ~5 s.)
 
 ### Residual (measured tonight, pre-existing): silent burst loss
 
