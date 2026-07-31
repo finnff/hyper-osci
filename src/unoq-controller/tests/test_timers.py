@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 """Regression checks for the interval timers.
 
-No sockets and no HTTP: State, fire_timer/end_hold and the scheduler are
-driven directly with a stub CmdSender and fabricated slaves, so this is safe
-to run on the board while the daemon is live -- it never binds :5001/:5002
-and never touches the show's files. Exit 0 = all pass.
+No UDP and no board: State, fire_timer/end_hold and the scheduler are driven
+directly with a stub CmdSender and fabricated slaves, so this is safe to run
+while the daemon is live -- it never binds :5001/:5002 and never touches the
+show's files. The last section does bind one HTTP socket, on an ephemeral
+loopback port, because the preset/timer coupling only exists in the request
+handler. Exit 0 = all pass.
 """
 import json
 import os
 import sys
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.environ.get("HC_DIR", HERE))
@@ -90,7 +97,7 @@ ok(hc.clean_timer({"preset": "a/b<c>"})["preset"] == "abc",
 print("\n[timers] fire: the right slaves, the right restore data")
 st, cmds = fresh(), StubCmds()
 before = st.live_snapshot()
-ok(hc.fire_timer(st, cmds, rule()) is True, "fires")
+ok(hc.fire_timer(st, cmds, rule()) is None, "fires")
 ok(st.kind == "rose" and st.ratio_a == 6, "the preset is on air",
    f"{st.kind} a={st.ratio_a}")
 ok(cmds.modes() == {"10.0.0.1": "network", "10.0.0.2": "network"},
@@ -101,7 +108,7 @@ ok(st.timer_hold["modes"] == {"10.0.0.1": 1, "10.0.0.2": 0},
 ok(st.timer_hold["pattern"] == before, "the pre-hold pattern was recorded")
 
 print("\n[timers] one hold at a time")
-ok(hc.fire_timer(st, cmds, rule(id=2)) is False,
+ok(hc.fire_timer(st, cmds, rule(id=2)) == hc.FIRE_HOLDING,
    "a second rule cannot start on top of the first")
 ok(st.timer_hold["id"] == 1, "and the first one's restore data survives")
 
@@ -132,10 +139,10 @@ ok(cmds.modes() == {"10.0.0.1": "network", "10.0.0.2": "local"},
 # is on network. Firing inside that window would record the forced mode as
 # the "previous" one and strand the slave on network for good.
 print("\n[timers] the post-release cooldown")
-ok(hc.fire_timer(st, cmds, rule(id=3)) is False,
+ok(hc.fire_timer(st, cmds, rule(id=3)) == hc.FIRE_COOLDOWN,
    "a fire straight after a release is refused")
 st.hold_cooldown_us = 0                      # as if the cooldown had elapsed
-ok(hc.fire_timer(st, cmds, rule(id=3)) is True, "and allowed once it passes")
+ok(hc.fire_timer(st, cmds, rule(id=3)) is None, "and allowed once it passes")
 
 # ------------------------------------------------------------------ targets
 print("\n[timers] targeting")
@@ -149,7 +156,7 @@ ok(cmds.sent == [] and st.timer_hold is not None,
    "a rule for a slave that is not here still holds, but commands nobody",
    str(cmds.sent))
 st, cmds = fresh(), StubCmds()
-ok(hc.fire_timer(st, cmds, rule(preset="GONE")) is False,
+ok(hc.fire_timer(st, cmds, rule(preset="GONE")) == hc.FIRE_NO_PRESET,
    "a rule whose preset was deleted does not fire")
 ok(st.timer_hold is None, "and leaves no half-claimed hold")
 
@@ -179,6 +186,91 @@ back = hc.load_timers()
 ok(len(back) == 1 and back[0]["hold_s"] == 20,
    "junk entries are dropped and the survivor is filled from the defaults",
    json.dumps(back))
+
+# ---------------------------------------------------------------------- mute
+# A hold drags its targets onto the stream. Muted, that is not an
+# interruption but a dark scope for the whole hold -- and the slaves it takes
+# were drawing their own mic input a moment earlier.
+print("\n[timers] a muted stream refuses the hold")
+st, cmds = fresh(), StubCmds()
+st.stream_on = False
+ok(hc.fire_timer(st, cmds, rule()) == hc.FIRE_MUTED,
+   "STREAM off refuses the fire")
+ok(st.timer_hold is None and cmds.sent == [],
+   "no hold claimed and no slave dragged off its own mic", str(cmds.sent))
+st.stream_on = True
+ok(hc.fire_timer(st, cmds, rule()) is None, "and fires once it is back on")
+
+# ----------------------------------------------------------------- scheduler
+# The bug this guards: timer_loop used to write the next fire time BEFORE
+# calling fire_timer and ignore the result, so a rule that came due behind
+# another rule's hold was refused by the post-release cooldown 250 ms later
+# and had already lost its turn. It then waited a whole period -- the one
+# case timer_loop's docstring promises to handle.
+print("\n[timers] a rule queued behind a hold still gets its turn")
+hc.HOLD_COOLDOWN_US = 500_000      # the mechanism, not the 2.5 s wall clock
+st, cmds = fresh(), StubCmds()
+st.timers = [rule(id=1, preset="IDENT", hold_s=1, every_s=30),
+             rule(id=2, preset="SHOW", hold_s=1, every_s=30)]
+_now = hc.mono_us()
+st.timer_next = {1: _now, 2: _now + 600_000}   # 2 comes due inside 1's hold
+threading.Thread(target=hc.timer_loop, args=(st, cmds), daemon=True).start()
+on_air, _t0 = [], time.monotonic()
+while time.monotonic() - _t0 < 6.0:
+    _h = st.timer_hold
+    if _h and (not on_air or on_air[-1] != _h["preset"]):
+        on_air.append(_h["preset"])
+    if len(on_air) == 2:
+        break
+    time.sleep(0.02)
+ok(on_air == ["IDENT", "SHOW"],
+   "the queued rule fires after the release instead of losing a period",
+   str(on_air))
+hc.HOLD_COOLDOWN_US = 2_500_000
+# timer_loop has no stop flag and the thread is a daemon, so empty its rule
+# list: otherwise it keeps firing into the sections below and its [timer]
+# lines read as if they belonged to the test that is printing.
+with st.lock:
+    st.timers = []
+time.sleep(1.2)                     # let the hold in flight release quietly
+
+# ------------------------------------------------- preset delete vs. its rule
+# Only the request handler couples the two, so this section talks HTTP to a
+# handler bound on 127.0.0.1:0 -- no fixed port, nothing the daemon uses.
+print("\n[timers] deleting a preset does not leave an armed rule behind")
+st, cmds = fresh(), StubCmds()
+st.timers = [rule(id=1, preset="IDENT"), rule(id=2, preset="SHOW")]
+_srv = ThreadingHTTPServer(("127.0.0.1", 0), hc.make_http_handler(st, cmds))
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_base = "http://127.0.0.1:%d" % _srv.server_address[1]
+
+
+def post(path, obj):
+    req = urllib.request.Request(_base + path, json.dumps(obj).encode(),
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, json.load(e)
+
+
+_code, _body = post("/api/preset", {"op": "delete", "name": "IDENT"})
+ok(_code == 200 and [t["enabled"] for t in st.timers] == [False, True],
+   "the rule that showed it is paused; the other is untouched",
+   str([(t["preset"], t["enabled"]) for t in st.timers]))
+ok(_body.get("note") and "IDENT" in _body["note"],
+   "and the operator is told rather than left with a dead countdown",
+   str(_body.get("note")))
+ok(hc.load_timers()[0]["enabled"] is False, "the pause is persisted")
+
+print("\n[timers] a refused fire says which reason, not all three")
+_code, _body = post("/api/timer", {"op": "fire", "id": 2})
+ok(_code == 200 and st.timer_hold is not None, "a good rule fires on demand")
+_code, _body = post("/api/timer", {"op": "fire", "id": 2})
+ok(_code == 409 and hc.FIRE_HOLDING in _body.get("err", ""),
+   "and a second tap names the hold that is in the way", str(_body))
+_srv.shutdown()
 
 print("\n" + ("ALL PASS" if not FAIL else f"{len(FAIL)} FAILED: {FAIL}"))
 sys.exit(1 if FAIL else 0)

@@ -558,21 +558,40 @@ def apply_preset(state, p):
 # two rules stacking stings back to back, which looks broken anyway.
 HOLD_COOLDOWN_US = 2_500_000
 
+# Why a fire was refused. The string is the reason the dashboard shows, so
+# there is one wording to keep true instead of the handler guessing at three
+# possibilities. FIRE_RETRY marks the transient ones: timer_loop tries those
+# again in a moment rather than costing the rule its whole turn.
+FIRE_HOLDING = "another timer is already on air"
+FIRE_COOLDOWN = ("a hold just released — the slaves' modes are not "
+                 "trustworthy yet")
+FIRE_MUTED = "STREAM is off — a hold would pull the slaves onto a dead stream"
+FIRE_NO_PRESET = "that preset no longer exists"
+FIRE_RETRY = (FIRE_HOLDING, FIRE_COOLDOWN)
+
 
 def fire_timer(state, cmds, t):
     """Start a hold: install the rule's preset, put its targets on the stream.
 
-    Returns False if the preset is gone, another rule already holds, or the
-    last release is too recent to trust the slaves' reported modes.
+    Returns None once the hold is running, else the FIRE_* reason it did not
+    start.
     """
     before = state.live_snapshot()
     with state.lock:
-        if state.timer_hold is not None or mono_us() < state.hold_cooldown_us:
-            return False
+        if state.timer_hold is not None:
+            return FIRE_HOLDING
+        if mono_us() < state.hold_cooldown_us:
+            return FIRE_COOLDOWN
+        # A hold drags its targets onto the stream, so with the stream muted
+        # it is not an interruption but a dark scope for the whole hold --
+        # and the slaves it took were drawing their own mic input a moment
+        # earlier. Muting for a changeover is exactly when a rule comes due.
+        if not state.stream_on:
+            return FIRE_MUTED
         p = next((dict(x) for x in state.presets
                   if x["name"] == t["preset"]), None)
         if p is None:
-            return False
+            return FIRE_NO_PRESET
         ips = [ip for ip, s in state.slaves.items()
                if not t["targets"] or s["id"] in t["targets"]]
         state.timer_hold = {
@@ -586,7 +605,7 @@ def fire_timer(state, cmds, t):
     print(f"[timer] hold {t['preset']!r} on "
           f"{','.join(ips) if ips else 'nobody (no slave matched)'} "
           f"for {t['hold_s']}s", flush=True)
-    return True
+    return None
 
 
 def end_hold(state, cmds, restore_pattern=True):
@@ -594,9 +613,12 @@ def end_hold(state, cmds, restore_pattern=True):
     the operator took the panel over mid-hold — the pre-hold pattern back."""
     with state.lock:
         h, state.timer_hold = state.timer_hold, None
-    if h is None:
-        return
-    with state.lock:
+        if h is None:
+            return
+        # Armed in the same acquisition that clears the hold. Split across
+        # two, timer_loop can land in between, see "not holding" with the
+        # cooldown still at its old value, and fire on mode data the STATUS
+        # beacons have not refreshed yet -- the very thing it guards.
         state.hold_cooldown_us = mono_us() + HOLD_COOLDOWN_US
     for ip, mode in h["modes"].items():
         cmds.send(ip, {"cmd": "set_mode",
@@ -615,8 +637,8 @@ def timer_loop(state, cmds, tick=0.25):
 
     One hold at a time — there is a single streamed pattern, so two rules
     interrupting together would only fight over it. A rule that comes due
-    during someone else's hold keeps its due time and fires the moment that
-    one releases.
+    during someone else's hold keeps its due time and fires just after that
+    one releases, once the cooldown has passed.
     """
     while True:
         time.sleep(tick)
@@ -636,13 +658,25 @@ def timer_loop(state, cmds, tick=0.25):
                         t["id"], now + t["every_s"] * 1_000_000)
                     if nxt <= now:
                         due = dict(t)
-                        state.timer_next[t["id"]] = (
-                            now + t["every_s"] * 1_000_000)
                         break
         if expired:
             end_hold(state, cmds)
         elif due is not None:
-            fire_timer(state, cmds, due)
+            # Only a fire that actually happened costs the rule its turn.
+            # Rearming before the call meant a rule queued behind another
+            # rule's hold came due 250 ms after the release, hit the
+            # post-release cooldown, and then waited a whole period -- the
+            # one case this loop's docstring promises to handle.
+            reason = fire_timer(state, cmds, due)
+            delay = (HOLD_COOLDOWN_US if reason in FIRE_RETRY
+                     else due["every_s"] * 1_000_000)
+            with state.lock:
+                # Skip a rule deleted during the fire (its timer_next is
+                # already gone, and re-adding it would orphan the entry), and
+                # never stomp a due time an HTTP save/toggle just set.
+                if any(x["id"] == due["id"] for x in state.timers) \
+                        and state.timer_next.get(due["id"], 0) <= now:
+                    state.timer_next[due["id"]] = now + delay
 
 
 class State:
@@ -1072,8 +1106,10 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
       <input type="number" id="thold" min="1" max="600" value="20"
              style="width:66px" title="seconds to hold the preset">s</span>
     <span class="grp">every
-      <input type="number" id="tevery" min="0.2" max="1440" step="0.5"
-             value="5" style="width:74px" title="minutes between starts">min</span>
+      <input type="number" id="tevery" min="0.1" max="1440" step="any"
+             value="5" style="width:74px"
+             title="minutes between starts (clamped to at least 5 s, and to
+                    longer than the hold)">min</span>
     <button onclick="addTimer()">+ add</button>
   </div>
   <div style="color:var(--dim);font-size:12.5px;margin-top:10px">
@@ -1123,7 +1159,7 @@ const hist = {};   // ip -> previous counters for rate calculation
 function post(path, body) {
   return fetch(path, {method:"POST", body:JSON.stringify(body)})
     .then(r => r.json().catch(() => null))
-    .then(d => { if (d && d.err) alert(d.err); })
+    .then(d => { if (d && (d.err || d.note)) alert(d.err || d.note); })
     .catch(() => {})            // controller restarting; poll() retries
     .then(() => poll());
 }
@@ -1223,8 +1259,13 @@ function delPreset(n) {
 function presetChips() {
   const names = S.presets || [];
   if (curPreset && !names.includes(curPreset)) setCur("");  // deleted elsewhere
+  // During a hold the panel shows the TIMER's preset, not the one this
+  // browser last applied. Highlight what is actually on the scopes -- the
+  // update button keeps following curPreset, which is still what a write
+  // would land on.
+  const onAir = (S.hold && S.hold.preset) || curPreset;
   document.getElementById("plist").innerHTML = names.map(n =>
-    `<span class="chip"><button class="${n === curPreset ? "on" : ""}"
+    `<span class="chip"><button class="${n === onAir ? "on" : ""}"
         title="apply preset '${esc(n)}'"
         onclick="loadPreset('${n}')">${esc(n)}</button><button class="danger"
         title="delete preset '${esc(n)}'" onclick="delPreset('${n}')">×</button></span>`
@@ -1644,8 +1685,25 @@ def make_http_handler(state, cmds):
                     state.presets = [p for p in state.presets
                                      if p["name"] != name]
                     plist = list(state.presets)
+                    # A rule pointing at a preset that is gone can never fire,
+                    # but it kept rendering ON with a live countdown -- the
+                    # dashboard promising an ident that was never coming.
+                    # Pause those rules and tell the operator instead.
+                    paused = [t for t in state.timers
+                              if t["preset"] == name and t["enabled"]]
+                    for t in paused:
+                        t["enabled"] = False
+                    tlist = list(state.timers) if paused else None
+                    stuck = (state.timer_hold is not None
+                             and state.timer_hold["preset"] == name)
                 save_presets(plist)
-                return self._json({"ok": True})
+                if tlist is not None:
+                    save_timers(tlist)
+                if stuck:   # don't leave the show on a preset just deleted
+                    end_hold(state, cmds)
+                return self._json({"ok": True, "note": None if not paused else
+                                   f"{len(paused)} timer(s) paused — they "
+                                   f"showed \"{name}\""})
             with state.lock:  # load
                 p = next((dict(p) for p in state.presets
                           if p["name"] == name), None)
@@ -1659,9 +1717,13 @@ def make_http_handler(state, cmds):
             """A hand on the panel ends any interval hold: the targets go back
             to the draw setting they had, but the pattern stays as just set.
             Silently reverting the operator fifteen seconds later is worse
-            than a timer missing one cycle."""
-            if state.timer_hold is not None:
-                end_hold(state, cmds, restore_pattern=False)
+            than a timer missing one cycle.
+
+            Called unconditionally. end_hold's read-and-clear is atomic and
+            already a no-op when nothing holds, whereas an unlocked `if` here
+            would miss a hold that starts between the test and the call and
+            then revert the operator's pattern a hold later."""
+            end_hold(state, cmds, restore_pattern=False)
 
         def _timer(self, state, body):
             op = body.get("op")
@@ -1705,10 +1767,9 @@ def make_http_handler(state, cmds):
                               if x["id"] == tid), None)
                 if t is None:
                     return self._json({"err": "no such timer"}, 404)
-                if not fire_timer(state, cmds, t):
-                    return self._json(
-                        {"err": "not now — another timer is holding, one just "
-                                "released, or the preset is gone"}, 409)
+                reason = fire_timer(state, cmds, t)
+                if reason:
+                    return self._json({"err": "not now — " + reason}, 409)
                 return self._json({"ok": True})
             with state.lock:
                 if op == "delete":
@@ -1724,10 +1785,15 @@ def make_http_handler(state, cmds):
                             state.timer_next[tid] = (
                                 mono_us() + x["every_s"] * 1_000_000)
                 tlist = list(state.timers)
+                # Read under the same lock that took tlist. Tested and
+                # subscripted as two separate unlocked reads, a hold expiring
+                # in between made this a None subscript -- a 500 on the
+                # operator's tap, mid-show.
+                stuck = (state.timer_hold is not None
+                         and state.timer_hold["id"] == tid)
             # A rule deleted or switched off mid-hold must not leave the show
             # stuck on its preset.
-            if state.timer_hold is not None \
-                    and state.timer_hold["id"] == tid:
+            if stuck:
                 end_hold(state, cmds)
             save_timers(tlist)
             return self._json({"ok": True})
