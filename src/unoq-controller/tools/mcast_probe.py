@@ -11,10 +11,21 @@ an intentional resync and does not charge it to lost_packets. A slave in forced
 LOCAL mode never reads the jitter buffer at all, so nothing is audible.
 """
 import argparse
+import array
 import errno
+import fcntl
 import socket
 import struct
+import termios
 import time
+
+
+def outq(sock):
+    """Bytes still sitting in this socket's send queue (SIOCOUTQ)."""
+    buf = array.array("i", [0])
+    fcntl.ioctl(sock.fileno(), termios.TIOCOUTQ, buf)
+    return buf[0]
+
 
 HYPE_MAGIC = 0x45505948
 HYPE_VERSION = 1
@@ -40,10 +51,17 @@ def main():
     ap.add_argument("--rate", type=int, default=200, help="packets/sec")
     ap.add_argument("--secs", type=float, default=10.0)
     ap.add_argument("--iface-ip", default="192.168.50.1")
+    ap.add_argument("--sndbuf", type=int, default=0,
+                    help="SO_SNDBUF bytes (0 = kernel default). Sizes the ride-"
+                         "through for the ath10k deaf-stall: at LEAD_US=450 ms a "
+                         "packet delayed 300 ms still beats its deadline.")
     a = ap.parse_args()
 
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setblocking(False)
+    if a.sndbuf:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, a.sndbuf)
+    eff = s.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
     is_mcast = a.dest.startswith(("239.", "224."))
     if is_mcast:
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
@@ -78,15 +96,31 @@ def main():
             time.sleep(slack)
     dur = time.monotonic() - t0
 
+    # Backlog still owed to the radio when we stopped offering. This is the
+    # number that decides whether a deep SO_SNDBUF is a ride-through or a lie:
+    # anything still queued is delivered LATE, and the slave discards a packet
+    # that misses its deadline. At LEAD_US = 450 ms, a drain under ~150 ms is
+    # absorbed; seconds of drain means the link cannot carry the offered rate
+    # and the buffer is only hiding the loss until the slave throws it away.
+    backlog = outq(s)
+    t_end = time.monotonic()
+    while outq(s) > 0 and time.monotonic() - t_end < 20:
+        time.sleep(0.005)
+    drain = time.monotonic() - t_end
+
     att = ok + full + other
     print(f"dest={a.dest} {'MULTICAST' if is_mcast else 'unicast'} "
-          f"target={a.rate}/s for {a.secs}s")
+          f"target={a.rate}/s for {a.secs}s  sndbuf={eff}B")
     print(f"  wall            {dur:.2f}s  (achieved {att/dur:.0f} pkt/s)")
     print(f"  attempted       {att}")
     print(f"  accepted        {ok}   ({100*ok/max(att,1):.1f}%)")
     print(f"  buffer-full     {full} ({100*full/max(att,1):.1f}%)")
     print(f"  other errors    {other}" + (f"  last={last_err}" if last_err else ""))
     print(f"  payload         {att*988*8/dur/1e6:.2f} Mbit/s offered")
+    print(f"  backlog at stop {backlog/1024:.0f} KiB charged "
+          f"(sk_wmem_alloc: skb truesize, ~2.3x payload — not a packet count) "
+          f"drained in {drain*1000:.0f} ms"
+          + ("  <-- LATE, past the 450 ms lead" if drain > 0.45 else ""))
 
 
 if __name__ == "__main__":

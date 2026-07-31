@@ -71,6 +71,51 @@ buffer in LOCAL, so it fills at ~512 ms and `jb.push()` starts refusing;
 those losses land in `dropped` and never touched the air. Judge delivery from
 the AP-side counters, or put the slave in NETWORK first.
 
+### Two slaves: no — and SO_SNDBUF does not rescue it (2026-07-31)
+
+Follow-on question: if four does not fit, does two? Measured the same way, one
+slave at 4x rate, six rounds alternating so both loads see the same link phase:
+
+| load | clean rounds | median local loss |
+|---|---|---|
+| 200 pkt/s (1 slave) | 5/6 | 0.0% |
+| 400 pkt/s (2 slaves) | 0/6 | 21.0% |
+
+One slave is clean in every round but one. Two slaves lost 10.8-38.4% in every
+single round. **One slave is the honest maximum on this link today.**
+
+The obvious rebuttal is that the drops are EAGAIN — a local queue overflow, not
+air loss — so a bigger send buffer should ride through the documented ath10k
+deaf-stall (~100-300 ms every ~1.44 s, `config.h`). At LEAD_US = 450 ms a
+packet delayed 300 ms still beats its deadline, so this looked right, and it
+contradicted the earlier decision to leave `SO_SNDBUF` alone. It was worth
+testing. It is wrong, and the way it fails is instructive (`--sndbuf`, 400
+pkt/s, mean of 3 rounds):
+
+| sndbuf | EAGAIN | backlog at stop | drain |
+|---|---|---|---|
+| default | 1470 | 178 KiB | 3006 ms |
+| 1 MB | 0 | 442 KiB | 1047 ms |
+| 4 MB | **0** | **2979 KiB** | **10486 ms** |
+
+(Backlog is `SIOCOUTQ` = `sk_wmem_alloc`, i.e. charged skb memory at ~2.3x the
+988 B payload — read it as a size, not a packet count.)
+
+A 4 MB buffer does reach zero EAGAIN — by swallowing ~3 MB it then needs
+**10.5 seconds** to hand to the radio. Every packet in there arrives long past
+its 450 ms deadline and the slave discards it on the `DEADLINE_SLACK_US` check.
+The buffer does not move packets; it converts a *visible* local drop into an
+*invisible* late arrival, and the tx-drop counter goes green while delivery
+gets worse. Do not "fix" this with a buffer bump.
+
+What the drain figures actually expose is that link capacity swings by more
+than an order of magnitude. In a good phase it saturates at 1282 pkt/s; in the
+bad phase above, the default-buffer run accepted only 530 of 2000 offered in
+5 s and then spent another 3 s draining — under ~100 pkt/s all-in, which is
+half of what a single slave needs. That instability — not airtime accounting,
+not buffer sizing, not multicast — is what has to be fixed before a second
+slave is worth building.
+
 ## Interval timers (2026-07-28)
 
 *"Show preset **IDENT** on slaves 1+2 for 20 s every 5 minutes."* Up to 8
