@@ -16,6 +16,7 @@ Then browse http://10.42.0.128:8080 (USB tether) or http://192.168.50.1:8080.
 """
 
 import argparse
+import errno
 import json
 import math
 import os
@@ -53,6 +54,15 @@ PACKET_US = FRAMES * 1_000_000 // SAMPLE_RATE
 # stall (vs ~50 ms at 350) while staying under the 512 ms ring.
 LEAD_US = 450_000
 SYNC_INTERVAL_US = 500_000
+# How often stream_loop publishes its TX counters onto state.
+TXSTAT_INTERVAL_US = 1_000_000
+# What a full send buffer actually raises. `audio` is non-blocking, and a
+# non-blocking UDP socket with no room reports EAGAIN — ENOBUFS is what you
+# get on a blocking socket or straight off a full device queue. netstat's
+# "send buffer errors" counts both without distinguishing them, which is
+# exactly how a night of EAGAIN got written up as ENOBUFS. Both mean the one
+# thing that matters: the packet died in this box and never reached the air.
+TX_QUEUE_FULL = frozenset((errno.EAGAIN, errno.EWOULDBLOCK, errno.ENOBUFS))
 
 MODE_NAMES = {0: "local", 1: "network", 2: "hybrid"}
 PATTERN_NAMES = {0: "mic", 1: "circle", 2: "lissajous", 3: "ramp", 4: "square"}
@@ -736,6 +746,11 @@ class State:
         # AP is down or the slaves are simply off.
         self.net_iface = ""
         self.net_egress = None
+        # ip -> {"ok","full","err","pct"}, rebuilt once a second by
+        # stream_loop and stored atomically. Never mutated in place, so
+        # snapshot() can read it without taking a lock the audio path would
+        # then have to contend for.
+        self.net_tx = {}
         # Interval timers. All three are touched by both timer_loop and the
         # HTTP threads, so all three live under self.lock.
         self.timers = load_timers()
@@ -784,7 +799,8 @@ class State:
                 "stream_on": self.stream_on,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
                            for s in self.slaves.values()],
-                "net": {"iface": self.net_iface, "egress": self.net_egress},
+                "net": {"iface": self.net_iface, "egress": self.net_egress,
+                        "tx": self.net_tx},
                 "timers": [dict(t, next_in=(
                     None if not t["enabled"] else
                     max(0, (self.timer_next.get(t["id"], now) - now) // 1000000)
@@ -1427,6 +1443,23 @@ function rates(s) {
   return r;
 }
 
+// Packets that died in this box's own send buffer rather than in the air.
+// Worth its own number next to lost/s: without it a full buffer looks exactly
+// like WiFi loss, which is how a night at 43% local drop got read as
+// interference. lost/s high + tx-drop 0 => the air. tx-drop high => us, and
+// no amount of antenna will help.
+function txdrop(s) {
+  const t = ((S.net && S.net.tx) || {})[s.ip];
+  if (!t || (!t.full && !t.err)) return "";
+  const cls = t.pct >= 5 ? "bad" : t.pct > 0 ? "warn" : "ok";
+  const other = t.err ? ` + ${fmtN(t.err)} other` : "";
+  const tip = "audio packets this controller could not hand to the radio: "
+    + "its send buffer was full (EAGAIN/ENOBUFS). They never reached the air, "
+    + "so this is NOT WiFi loss — the fix is airtime or packet rate, not "
+    + `signal or antenna. Lifetime ${fmtN(t.full)} buffer-full${other}.`;
+  return `<span title="${tip}">tx-drop <b class="${cls}">${t.pct}%</b></span>`;
+}
+
 function card(s, r) {
   const src = s.source
     ? '<span class="badge net" title="beam source right now: the network stream">NET</span>'
@@ -1452,6 +1485,7 @@ function card(s, r) {
       <span title="audio buffered ahead of playback. Healthy ≈ 450 ms (the stream runs ahead on purpose to ride out WiFi pauses); 0 during local render">buf <b>${Math.round(s.depth/48)} ms</b></span>
       <span title="time since the slave booted">up <b>${fmtUp(s.uptime)}</b></span>
       ${rline}
+      ${txdrop(s)}
       <span title="lifetime accepted audio packets">rx <b>${fmtN(s.rx)}</b></span>
       <span title="lifetime discarded packets (late, duplicate, or buffer-full)">drop <b>${fmtN(s.drop)}</b></span>
       <span title="lifetime underruns (buffer ran dry)">under <b>${fmtN(s.under)}</b></span>
@@ -1805,6 +1839,35 @@ def make_http_handler(state, cmds):
 # Streaming engine (from hype_sender.py, driven by State)
 # ---------------------------------------------------------------------------
 
+def tx_rollup(tx_ok, tx_full, tx_err, tx_prev):
+    """Fold the per-slave TX counters into what /api/state publishes.
+
+    Cumulative totals answer "how bad has tonight been"; the pct is windowed
+    over the gap since the previous call, because that is the number that has
+    to move while someone is standing at the rig changing something.
+
+    Pure apart from `tx_prev`, which it advances to the totals it just read —
+    so the next call's window starts here. Split out of stream_loop only so
+    the interesting case (things are going wrong) is reachable from a test;
+    on a healthy rig this returns 0.0 forever and proves nothing.
+
+    Returns (published dict, worst windowed pct).
+    """
+    pub, worst = {}, 0.0
+    for ip in set(tx_ok) | set(tx_full) | set(tx_err):
+        ok = tx_ok.get(ip, 0)
+        eno = tx_full.get(ip, 0)
+        err = tx_err.get(ip, 0)
+        p_ok, p_eno, p_err = tx_prev.get(ip, (0, 0, 0))
+        tx_prev[ip] = (ok, eno, err)
+        tried = (ok - p_ok) + (eno - p_eno) + (err - p_err)
+        lost = (eno - p_eno) + (err - p_err)
+        pct = round(100.0 * lost / tried, 1) if tried else 0.0
+        worst = max(worst, pct)
+        pub[ip] = {"ok": ok, "full": eno, "err": err, "pct": pct}
+    return pub, worst
+
+
 def stream_loop(state, iface_ip):
     def make_ctrl():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1842,6 +1905,24 @@ def stream_loop(state, iface_ip):
     epoch = start + LEAD_US  # deadline of audio frame 0
     next_audio = start
     next_sync = start
+
+    # Local TX accounting, per slave. `audio` is non-blocking, so when the
+    # radio's queue backs up sendto raises ENOBUFS and the packet dies here,
+    # before the air. This used to be an unlogged `pass`: 43% of a night's
+    # packets vanished at this line and read downstream as air loss, which is
+    # where an evening of debugging went. Per slave, because once there are
+    # four scopes the question is always *which* link is under pressure.
+    #
+    # Deliberately lock-free: plain locals, published once a second as a
+    # freshly built dict in one atomic attribute store. Taking state.lock per
+    # packet would serialise the fan-out against the HTTP threads exactly
+    # when the queue is already backed up — the stall the non-blocking socket
+    # above exists to prevent.
+    tx_ok, tx_full, tx_err = {}, {}, {}
+    tx_prev = {}      # ip -> (ok, full, err) as of the last publish
+    tx_last = ""      # most recent errno seen, named, for the dashboard
+    next_txstat = start + TXSTAT_INTERVAL_US
+    tx_warned_us = 0
 
     while True:
         now = mono_us()
@@ -1909,8 +1990,17 @@ def stream_loop(state, iface_ip):
                 for ip in targets:
                     try:
                         audio.sendto(pkt, (ip, PORT_AUDIO))
-                    except OSError:
-                        pass  # iface mid-bounce: drop; slave conceals
+                        tx_ok[ip] = tx_ok.get(ip, 0) + 1
+                    except OSError as e:
+                        # Still never raise: the remaining slaves need this
+                        # packet and the slave conceals a gap. Just stop
+                        # losing it silently.
+                        n = errno.errorcode.get(e.errno, e.errno)
+                        if e.errno in TX_QUEUE_FULL:
+                            tx_full[ip] = tx_full.get(ip, 0) + 1
+                        else:
+                            tx_err[ip] = tx_err.get(ip, 0) + 1
+                        tx_last = "%s %s" % (ip, n)
                 seq_audio += 1
                 frames_sent += FRAMES
                 next_audio += PACKET_US
@@ -1921,6 +2011,22 @@ def stream_loop(state, iface_ip):
         else:
             # Paused: keep pacing anchored so resume re-anchors once, cleanly.
             next_audio = now + PACKET_US
+
+        # Publish TX accounting: one atomic store per second, no lock.
+        if now >= next_txstat:
+            next_txstat = now + TXSTAT_INTERVAL_US
+            pub, worst = tx_rollup(tx_ok, tx_full, tx_err, tx_prev)
+            state.net_tx = pub
+            # Leave the evidence in the journal too, throttled to 10 s —
+            # the dashboard is not open at 03:00 when this starts.
+            if worst >= 5.0 and now - tx_warned_us >= 10_000_000:
+                tx_warned_us = now
+                print("[net] TX dropped before the air: "
+                      + ", ".join("%s %s%%" % (ip, d["pct"])
+                                  for ip, d in sorted(pub.items())
+                                  if d["pct"] > 0)
+                      + (" (last error: %s)" % tx_last if tx_last else ""),
+                      flush=True)
 
         # STATUS receive + slave discovery
         timeout = max(0.0, min(next_audio, next_sync) - mono_us()) / 1e6
