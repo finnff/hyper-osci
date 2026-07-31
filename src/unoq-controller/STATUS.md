@@ -4,6 +4,73 @@ _Last verified: 2026-07-22. Scope: the physical Arduino UNO-Q board, the deploye
 controller daemon, and the (rejected) osci-render route. The controller app itself is
 documented in [README.md](README.md)._
 
+## Multicast audio: measured, rejected (2026-07-31)
+
+The four-slave airtime worry — "28.8% duty for one slave, ~115% for four" — is
+real, but the proposed fix (send one multicast packet instead of N unicasts)
+makes it 12.8x worse. Measured, not reasoned; cheap to repeat with
+`tools/mcast_probe.py`.
+
+The slave was always ready for it. `net_rx.cpp` does
+`udp_audio.listenMulticast(MCAST_GROUP, PORT_AUDIO)`, and
+`handle_audio_packet()` filters on magic/version/type/sample_rate only — never
+on destination address. So this needed **no firmware change**: aiming the
+controller's `sendto` at 239.0.0.1 would have been the whole diff.
+
+It is a catastrophic pessimisation. Saturating each path from the board (probe
+at 1200 pkt/s; on-air counts from `iw dev wlan0 station dump` and the
+`multicast TXQ` row of `iw dev wlan0 info`):
+
+| path | ceiling | per packet | throughput |
+|---|---|---|---|
+| unicast | 1282 pkt/s | 780 us | 10.13 Mbit/s |
+| multicast | 100 pkt/s | 9980 us | 0.79 Mbit/s |
+
+Group-addressed frames go out at the lowest **basic rate** (~1 Mbit/s here),
+not the negotiated per-station rate: 988 B at 1 Mbit/s plus preamble, DIFS and
+backoff is the ~10 ms measured. The stream needs 200 pkt/s, so multicast cannot
+carry **one** slave, never mind four. At 12.8x the airtime per packet it would
+not break even until ~13 slaves.
+
+It is not DTIM buffering — both ends have power save off (`esp_wifi_set_ps(
+WIFI_PS_NONE)` on every wifi-up; the AP reports `Power save: off`). Raising the
+basic rate is the only thing that could revive the idea, and NetworkManager's
+wpa_supplicant AP mode exposes no `basic_rates` knob, so it would mean
+replacing the AP stack with hostapd. Not worth it — but the airtime problem it
+was meant to solve is real, so it needed measuring properly rather than
+extrapolating from a saturated-link average.
+
+**The four-slave load, measured directly** (one slave at 4x the packet rate, so
+only airtime varies):
+
+| offered | accepted | EAGAIN | on-air |
+|---|---|---|---|
+| 200/s | 100.0% | 0 | 1201 |
+| 400/s | 88.6% | 274 | 2513 |
+| 800/s | 85.8% | 680 | 4354 |
+| 1000/s | 82.0% | 1078 | 4922 |
+
+One slave at 200 pkt/s is clean — zero EAGAIN. The four-slave load of 800 pkt/s
+loses ~14% locally before it ever reaches the air, and EAGAIN already shows up
+at 400 pkt/s, so **four slaves does not fit on this 2.4 GHz / 20 MHz link**.
+(Do not trust the "16% of the medium" you get from dividing 200 pkt/s by the
+saturated 1282 pkt/s ceiling: the marginal cost per packet under saturation is
+not the cost at low load, and the table above is what actually happens.)
+
+The lever that would work is PHY rate, not packet count. The uplink already
+negotiates HT — `rx bitrate: 21.7 MBit/s MCS 2 short GI` — while the downlink
+sits near 10 Mbit/s, so there is headroom in rate control / band config that
+costs no protocol change and no firmware change. Multicast is the wrong tool
+regardless: group frames are unacknowledged and never retransmitted, so
+adopting them trades unicast's retries away on a link that already loses
+15-20% below the app layer (see "Residual: silent burst loss").
+
+One trap when re-running the probe: aimed at a slave in forced **LOCAL** mode,
+the slave's `rx` counter is not a delivery metric. Nothing drains the jitter
+buffer in LOCAL, so it fills at ~512 ms and `jb.push()` starts refusing;
+those losses land in `dropped` and never touched the air. Judge delivery from
+the AP-side counters, or put the slave in NETWORK first.
+
 ## Interval timers (2026-07-28)
 
 *"Show preset **IDENT** on slaves 1+2 for 20 s every 5 minutes."* Up to 8
