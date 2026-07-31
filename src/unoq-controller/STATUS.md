@@ -4,6 +4,122 @@ _Last verified: 2026-07-22. Scope: the physical Arduino UNO-Q board, the deploye
 controller daemon, and the (rejected) osci-render route. The controller app itself is
 documented in [README.md](README.md)._
 
+## Interval timers (2026-07-28)
+
+*"Show preset **IDENT** on slaves 1+2 for 20 s every 5 minutes."* Up to 8
+rules, persisted at `~/hype_timers.json`, edited from a new panel on the
+dashboard. `POST /api/timer` takes `op=save|delete|toggle|fire` — `fire` is
+the page's **▶ test** button, so a rule can be rehearsed at soundcheck
+instead of waited out.
+
+A rule fires on its own thread (`timer_loop`, 0.25 s tick) for the same
+reason `persist_loop` has one: a font rebuild on the stream thread is an
+audible gap on every scope at once. The preset goes on air, the targeted
+slaves are switched to STREAM, and on expiry both the pattern and each
+target's previous draw setting are restored. Targets are slave **ids**, not
+ips, so a rule survives a DHCP lease.
+
+Decisions worth remembering, because each one is a failure mode we chose
+against:
+
+- **Non-targets are left alone.** There is one streamed pattern for the whole
+  rig, so a slave already on STREAM/HYBRID sees the ident too. Forcing every
+  non-target to its local pattern for the duration would make "on slaves 1+2"
+  literally true, but it is a much bigger intervention than the rule asked
+  for. The panel says this out loud rather than pretending otherwise.
+- **Touching the pattern panel ends a hold early** and keeps what the
+  operator just set (`_takeover`). Silently reverting them 15 s later is
+  worse than a rule missing one cycle. A bare `{"stream":…}` mute does not
+  count as taking over.
+- **A hold is never persisted.** `persist_loop` skips while one is up, so a
+  controller killed mid-ident comes back drawing the *set* — the exact
+  failure `~/hype_state.json` exists to prevent. `dirty` stays armed, so the
+  restore is written on the next tick.
+- **A fire is refused for 2.5 s after a release** (`HOLD_COOLDOWN_US`). A
+  slave's draw mode is only known from its 1 Hz STATUS beacon; measured in
+  the harness, right after a release the slave reports `local` while the
+  controller still has `network`. A rule firing inside that window would
+  record the forced mode as the "previous" one and strand the slave on
+  STREAM for good.
+- **`every_s` is clamped past `hold_s`.** A period inside the hold would
+  re-fire before the restore ran and the show would never come back.
+- **One hold at a time**, claimed under the same lock that reads it. A rule
+  that comes due during another's hold keeps its due time and fires when that
+  one releases.
+
+Verified two ways. `tests/test_timers.py` (new, 24 checks) drives
+`fire_timer`/`end_hold` with a stub `CmdSender` and fabricated slaves — no
+sockets, so unlike `live_test.py` it is safe to run against a live board.
+End to end, a real controller on :8098 with `HYPE_*` in a temp dir and three
+fake slaves beaconing real HYPE_STATUS from 127.0.0.2/.3/.4: the rule fires
+and releases on schedule, only the targets are commanded, the pre-hold
+pattern and modes come back, the takeover and cooldown behave, and
+`~/hype_state.json` still reads `circle/123` while the ident is on air.
+Dashboard driven in headless Chromium at 390 px and 1280 px — no overflow, no
+control under 44 px on the phone, desktop unchanged.
+
+## Presets you can overwrite, phone UI cleanup (2026-07-28)
+
+Two things, both in `PAGE`; no Python behaviour changed.
+
+**Overwrite an existing preset.** `op=save` has always replaced a same-named
+preset in place server-side, but the only way to reach that path was the
+`+ save` prompt — you had to retype the name exactly and guess what
+`sanitize_name()` would do to it, so in practice everyone made a second
+preset. The page now tracks which preset it last applied or wrote
+(`localStorage`, because the phone locks its screen mid-set and the reloaded
+page must still know) and shows **`⟳ update "<name>"`** next to
+**`+ save as…`**. The update button names its target and confirms; the
+applied preset's chip is highlighted. Verified end to end against a real
+controller on :8098 with `HYPE_PRESETS` pointed at a temp dir: applying a
+preset then hitting update rewrote it in place (`circle`/90 Hz →
+`rose` a=8/412 Hz on disk) with the list still 20 long and no duplicate name.
+
+**UI cleanup, superseding two calls from the entry below.**
+
+- `.seg` wrapping was the right fix but left the joined pill with square
+  corners mid-row — row 1 ended blunt, row 2 started blunt, and it read as a
+  rendering fault. The 7 draw options are now separate 4 px-gapped chips
+  (also fewer mis-taps). The preset `[name][×]` pair keeps the joined pill
+  under its own `.chip` class: two buttons, never wrapped, radii always right.
+- The full-width square preview pushed the entire pattern panel below the
+  fold. Capped at `min(100%,38vh)` and centred, it stays square (mandatory —
+  the canvas is 520² and a non-square box shears every figure) while the
+  controls stay on screen. `#top` also switches to `flex-direction:column` on
+  phones: once the preview is narrower than the viewport the controls panel
+  tries to share its flex line, which put the page back to 504 px of
+  sideways scroll.
+- Touch targets: every button/select/number input gets `min-height:44px` and
+  ranges 44 px of height under 640 px. 52 controls were 32 px tall.
+- `post()` now surfaces the controller's `{err}` instead of swallowing it —
+  `+ save as` at the 20-preset cap used to look exactly like a save that
+  worked. Confirmed: the 21st save raises `max 20 presets` in the page.
+
+Verified in headless Chromium at 320/390 px (`scrollWidth == innerWidth`,
+zero overflowing elements, no button under 44 px) and 1280 px (unchanged:
+260 px scope, `#top` in a row, 32 px buttons, 3-column slave grid, 4-column
+stats). Extracted `<script>` passes `node --check`; `py_compile` clean.
+`test_fixes.py` and `test_persist.py` produce byte-identical output before
+and after the change (both still fail on this dev box for the documented
+reason — no Hershey fonts here). Needs the usual scp + restart to reach the
+board.
+
+## Dashboard renders on portrait phones (2026-07-28)
+
+On a 390 px phone the page scrolled sideways to 550 px: the 7-button `draw`
+segments (519 px, `.seg` didn't wrap) and the `#slaves` grid's 360 px minimum
+track both overflowed, and the preview canvas sat fixed at 260 px. CSS-only
+fix in `PAGE` (no JS/markup change): `.seg` gets `flex-wrap:wrap`, the slave
+grid minimum becomes `min(360px,100%)`, and a `max-width:640px` media query
+makes `#scope` a full-width square (`aspect-ratio:1/1`), drops `#controls`'
+min-width, loosens `.stats` to 3 columns and un-nowraps the help-table
+headers. Verified in headless Chromium at 320/390/1280 px with injected
+state: zero overflowing elements, `scrollWidth == innerWidth` on both phone
+widths; desktop unchanged (260 px scope, multi-column cards — where the seg
+row previously overflowed ~400 px cards too, now it wraps). Extracted
+`<script>` still passes `node --check`. Needs the usual scp + restart to
+reach the board.
+
 ## Controller daemon (bring-up, 2026-07-18)
 
 `tools/hype_controller.py` (deployed at `/home/arduino/hype_controller.py`) streams

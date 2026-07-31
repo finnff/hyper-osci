@@ -217,6 +217,77 @@ def save_live(d):
     return None
 
 
+# Interval timers: "show preset P on slaves 1+2 for 20 s every 5 minutes".
+# Small cap on purpose -- these interrupt the show, and a screenful of rules
+# nobody can reason about is worse than none.
+TIMERS_FILE = os.environ.get(
+    "HYPE_TIMERS", os.path.expanduser("~/hype_timers.json"))
+TIMERS_MAX = 8
+# targets = slave IDs, NOT ips: a slave keeps its id across a DHCP lease and
+# across a reflash, and the id is what the dashboard prints on the card.
+# Empty = every slave currently discovered.
+TIMER_DEFAULTS = {"enabled": True, "preset": "", "targets": [],
+                  "hold_s": 20, "every_s": 300}
+
+
+def clean_timer(t):
+    """Timer dict -> fully populated, range-checked copy (id filled by caller).
+
+    Same contract as clean_preset: every field optional on load and filled
+    from the defaults, so a rule written by an older build still loads.
+    """
+    q = {"id": max(0, int(t.get("id", 0)) if str(t.get("id", 0)).lstrip("-")
+                   .isdigit() else 0)}
+    q["preset"] = sanitize_name(t.get("preset", ""))
+    q["enabled"] = bool(t.get("enabled", TIMER_DEFAULTS["enabled"]))
+    ids = t.get("targets", [])
+    if not isinstance(ids, (list, tuple)):
+        ids = []
+    seen = []
+    for v in ids:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= n <= 255 and n not in seen:
+            seen.append(n)
+    q["targets"] = sorted(seen)[:16]
+    for k in ("hold_s", "every_s"):
+        try:
+            q[k] = int(float(t.get(k, TIMER_DEFAULTS[k])))
+        except (TypeError, ValueError):
+            q[k] = TIMER_DEFAULTS[k]
+    q["hold_s"] = min(600, max(1, q["hold_s"]))
+    q["every_s"] = min(86400, max(5, q["every_s"]))
+    # A period inside the hold would re-fire before the restore ever ran and
+    # the show would never come back.
+    q["every_s"] = max(q["every_s"], q["hold_s"] + 1)
+    return q
+
+
+def load_timers():
+    try:
+        with open(TIMERS_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [q for q in (clean_timer(t) for t in data if isinstance(t, dict))
+            if q["preset"]][:TIMERS_MAX]
+
+
+def save_timers(timers):
+    """Atomically persist the timer rules. No .bak generation, unlike
+    save_presets: a lost rule is fifteen seconds of retyping, a lost artist
+    name is the show."""
+    tmp = TIMERS_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(timers, f, indent=1)
+        os.replace(tmp, TIMERS_FILE)
+    except OSError as e:
+        print(f"[timers] save failed: {e}", flush=True)
+
+
 def _jhf_glyphs(fname):
     """Parse a Hershey .jhf font -> {ascii: (left, right, [polyline, ...])}.
 
@@ -435,6 +506,12 @@ def persist_loop(state, period=3.0):
     last, warned = None, False
     while True:
         time.sleep(period)
+        # An interval timer's hold is a 20 s interruption, not "what was on
+        # the scopes": persisting it would bring the rig back drawing the
+        # ident after a power blip, the exact failure this file prevents.
+        # dirty stays set, so the restore lands on the very next tick.
+        if state.timer_hold is not None:
+            continue
         if not state.dirty:
             continue
         state.dirty = False   # a write landing here just re-arms us next tick
@@ -447,6 +524,159 @@ def persist_loop(state, period=3.0):
         elif not warned:
             warned = True     # once per outage, not every 3 s forever
             print(f"[state] cannot save {STATE_FILE}: {err}", flush=True)
+
+
+def apply_preset(state, p):
+    """Install a preset-shaped dict as the live streamed pattern.
+
+    The one place that does the rebuild dance, shared by the dashboard's
+    preset tap and the interval timers. Lock order is the documented one:
+    rebuild_lock, then state.lock, and the font parse happens between them so
+    it never stalls the 5 ms stream pacing.
+    """
+    with state.rebuild_lock:
+        p = clean_preset(p)   # never install an unknown font (circle!)
+        tbl, rmax = build_text(p["text"], p["font"])
+        with state.lock:
+            state.kind, state.freq, state.amp = p["kind"], p["freq"], p["amp"]
+            state.ratio_a, state.ratio_b = p["a"], p["b"]
+            state.pulse_rate = p["pulse_rate"]
+            state.pulse_depth = p["pulse_depth"]
+            state.rot_speed = p["rot"]
+            state.flip_x, state.flip_y = p["flip_x"], p["flip_y"]
+            state.text, state.font = p["text"], p["font"]
+            state.text_tbl, state.text_rmax = tbl, rmax
+            state.text_ver += 1
+        state.dirty = True
+
+
+# A slave's draw mode is only known from its STATUS beacon, which arrives
+# once a second. Straight after a release the controller's copy still says
+# "network" for a slave it has just put back on local, so a hold starting
+# inside that window would snapshot the wrong mode and restore the slave to
+# network for good. Two seconds is past one beacon plus jitter; it also stops
+# two rules stacking stings back to back, which looks broken anyway.
+HOLD_COOLDOWN_US = 2_500_000
+
+# Why a fire was refused. The string is the reason the dashboard shows, so
+# there is one wording to keep true instead of the handler guessing at three
+# possibilities. FIRE_RETRY marks the transient ones: timer_loop tries those
+# again in a moment rather than costing the rule its whole turn.
+FIRE_HOLDING = "another timer is already on air"
+FIRE_COOLDOWN = ("a hold just released — the slaves' modes are not "
+                 "trustworthy yet")
+FIRE_MUTED = "STREAM is off — a hold would pull the slaves onto a dead stream"
+FIRE_NO_PRESET = "that preset no longer exists"
+FIRE_RETRY = (FIRE_HOLDING, FIRE_COOLDOWN)
+
+
+def fire_timer(state, cmds, t):
+    """Start a hold: install the rule's preset, put its targets on the stream.
+
+    Returns None once the hold is running, else the FIRE_* reason it did not
+    start.
+    """
+    before = state.live_snapshot()
+    with state.lock:
+        if state.timer_hold is not None:
+            return FIRE_HOLDING
+        if mono_us() < state.hold_cooldown_us:
+            return FIRE_COOLDOWN
+        # A hold drags its targets onto the stream, so with the stream muted
+        # it is not an interruption but a dark scope for the whole hold --
+        # and the slaves it took were drawing their own mic input a moment
+        # earlier. Muting for a changeover is exactly when a rule comes due.
+        if not state.stream_on:
+            return FIRE_MUTED
+        p = next((dict(x) for x in state.presets
+                  if x["name"] == t["preset"]), None)
+        if p is None:
+            return FIRE_NO_PRESET
+        ips = [ip for ip, s in state.slaves.items()
+               if not t["targets"] or s["id"] in t["targets"]]
+        state.timer_hold = {
+            "id": t["id"], "preset": t["preset"],
+            "until_us": mono_us() + t["hold_s"] * 1_000_000,
+            "pattern": before,
+            "modes": {ip: state.slaves[ip]["mode"] for ip in ips}}
+    apply_preset(state, p)
+    for ip in ips:
+        cmds.send(ip, {"cmd": "set_mode", "mode": "network"})
+    print(f"[timer] hold {t['preset']!r} on "
+          f"{','.join(ips) if ips else 'nobody (no slave matched)'} "
+          f"for {t['hold_s']}s", flush=True)
+    return None
+
+
+def end_hold(state, cmds, restore_pattern=True):
+    """Finish a hold: targets back to the draw setting they had, and — unless
+    the operator took the panel over mid-hold — the pre-hold pattern back."""
+    with state.lock:
+        h, state.timer_hold = state.timer_hold, None
+        if h is None:
+            return
+        # Armed in the same acquisition that clears the hold. Split across
+        # two, timer_loop can land in between, see "not holding" with the
+        # cooldown still at its old value, and fire on mode data the STATUS
+        # beacons have not refreshed yet -- the very thing it guards.
+        state.hold_cooldown_us = mono_us() + HOLD_COOLDOWN_US
+    for ip, mode in h["modes"].items():
+        cmds.send(ip, {"cmd": "set_mode",
+                       "mode": MODE_NAMES.get(mode, "local")})
+    if restore_pattern:
+        apply_preset(state, h["pattern"])
+    print(f"[timer] release {h['preset']!r}"
+          + ("" if restore_pattern else " (panel taken over)"), flush=True)
+
+
+def timer_loop(state, cmds, tick=0.25):
+    """Fire and release the interval rules.
+
+    Its own thread for the same reason as persist_loop: a font rebuild on the
+    stream thread is an audible gap on every scope at once.
+
+    One hold at a time — there is a single streamed pattern, so two rules
+    interrupting together would only fight over it. A rule that comes due
+    during someone else's hold keeps its due time and fires just after that
+    one releases, once the cooldown has passed.
+    """
+    while True:
+        time.sleep(tick)
+        now = mono_us()
+        due = None
+        with state.lock:
+            holding = state.timer_hold is not None
+            expired = holding and now >= state.timer_hold["until_us"]
+            if not holding:
+                for t in state.timers:
+                    if not t["enabled"]:
+                        continue
+                    # First sight of a rule schedules it a full period out: a
+                    # restart must not fire into a rig someone is still
+                    # cabling up.
+                    nxt = state.timer_next.setdefault(
+                        t["id"], now + t["every_s"] * 1_000_000)
+                    if nxt <= now:
+                        due = dict(t)
+                        break
+        if expired:
+            end_hold(state, cmds)
+        elif due is not None:
+            # Only a fire that actually happened costs the rule its turn.
+            # Rearming before the call meant a rule queued behind another
+            # rule's hold came due 250 ms after the release, hit the
+            # post-release cooldown, and then waited a whole period -- the
+            # one case this loop's docstring promises to handle.
+            reason = fire_timer(state, cmds, due)
+            delay = (HOLD_COOLDOWN_US if reason in FIRE_RETRY
+                     else due["every_s"] * 1_000_000)
+            with state.lock:
+                # Skip a rule deleted during the fire (its timer_next is
+                # already gone, and re-adding it would orphan the entry), and
+                # never stomp a due time an HTTP save/toggle just set.
+                if any(x["id"] == due["id"] for x in state.timers) \
+                        and state.timer_next.get(due["id"], 0) <= now:
+                    state.timer_next[due["id"]] = now + delay
 
 
 class State:
@@ -506,6 +736,20 @@ class State:
         # AP is down or the slaves are simply off.
         self.net_iface = ""
         self.net_egress = None
+        # Interval timers. All three are touched by both timer_loop and the
+        # HTTP threads, so all three live under self.lock.
+        self.timers = load_timers()
+        self.next_timer_id = 1 + max([t["id"] for t in self.timers], default=0)
+        # id -> mono_us of the next fire. Runtime only: a rule that survived a
+        # restart starts its period from boot rather than firing immediately
+        # into a rig someone is still cabling up.
+        self.timer_next = {}
+        # None, or the rule currently interrupting the show:
+        # {"id", "preset", "until_us", "pattern": pre-hold live snapshot,
+        #  "modes": {ip: mode int before we forced it to network}}
+        self.timer_hold = None
+        # Set on release; see HOLD_COOLDOWN_US.
+        self.hold_cooldown_us = 0
 
     def pattern_params(self):
         with self.lock:
@@ -541,6 +785,15 @@ class State:
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
                            for s in self.slaves.values()],
                 "net": {"iface": self.net_iface, "egress": self.net_egress},
+                "timers": [dict(t, next_in=(
+                    None if not t["enabled"] else
+                    max(0, (self.timer_next.get(t["id"], now) - now) // 1000000)
+                )) for t in self.timers],
+                "hold": None if not self.timer_hold else {
+                    "id": self.timer_hold["id"],
+                    "preset": self.timer_hold["preset"],
+                    "left_s": max(0, (self.timer_hold["until_us"] - now)
+                                  // 1000000)},
             }
 
 
@@ -694,12 +947,27 @@ button.on { background:var(--ph); color:#031003; border-color:var(--ph);
 button.off { background:var(--bad); color:#1a0303; border-color:var(--bad);
              font-weight:bold; }
 button.danger:hover { border-color:var(--bad); color:var(--bad); }
-.seg { display:flex; gap:0; }
-.seg button { border-radius:0; }
-.seg button:first-child { border-radius:5px 0 0 5px; }
-.seg button:last-child { border-radius:0 5px 5px 0; }
+/* The 7 draw options never fit one phone row. A joined pill that wraps grows
+   square corners mid-row (row 1 ended blunt, row 2 started blunt — it read as
+   a rendering fault), and 7 touching 44px targets invite mis-taps on a dark
+   stage. So these are deliberately separate chips. */
+.seg { display:flex; flex-wrap:wrap; gap:4px; }
+/* A preset's [name][x] pair must stay glued or the x looks unowned, so it
+   keeps the joined pill: exactly two buttons, nowrap, first/last always right. */
+.chip { display:inline-flex; flex-wrap:nowrap; }
+.chip button { border-radius:0; }
+.chip button:first-child { border-radius:5px 0 0 5px; }
+.chip button:last-child { border-radius:0 5px 5px 0; }
+#plist { display:flex; gap:6px; flex-wrap:wrap; }
+/* Keeps a phrase like "for [20] s" whole: a .row wraps between its children,
+   and a stray unit or a lone x button on the next line reads as a bug. */
+.grp { display:flex; align-items:center; gap:6px; flex:none;
+       color:var(--dim); }
+/* On a phone each rule takes two lines; without a rule between them two
+   timers read as one. */
+#tlist .row + .row { border-top:1px solid var(--line); padding-top:8px; }
 #slaves { display:grid; gap:14px;
-          grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); }
+          grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr)); }
 .card h2 { font-size:15px; color:var(--ph); margin-bottom:2px; }
 .card h2 small { color:var(--dim); font-weight:normal; margin-left:8px; }
 .play { margin:4px 0 6px; font-size:13px; }
@@ -726,6 +994,27 @@ details summary { cursor:pointer; color:var(--fg); }
 details td { padding:2px 14px 2px 0; vertical-align:top; }
 details th { text-align:left; color:var(--fg); font-weight:normal;
              padding-right:14px; white-space:nowrap; }
+/* portrait phones: thumb-sized targets, preview that doesn't eat the fold */
+@media (max-width:640px) {
+  body { padding:10px; }
+  /* Stack, don't wrap: once the preview is narrower than the viewport the
+     controls panel tries to share its flex line and overflows sideways. */
+  #top { flex-direction:column; }
+  /* Square is mandatory — the canvas is 520x520 and a non-square CSS box
+     shears every figure. But full-width square pushed the whole pattern
+     panel below the fold; capped against viewport height it stays on screen
+     together with the controls you are actually turning. */
+  #scope { width:min(100%,38vh); height:auto; aspect-ratio:1/1;
+           align-self:center; }
+  #controls { min-width:0; }
+  .stats { grid-template-columns:repeat(3,1fr); }
+  details th { white-space:normal; }
+  .row label { width:58px; }
+  /* 32px controls are a mis-tap with a thumb; 44px is the usual floor. */
+  button, select, input[type=number] { min-height:44px; padding:8px 14px; }
+  input[type=range] { height:44px; }
+  #plist { gap:8px; }
+}
 </style></head><body>
 <header>
   <h1>HYPEROSCI</h1>
@@ -798,9 +1087,36 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
       <span class="val" id="rotv"></span></div>
     <div class="row" id="presetrow"><label
         title="saved snapshots of everything in this panel — prepare artist names before the show, then switch in one tap">presets</label>
-      <span id="plist" style="display:flex;gap:6px;flex-wrap:wrap"></span>
-      <button title="save the current pattern settings as a named preset (max __PRESETS_MAX__)"
-              onclick="savePreset()">+ save</button></div>
+      <span id="plist"></span>
+      <button id="updbtn" style="display:none" onclick="updatePreset()"></button>
+      <button title="save the current pattern settings under a NEW name (max __PRESETS_MAX__)"
+              onclick="savePreset()">+ save as…</button></div>
+  </div>
+</div>
+<div id="timerpanel" class="panel" style="margin-bottom:14px">
+  <div style="color:var(--dim)" title="periodically interrupt the show with a preset — a station ident between acts, say">interval
+    timers <span id="holdnote" style="color:var(--ph)"></span></div>
+  <div id="tlist"></div>
+  <div class="row" id="taddrow" style="margin-top:10px">
+    <label title="build a rule: which preset, on which slaves, how long, how often">add</label>
+    <select id="tpreset" title="the preset this rule shows"></select>
+    <span style="color:var(--dim)">on</span>
+    <span class="seg" id="ttargets"></span>
+    <span class="grp">for
+      <input type="number" id="thold" min="1" max="600" value="20"
+             style="width:66px" title="seconds to hold the preset">s</span>
+    <span class="grp">every
+      <input type="number" id="tevery" min="0.1" max="1440" step="any"
+             value="5" style="width:74px"
+             title="minutes between starts (clamped to at least 5 s, and to
+                    longer than the hold)">min</span>
+    <button onclick="addTimer()">+ add</button>
+  </div>
+  <div style="color:var(--dim);font-size:12.5px;margin-top:10px">
+    the rig has <b>one</b> streamed pattern: during a hold the chosen slaves
+    are switched to STREAM, and any other slave already on STREAM/HYBRID sees
+    the same figure. Everything is put back afterwards — and touching the
+    pattern panel ends a hold early rather than reverting you later.
   </div>
 </div>
 <div id="slaves" class="panel"><div id="none">no slaves discovered yet…</div></div>
@@ -838,8 +1154,13 @@ details th { text-align:left; color:var(--fg); font-weight:normal;
 let S = null;
 const hist = {};   // ip -> previous counters for rate calculation
 
+// Show the controller's {err} instead of swallowing it: "+ save as" at the
+// 20-preset cap used to look exactly like a save that worked.
 function post(path, body) {
   return fetch(path, {method:"POST", body:JSON.stringify(body)})
+    .then(r => r.json().catch(() => null))
+    .then(d => { if (d && (d.err || d.note)) alert(d.err || d.note); })
+    .catch(() => {})            // controller restarting; poll() retries
     .then(() => poll());
 }
 const setP = p => post("/api/pattern", p);
@@ -899,23 +1220,131 @@ function live() {
 
 // Presets: snapshots of the whole streamed-pattern panel, kept on the
 // controller (~/hype_presets.json) so they survive restarts.
+//
+// "current" = the preset this browser last applied or wrote. The controller
+// has no session, so it is purely client-side -- but it lives in
+// localStorage, because the phone locks its screen mid-set and the reloaded
+// page must still be able to write back into the preset you were shaping
+// instead of only ever making another one.
+let curPreset = localStorage.getItem("hypePreset") || "";
+function setCur(n) {
+  curPreset = n || "";
+  if (curPreset) localStorage.setItem("hypePreset", curPreset);
+  else localStorage.removeItem("hypePreset");
+}
 function savePreset() {
   const p = S.pattern;
   const def = (p.kind === "text" ? p.text.split("\\n")[0] : p.kind).slice(0, 24);
-  const name = prompt("preset name (e.g. the artist):", def);
-  if (name && name.trim()) post("/api/preset", {op:"save", name:name.trim()});
+  const name = prompt("new preset name (e.g. the artist):", def);
+  if (!name || !name.trim()) return;
+  setCur(name.trim());
+  post("/api/preset", {op:"save", name:name.trim()});
 }
-const loadPreset = n => post("/api/preset", {op:"load", name:n});
+// op=save has always overwritten a same-named preset in place server-side;
+// reaching it used to mean retyping the name exactly and guessing what
+// sanitize_name would do to it. This just gives that path a button.
+function updatePreset() {
+  if (curPreset && confirm(`overwrite preset "${curPreset}" with the current settings?`))
+    post("/api/preset", {op:"save", name:curPreset});
+}
+function loadPreset(n) {
+  setCur(n);
+  return post("/api/preset", {op:"load", name:n});
+}
 function delPreset(n) {
-  if (confirm(`delete preset "${n}"?`))
-    post("/api/preset", {op:"delete", name:n});
+  if (!confirm(`delete preset "${n}"?`)) return;
+  if (n === curPreset) setCur("");
+  post("/api/preset", {op:"delete", name:n});
 }
 function presetChips() {
-  document.getElementById("plist").innerHTML = (S.presets || []).map(n =>
-    `<span class="seg"><button title="apply this preset"
+  const names = S.presets || [];
+  if (curPreset && !names.includes(curPreset)) setCur("");  // deleted elsewhere
+  // During a hold the panel shows the TIMER's preset, not the one this
+  // browser last applied. Highlight what is actually on the scopes -- the
+  // update button keeps following curPreset, which is still what a write
+  // would land on.
+  const onAir = (S.hold && S.hold.preset) || curPreset;
+  document.getElementById("plist").innerHTML = names.map(n =>
+    `<span class="chip"><button class="${n === onAir ? "on" : ""}"
+        title="apply preset '${esc(n)}'"
         onclick="loadPreset('${n}')">${esc(n)}</button><button class="danger"
         title="delete preset '${esc(n)}'" onclick="delPreset('${n}')">×</button></span>`
   ).join("") || '<span style="color:var(--dim)">none saved yet</span>';
+  const u = document.getElementById("updbtn");
+  u.style.display = curPreset ? "" : "none";
+  if (curPreset) {
+    u.textContent = `\u27f3 update "${curPreset}"`;
+    u.title = `overwrite "${curPreset}" with what is on this panel right now`;
+  }
+}
+
+// Interval timers: "show preset P on slaves 1+2 for 20 s every 5 min".
+// The controller owns the schedule; this is only the editor for it.
+let tTargets = new Set();   // ids picked in the add row; empty = every slave
+function tgTarget(i) {
+  tTargets.has(i) ? tTargets.delete(i) : tTargets.add(i);
+  targetBtns();
+}
+function targetBtns() {
+  const ids = [...new Set((S.slaves || []).map(s => s.id))].sort((a,b)=>a-b);
+  document.getElementById("ttargets").innerHTML =
+    `<button class="${tTargets.size ? "" : "on"}"
+       title="every slave, including any that appear later"
+       onclick="tTargets.clear();targetBtns()">all</button>` +
+    ids.map(i => `<button class="${tTargets.has(i) ? "on" : ""}"
+       title="slave ${i}" onclick="tgTarget(${i})">${i}</button>`).join("");
+}
+const fmtEvery = s => s >= 60 ? +(s/60).toFixed(1) + " min" : s + " s";
+const fmtLeft = s => s >= 60
+    ? Math.floor(s/60) + "m" + String(s%60).padStart(2,"0") + "s" : s + "s";
+
+function addTimer() {
+  const preset = document.getElementById("tpreset").value;
+  if (!preset) return alert("save a preset first — a timer shows a preset");
+  post("/api/timer", {op:"save", preset:preset, targets:[...tTargets],
+    hold_s: +document.getElementById("thold").value,
+    every_s: Math.round(+document.getElementById("tevery").value * 60)});
+}
+const timerOp = (op, id) => post("/api/timer", {op:op, id:id});
+function delTimer(id, preset) {
+  if (confirm(`delete the timer for "${preset}"?`)) timerOp("delete", id);
+}
+// Options are rebuilt only when the preset list actually changes, so the
+// select does not snap back to the first entry once a second.
+function presetOptions() {
+  const sel = document.getElementById("tpreset"), names = S.presets || [];
+  const want = names.join("\\u0000");
+  if (sel.dataset.names === want) return;
+  const cur = sel.value;
+  sel.innerHTML = names.map(n => `<option>${esc(n)}</option>`).join("");
+  sel.dataset.names = want;
+  if (names.includes(cur)) sel.value = cur;
+}
+function timerRows() {
+  const ts = S.timers || [], hold = S.hold;
+  document.getElementById("holdnote").textContent = hold
+    ? `— on air: "${hold.preset}", ${fmtLeft(hold.left_s)} left` : "";
+  document.getElementById("tlist").innerHTML = ts.map(t => {
+    const who = t.targets.length ? "slave " + t.targets.join("+")
+                                 : "every slave";
+    const when = hold && hold.id === t.id
+      ? `<b style="color:var(--ph)">on air, ${fmtLeft(hold.left_s)} left</b>`
+      : !t.enabled ? "paused"
+      : t.next_in == null ? "" : `next in ${fmtLeft(t.next_in)}`;
+    return `<div class="row" style="margin-top:6px">
+      <button class="${t.enabled ? "on" : "off"}"
+        title="${t.enabled ? "pause this rule" : "arm this rule"}"
+        onclick="timerOp('toggle',${t.id})">${t.enabled ? "ON" : "OFF"}</button>
+      <span style="flex:1;min-width:170px">"${esc(t.preset)}" on ${who}
+        · ${t.hold_s} s every ${fmtEvery(t.every_s)}
+        <span style="color:var(--dim)">· ${when}</span></span>
+      <span class="grp"><button
+        title="run this rule now instead of waiting for its next turn"
+        onclick="timerOp('fire',${t.id})">▶ test</button><button class="danger"
+        title="delete this timer"
+        onclick="delTimer(${t.id},'${t.preset}')">×</button></span></div>`;
+  }).join("") ||
+    '<div style="color:var(--dim);margin-top:6px">none — nothing interrupts the show</div>';
 }
 
 // Text-path preview: fetched only when the server-side table changes (tver).
@@ -1066,6 +1495,7 @@ function render() {
   document.getElementById("fxbtn").className = p.flip_x ? "on" : "";
   document.getElementById("fybtn").className = p.flip_y ? "on" : "";
   presetChips();
+  presetOptions(); targetBtns(); timerRows();
   if (isText && p.tver !== TP.ver) fetchPreview();
   // Don't fight the user mid-drag: only sync widgets nobody is touching.
   const act = document.activeElement;
@@ -1167,9 +1597,13 @@ def make_http_handler(state, cmds):
                         # stall the 5 ms stream pacing.
                         new_tbl = (text, font) + build_text(text, font)
                     self._apply_pattern(state, body, new_tbl)
+                if set(body) - {"stream"}:   # a real pattern edit, not a mute
+                    self._takeover(state)
                 self._json({"ok": True})
             elif self.path == "/api/preset":
                 return self._preset(state, body)
+            elif self.path == "/api/timer":
+                return self._timer(state, body)
             elif self.path == "/api/cmd":
                 ip, cmd_obj = body.get("ip"), body.get("cmd")
                 if not ip or not isinstance(cmd_obj, dict):
@@ -1251,30 +1685,117 @@ def make_http_handler(state, cmds):
                     state.presets = [p for p in state.presets
                                      if p["name"] != name]
                     plist = list(state.presets)
+                    # A rule pointing at a preset that is gone can never fire,
+                    # but it kept rendering ON with a live countdown -- the
+                    # dashboard promising an ident that was never coming.
+                    # Pause those rules and tell the operator instead.
+                    paused = [t for t in state.timers
+                              if t["preset"] == name and t["enabled"]]
+                    for t in paused:
+                        t["enabled"] = False
+                    tlist = list(state.timers) if paused else None
+                    stuck = (state.timer_hold is not None
+                             and state.timer_hold["preset"] == name)
                 save_presets(plist)
-                return self._json({"ok": True})
+                if tlist is not None:
+                    save_timers(tlist)
+                if stuck:   # don't leave the show on a preset just deleted
+                    end_hold(state, cmds)
+                return self._json({"ok": True, "note": None if not paused else
+                                   f"{len(paused)} timer(s) paused — they "
+                                   f"showed \"{name}\""})
             with state.lock:  # load
                 p = next((dict(p) for p in state.presets
                           if p["name"] == name), None)
             if p is None:
                 return self._json({"err": "no such preset"}, 404)
-            # Same mutex as /api/pattern: a preset tap and a font change are
-            # two rebuilds like any other pair.
-            with state.rebuild_lock:
-                p = clean_preset(p)  # never install an unknown font (circle!)
-                tbl, rmax = build_text(p["text"], p["font"])  # outside lock
+            apply_preset(state, p)   # same mutex dance as /api/pattern
+            self._takeover(state)
+            return self._json({"ok": True})
+
+        def _takeover(self, state):
+            """A hand on the panel ends any interval hold: the targets go back
+            to the draw setting they had, but the pattern stays as just set.
+            Silently reverting the operator fifteen seconds later is worse
+            than a timer missing one cycle.
+
+            Called unconditionally. end_hold's read-and-clear is atomic and
+            already a no-op when nothing holds, whereas an unlocked `if` here
+            would miss a hold that starts between the test and the call and
+            then revert the operator's pattern a hold later."""
+            end_hold(state, cmds, restore_pattern=False)
+
+        def _timer(self, state, body):
+            op = body.get("op")
+            if op not in ("save", "delete", "toggle", "fire"):
+                return self._json({"err": "bad op"}, 400)
+            if op == "save":
+                t = clean_timer(body)
+                if not t["preset"]:
+                    return self._json({"err": "need a preset"}, 400)
                 with state.lock:
-                    state.kind, state.freq, state.amp = (
-                        p["kind"], p["freq"], p["amp"])
-                    state.ratio_a, state.ratio_b = p["a"], p["b"]
-                    state.pulse_rate = p["pulse_rate"]
-                    state.pulse_depth = p["pulse_depth"]
-                    state.rot_speed = p["rot"]
-                    state.flip_x, state.flip_y = p["flip_x"], p["flip_y"]
-                    state.text, state.font = p["text"], p["font"]
-                    state.text_tbl, state.text_rmax = tbl, rmax
-                    state.text_ver += 1
-                state.dirty = True   # tapping a preset survives a reboot too
+                    if not any(p["name"] == t["preset"]
+                               for p in state.presets):
+                        return self._json({"err": "no such preset"}, 404)
+                    for i, old in enumerate(state.timers):
+                        if old["id"] == t["id"] and t["id"]:
+                            state.timers[i] = t
+                            break
+                    else:
+                        if len(state.timers) >= TIMERS_MAX:
+                            return self._json(
+                                {"err": f"max {TIMERS_MAX} timers"}, 400)
+                        t["id"] = state.next_timer_id
+                        state.next_timer_id += 1
+                        state.timers.append(t)
+                    # Re-arm to a full period out, so tweaking "every" at
+                    # 4m59s does not fire the moment you let go -- and so the
+                    # countdown the page draws is right immediately, not from
+                    # timer_loop's next tick.
+                    state.timer_next[t["id"]] = (mono_us()
+                                                 + t["every_s"] * 1_000_000)
+                    tlist = list(state.timers)
+                save_timers(tlist)
+                return self._json({"ok": True, "id": t["id"]})
+            try:
+                tid = int(body.get("id", 0))
+            except (TypeError, ValueError):
+                return self._json({"err": "need id"}, 400)
+            if op == "fire":
+                with state.lock:
+                    t = next((dict(x) for x in state.timers
+                              if x["id"] == tid), None)
+                if t is None:
+                    return self._json({"err": "no such timer"}, 404)
+                reason = fire_timer(state, cmds, t)
+                if reason:
+                    return self._json({"err": "not now — " + reason}, 409)
+                return self._json({"ok": True})
+            with state.lock:
+                if op == "delete":
+                    state.timers = [x for x in state.timers
+                                    if x["id"] != tid]
+                    state.timer_next.pop(tid, None)
+                else:
+                    for x in state.timers:
+                        if x["id"] == tid:
+                            x["enabled"] = not x["enabled"]
+                            # Un-pausing waits a full period rather than
+                            # firing off whatever due time went stale.
+                            state.timer_next[tid] = (
+                                mono_us() + x["every_s"] * 1_000_000)
+                tlist = list(state.timers)
+                # Read under the same lock that took tlist. Tested and
+                # subscripted as two separate unlocked reads, a hold expiring
+                # in between made this a None subscript -- a 500 on the
+                # operator's tap, mid-show.
+                stuck = (state.timer_hold is not None
+                         and state.timer_hold["id"] == tid)
+            # A rule deleted or switched off mid-hold must not leave the show
+            # stuck on its preset.
+            if stuck:
+                end_hold(state, cmds)
+            save_timers(tlist)
             return self._json({"ok": True})
 
     return Handler
@@ -1468,6 +1989,8 @@ def main():
                                 make_http_handler(state, cmds))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     threading.Thread(target=persist_loop, args=(state,), daemon=True).start()
+    threading.Thread(target=timer_loop, args=(state, cmds),
+                     daemon=True).start()
 
     print(f"[controller] web on :{args.http_port}, iface={args.iface_ip}, "
           f"lead={LEAD_US/1000:.0f}ms", flush=True)

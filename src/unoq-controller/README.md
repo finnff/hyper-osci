@@ -55,9 +55,37 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    filled from `PRESET_DEFAULTS`, so adding a field to a later build cannot
    drop a preset written by an earlier one; values are clamped and the font
    whitelisted in `clean_preset()`, on both the file and the load path.
+   `op=save` overwrites a same-named preset in place, so the page offers both
+   **`⟳ update "<name>"`** (rewrite the preset you last applied — the button
+   names its target so there is no doubt what gets replaced) and
+   **`+ save as…`** (a new name). Which preset is "current" is a client-side
+   notion kept in `localStorage`; the controller has no session, and a phone
+   that locked its screen still comes back able to update the right one.
+6. **Interval timers** — up to 8 rules of the form *"show preset **IDENT** on
+   slaves 1+2 for 20 s every 5 minutes"*, persisted at `~/hype_timers.json`.
+   A rule fires on its own thread (`timer_loop`, same reasoning as
+   `persist_loop`: a font rebuild on the stream thread is an audible gap on
+   every scope): the preset goes on air, the targeted slaves are switched to
+   STREAM, and when the hold expires both the pattern and each target's
+   previous draw setting are put back. Targets are slave **ids**, not ips, so
+   a rule survives a DHCP lease.
+
+   Three things worth knowing:
+   - **There is one streamed pattern for the whole rig.** Targeting slaves
+     1+2 switches *those* to STREAM; a slave already on STREAM/HYBRID sees
+     the same figure for the duration. Nothing forces a non-target off the
+     stream — that would be a bigger intervention than the rule asked for.
+   - **Touching the pattern panel ends a hold early**, keeping what the
+     operator just set. Reverting them fifteen seconds later is worse than
+     the rule missing a cycle.
+   - **A hold is never persisted** as the live pattern, and a fire is
+     refused for `HOLD_COOLDOWN_US` after a release — a slave's mode is only
+     known from its 1 Hz STATUS beacon, so firing inside that window would
+     record the forced mode as the "previous" one and strand it on STREAM.
 
 HTTP API: `GET /api/state`, `GET /api/textpreview`; `POST /api/pattern`,
-`POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete).
+`POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete),
+`POST /api/timer` (op=save|delete|toggle|fire).
 
 `deploy/hyperosci-netwatch` (+ `.service`/`.timer`) is a separate root-owned
 watchdog that every 30 s re-activates `hyperosci-ap` if nothing holds
