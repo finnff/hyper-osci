@@ -44,12 +44,14 @@ against:
 - **`every_s` is clamped past `hold_s`.** A period inside the hold would
   re-fire before the restore ran and the show would never come back.
 - **One hold at a time**, claimed under the same lock that reads it. A rule
-  that comes due during another's hold keeps its due time and fires when that
-  one releases.
+  that comes due during another's hold keeps its due time and fires just
+  after that one releases, once the cooldown has passed (~2.7 s).
 
-Verified two ways. `tests/test_timers.py` (new, 24 checks) drives
-`fire_timer`/`end_hold` with a stub `CmdSender` and fabricated slaves — no
-sockets, so unlike `live_test.py` it is safe to run against a live board.
+Verified two ways. `tests/test_timers.py` (new, 32 checks) drives
+`fire_timer`/`end_hold` and the scheduler with a stub `CmdSender` and
+fabricated slaves — no UDP, so unlike `live_test.py` it is safe to run
+against a live board. One section binds an HTTP handler on an ephemeral
+loopback port, because the preset/rule coupling only exists in the handler.
 End to end, a real controller on :8098 with `HYPE_*` in a temp dir and three
 fake slaves beaconing real HYPE_STATUS from 127.0.0.2/.3/.4: the rule fires
 and releases on schedule, only the targets are commanded, the pre-hold
@@ -57,6 +59,39 @@ pattern and modes come back, the takeover and cooldown behave, and
 `~/hype_state.json` still reads `circle/123` while the ident is on air.
 Dashboard driven in headless Chromium at 390 px and 1280 px — no overflow, no
 control under 44 px on the phone, desktop unchanged.
+
+### Review fixes (2026-07-31)
+
+Reviewed against the board before merging. Three defects, each reproduced
+first:
+
+- **A refused fire cost the rule its turn.** `timer_loop` wrote the next fire
+  time *before* calling `fire_timer` and ignored the result, so the rule
+  queued behind another hold was refused by the post-release cooldown 250 ms
+  later with its turn already spent — the one case the bullet above
+  promises. Probed with a 3 s hold and a rule due 1.5 s into it: the second
+  rule never went on air and its next fire was pushed 54.5 s out. The turn is
+  now spent only on a fire that happened; a transient refusal retries just
+  past the cooldown.
+- **A hold fired into a muted stream.** `fire_timer` never read `stream_on`,
+  so with STREAM off it still dragged its targets onto a dead stream: slaves
+  that were drawing their own mic went to a drained jitter buffer and a dark
+  scope for the whole hold. Muting for a changeover is exactly when a rule
+  comes due. Refused now, and confirmed on the deployed daemon.
+- **Deleting a preset left an armed rule.** The rule kept rendering ON with a
+  live countdown, fired never and logged nothing. Referencing rules are
+  paused, the operator is told, and a hold showing the deleted preset is
+  released instead of left on the scopes.
+
+Refusals were a bare `False`, so the dashboard's 409 guessed at three causes
+in one string; `fire_timer` now returns the reason (or `None`) and the page
+shows it. Three narrower races went with them: `end_hold` armed the cooldown
+in a second lock acquisition (`timer_loop` landing in the gap defeats the
+cooldown entirely), `_takeover` tested `timer_hold` unlocked before calling
+an `end_hold` that is already atomic and already a no-op, and the timer
+delete/toggle path tested `timer_hold` for `None` and then subscripted it in
+a separate unlocked read — a 500 on the operator's tap if a hold expired in
+between.
 
 ## Presets you can overwrite, phone UI cleanup (2026-07-28)
 
