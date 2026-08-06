@@ -4,6 +4,98 @@ _Last verified: 2026-07-22. Scope: the physical Arduino UNO-Q board, the deploye
 controller daemon, and the (rejected) osci-render route. The controller app itself is
 documented in [README.md](README.md)._
 
+## The deaf-stall, dissected: firmware absence cycle, not RF (2026-08-04)
+
+Question that triggered this: would adding an antenna to the UNO-Q help the
+1282→<100 pkt/s link oscillation? Answer below is measured, and it is no —
+but the investigation found the stall's exact shape and cleared every host-side
+suspect. Method: laptop Wi-Fi card (`wlp61s0`, power save off) joined
+HYPEROSCI_AP as a known-good station; `mcast_probe.py` on the board as sender;
+a seq-parsing receiver (arrival gaps + periodicity) on the laptop.
+
+**The stall's true shape** (was "~100-300 ms every ~1.44 s" in `config.h`):
+**three back-to-back ~103 ms deaf windows, ~1-5 ms on-channel between them,
+then ~1.0 s clean — full period ~1.31 s.** ~310 ms of every 1310 ms off-air
+= **24% of airtime gone, always**. The brief returns between windows flush a
+sliver of the queue, which is why it reads as "100-300 ms" from a slave.
+
+**Every host-side suspect cleared, one variable at a time** (same 400 pkt/s /
+988 B probe, pattern byte-identical in each):
+- Bluetooth (same WCN3990, shared antenna): `rfkill block` → identical stalls.
+- Host/mac80211 scans: `iw event -t` on **both** ends during load → zero
+  events. NM logged zero scans in 2 h. Laptop is not scanning either.
+- P2P: `p2p_disabled 1` → identical. No NoA/Quiet IEs in beacons.
+- HYPEROSCI userspace: controller + netwatch.timer stopped → identical.
+- Load-dependence: 50/s ping on idle link → same ~200 ms RTT spikes. Always on.
+- `survey dump` counters for other channels do not advance during the stalls,
+  and the kernel's ath10k is built with `debug 0 debugfs 0 tracing 0`, so the
+  firmware cannot be asked what it is doing. It looks exactly like an
+  off-channel scan cycle (3 × ~100 ms dwells) scheduled inside the WCN3990
+  firmware (`WLAN.HL.3.3.7.c2-00931`, 2023-10-14), invisible to nl80211.
+
+**The link itself is clean and fast — when the radio is present.** To the
+laptop station (AP sees it at −21 dBm): offered 1400 pkt/s for 20 s →
+**delivered a steady 1139 pkt/s, zero tx retries, zero tx failed**, backlog
+drained in 5 ms. Implied awake-capacity ≈ 1500 pkt/s, stable across every
+round. **The 10x capacity oscillation does not exist on a strong-RF client** —
+so it is not the UNO-Q's antenna, not co-channel interference at the AP's ear,
+and not the firmware absence cycle (which only taxes a fixed 24%). What
+oscillates is the **per-station link to the ESP32 slaves** (their RF + rate
+control), which is where the 2026-07-18 rate-control-wedge writeup already
+pointed.
+
+**SO_SNDBUF, reframed — the 2026-07-31 rejection is about drain capacity, not
+buffers.** Same 400 pkt/s probe to the laptop with `--sndbuf 1048576`:
+**6000/6000 delivered, zero EAGAIN, max arrival gap 144 ms** (vs 207 ms of
+gap and 5% loss with the 213 KB default), backlog drained in 0 ms — well
+inside the 450 ms deadline lead. A ~1 MB buffer absorbs a full 310 ms absence
+cluster and hands it to a link that can drain it. The 4 MB/10.5 s disaster
+happened because the *slave* link's awake-capacity was ≈ the offered rate, so
+the buffer could never drain. Rule: sndbuf sized to one absence cluster
+(~300 ms × offered rate × ~2.3 truesize) is correct **iff** per-station
+awake-capacity comfortably exceeds the offered rate. Fix the slave-side rate
+collapse first; then the buffer is the ride-through for the firmware stall.
+
+**Capacity arithmetic under the 24% tax:** N slaves at 200 pkt/s each need
+awake-capacity ≥ N×200/0.76 ≈ N×263 pkt/s at the slaves' negotiated rates.
+Good-phase slave links (1282 pkt/s saturated) fit 4 slaves; a wedged/bad-phase
+link (<100 pkt/s) fits zero. Slave count is gated entirely on why the
+slave-station MCS collapses, as the 2026-08-04 night table already showed.
+
+**The cycle is written in 802.11 time units — but is NOT beacon-driven
+(tested).** The measured constants are exactly 100 TU (102.4 ms) per window
+and 1280 TU (1310.72 ms) per period — cluster spacing measured 1.306-1.310 s.
+Hypothesis (research agent): TSF-locked, 3 beacon intervals deaf per 1280 TU.
+Tested by setting `beacon_int 50` via `wpa_cli set_network` + AP restart
+(verified live at 50 on both ends): stall shape **unchanged** — still
+3 x ~103 ms / 1.31 s. So it is a fixed firmware timer whose constants happen
+to be TU-quantized; the beacon interval is not a mitigation lever. Also ruled
+out on-board: ath10k thermal quiet-mode duty cycling (a 100 ms-period
+mechanism that would have fit perfectly — but `cooling_device` `cur_state=0`).
+No published ath10k/WCN39xx report matches this signature. One unverified
+lead for RF-front-end tuning (not the stall): `qcom,calibration-variant` is
+empty and QMI `board_id 0xff` (unprogrammed), so the firmware loads a default
+`board-2.bin` entry rather than a per-board antenna calibration — Arduino's
+`qcm2290` BDF may or may not carry UNO-Q tuning.
+
+**Hardware answer (datasheet ABX00162-ABX00173 + on-board):** the module is
+**WCBN3536A = Qualcomm WCN3980** (driver probes it as `wcn3990 hw1.0`; wlan0
+and hci0 share one MAC — one die, one antenna). It is a **shared Wi-Fi/BT PCB
+trace antenna with no u.FL/MHF connector and no external-antenna provision**;
+attaching one means cutting the trace at the feed and voids the FCC/ISED
+modular certification. So the antenna question is closed twice over: not
+physically available, and not the limiting factor (−117 dBm noise floor,
+zero retries at −21 dBm). Related dead ends, recorded so they stay dead:
+5 GHz AP (ch 40/44/48 are legal today) is moot — ESP32-C3 slaves are
+2.4 GHz-only; threaded NAPI (upstream WCN3990 patch, +22-25% UDP RX, and this
+board's softirqs are ~20x skewed onto CPU0) is not togglable here —
+`echo 1 > /sys/class/net/wlan0/threaded` returns EOPNOTSUPP on this kernel
+build, so it would need a driver rebuild.
+
+State restored after the experiments: BT unblocked, `p2p_disabled 0`,
+controller + netwatch restarted, egress re-bound, laptop disassociated (its
+`HYPEROSCI_AP` NM profile kept, `autoconnect no` — reuse it for link tests).
+
 ## Multicast audio: measured, rejected (2026-07-31)
 
 The four-slave airtime worry — "28.8% duty for one slave, ~115% for four" — is
