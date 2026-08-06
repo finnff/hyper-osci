@@ -930,644 +930,1780 @@ class CmdSender:
 # ---------------------------------------------------------------------------
 
 PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8">
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HYPEROSCI</title>
 <style>
-:root { --bg:#070b07; --panel:#0d140d; --line:#1d2b1d; --fg:#c9e8c9;
-        --dim:#5f7a5f; --ph:#39ff14; --warn:#ffb347; --bad:#ff5252; }
-* { box-sizing:border-box; margin:0; padding:0; }
-body { background:var(--bg); color:var(--fg); font:14px/1.45 ui-monospace,
-       "JetBrains Mono",Menlo,Consolas,monospace; padding:16px; }
-h1 { font-size:18px; letter-spacing:.35em; color:var(--ph);
-     text-shadow:0 0 12px rgba(57,255,20,.55); }
-header { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
-         margin-bottom:14px; }
-.panel { background:var(--panel); border:1px solid var(--line);
-         border-radius:8px; padding:14px; }
-#top { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:14px; }
-#scope { width:260px; height:260px; background:#020402; border-radius:8px;
-         border:1px solid var(--line); flex:none; }
-#controls { flex:1; min-width:280px; display:flex; flex-direction:column;
-            gap:12px; }
-.row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.row label { width:70px; color:var(--dim); flex:none; }
-input[type=range] { flex:1; min-width:120px; accent-color:var(--ph); }
-.val { width:72px; text-align:right; color:var(--ph); flex:none; }
-button, select, input[type=number] { background:#101b10; color:var(--fg);
-  border:1px solid var(--line); border-radius:5px; padding:5px 12px;
-  font:inherit; cursor:pointer; }
-button:hover { border-color:var(--ph); }
-button.on { background:var(--ph); color:#031003; border-color:var(--ph);
-            font-weight:bold; }
-button.off { background:var(--bad); color:#1a0303; border-color:var(--bad);
-             font-weight:bold; }
-button.danger:hover { border-color:var(--bad); color:var(--bad); }
-/* The 7 draw options never fit one phone row. A joined pill that wraps grows
-   square corners mid-row (row 1 ended blunt, row 2 started blunt — it read as
-   a rendering fault), and 7 touching 44px targets invite mis-taps on a dark
-   stage. So these are deliberately separate chips. */
-.seg { display:flex; flex-wrap:wrap; gap:4px; }
-/* A preset's [name][x] pair must stay glued or the x looks unowned, so it
-   keeps the joined pill: exactly two buttons, nowrap, first/last always right. */
-.chip { display:inline-flex; flex-wrap:nowrap; }
-.chip button { border-radius:0; }
-.chip button:first-child { border-radius:5px 0 0 5px; }
-.chip button:last-child { border-radius:0 5px 5px 0; }
-#plist { display:flex; gap:6px; flex-wrap:wrap; }
-/* Keeps a phrase like "for [20] s" whole: a .row wraps between its children,
-   and a stray unit or a lone x button on the next line reads as a bug. */
-.grp { display:flex; align-items:center; gap:6px; flex:none;
-       color:var(--dim); }
-/* On a phone each rule takes two lines; without a rule between them two
-   timers read as one. */
-#tlist .row + .row { border-top:1px solid var(--line); padding-top:8px; }
-#slaves { display:grid; gap:14px;
-          grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr)); }
-.card h2 { font-size:15px; color:var(--ph); margin-bottom:2px; }
-.card h2 small { color:var(--dim); font-weight:normal; margin-left:8px; }
-.play { margin:4px 0 6px; font-size:13px; }
-.play.ok { color:var(--ph); } .play.warn { color:var(--warn); }
-.play.bad { color:var(--bad); }
-.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:2px 10px;
-         margin:8px 0; color:var(--dim); font-size:12.5px; }
-.stats span { cursor:help; }
-.stats b { color:var(--fg); font-weight:normal; }
-.stats b.ok { color:var(--ph); } .stats b.warn { color:var(--warn); }
-.stats b.bad { color:var(--bad); }
-.badge { padding:1px 8px; border-radius:4px; border:1px solid var(--line);
-         font-size:12px; cursor:help; }
-.badge.net { color:var(--ph); border-color:var(--ph); }
-.badge.mic { color:var(--warn); border-color:var(--warn); }
-.stale { opacity:.35; }
-#none { color:var(--dim); padding:24px; text-align:center; }
-#none.down { color:var(--bad); line-height:1.7; }
-#none.down code { color:var(--fg); background:#000; padding:1px 6px; }
-#offbanner { display:none; color:var(--bad); border:1px solid var(--bad);
-             border-radius:6px; padding:6px 12px; margin-bottom:12px; }
-details { margin-top:16px; color:var(--dim); font-size:13px; }
-details summary { cursor:pointer; color:var(--fg); }
-details td { padding:2px 14px 2px 0; vertical-align:top; }
-details th { text-align:left; color:var(--fg); font-weight:normal;
-             padding-right:14px; white-space:nowrap; }
-/* portrait phones: thumb-sized targets, preview that doesn't eat the fold */
-@media (max-width:640px) {
-  body { padding:10px; }
-  /* Stack, don't wrap: once the preview is narrower than the viewport the
-     controls panel tries to share its flex line and overflows sideways. */
-  #top { flex-direction:column; }
-  /* Square is mandatory — the canvas is 520x520 and a non-square CSS box
-     shears every figure. But full-width square pushed the whole pattern
-     panel below the fold; capped against viewport height it stays on screen
-     together with the controls you are actually turning. */
-  #scope { width:min(100%,38vh); height:auto; aspect-ratio:1/1;
-           align-self:center; }
-  #controls { min-width:0; }
-  .stats { grid-template-columns:repeat(3,1fr); }
-  details th { white-space:normal; }
-  .row label { width:58px; }
-  /* 32px controls are a mis-tap with a thumb; 44px is the usual floor. */
-  button, select, input[type=number] { min-height:44px; padding:8px 14px; }
-  input[type=range] { height:44px; }
-  #plist { gap:8px; }
+:root {
+  --bg:#070b07; --panel:#0d140d; --line:#33492f; --fg:#c9e8c9;
+  --dim:#7e9c7e; --ph:#39ff14; --warn:#ffb347; --bad:#ff5252;
 }
-</style></head><body>
-<header>
+html { color-scheme: dark; }
+* { box-sizing: border-box; margin: 0; padding: 0; touch-action: manipulation; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; padding: 16px; }
+h1 { font-size: 18px; letter-spacing: .35em; color: var(--ph); text-shadow: 0 0 12px rgba(57,255,20,.55); }
+
+/* === Connection banner === */
+.disconnection-banner {
+  display: none; background: #3d1010; color: var(--bad); padding: 8px; text-align: center; border-radius: 4px; margin-bottom: 8px;
+}
+body.disconnected .disconnection-banner { display: block; }
+body.disconnected { filter: saturate(0.3); }
+
+/* === Mode toggle === */
+#mode-toggle {
+  margin-left: auto; padding: 6px 12px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--fg); border-radius: 4px; cursor: pointer; font: inherit;
+}
+#mode-toggle:hover { border-color: var(--ph); }
+#conn-status { font-size: 12px; padding: 4px 8px; border-radius: 4px; }
+#conn-status.ok { color: var(--ph); }
+#conn-status.stale { color: var(--warn); }
+
+/* === Panel base === */
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+
+/* === Rig strip (SHOW) === */
+.rig-strip {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: 4px; padding: 8px;
+}
+.rig-tile {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+  padding: 8px; cursor: pointer; text-align: center; min-height: 72px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.rig-tile:active { border-color: var(--ph); }
+.rig-tile.lost { border-color: var(--bad); background: #1a0a0a; }
+.tile-id { font-weight: bold; font-size: 16px; }
+.tile-mode { font-size: 11px; color: var(--dim); }
+.tile-status { font-size: 10px; color: var(--bad); font-weight: bold; display: none; }
+.rig-tile.lost .tile-status { display: block; }
+.tile-age { font-size: 10px; color: var(--dim); }
+.battery-bar { display: flex; gap: 2px; margin-top: 2px; }
+.battery-bar span { width: 12px; height: 6px; background: var(--line); border-radius: 1px; }
+.battery-bar span.filled { background: var(--ph); }
+
+/* === Stale indicator (red border, not opacity) === */
+.stale { border-left: 3px solid var(--bad); }
+.stale::before { content: "LAST SEEN "; color: var(--bad); font-weight: bold; font-size: 10px; display: block; }
+
+/* === Danger buttons (visible without hover) === */
+button.danger { border-color: var(--bad); color: var(--bad); }
+button.danger:hover { background: var(--bad); color: var(--bg); }
+
+/* === Preview canvas === */
+#preview-wrap { width: 100%; display: flex; justify-content: center; margin: 4px 0; }
+canvas#preview { max-width: 100%; height: auto; background: #020402; border: 1px solid var(--line); border-radius: 8px; }
+
+/* === On air section === */
+.on-air-label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; }
+.on-air-name { font-size: 18px; color: var(--ph); text-align: center; margin: 4px 0; }
+.on-air-detail { font-size: 12px; color: var(--dim); text-align: center; }
+
+/* === Thumb-friendly buttons === */
+.thumb-btn {
+  min-height: 56px; min-width: 56px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--fg); border-radius: 4px;
+  font-size: 16px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.thumb-btn:active { background: var(--ph); color: var(--bg); }
+.thumb-btn:disabled { opacity: .4; }
+
+/* === Nav row (PREV/NEXT) === */
+.nav-row { display: flex; gap: 8px; margin: 8px 0; }
+.nav-row .thumb-btn { flex: 1; }
+.nav-next { font-size: 12px; color: var(--dim); text-align: center; }
+
+/* === Live dials === */
+.dial-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
+.dial-row label { width: 80px; color: var(--dim); flex: none; }
+.dial-row input[type="range"] { flex: 1; height: 24px; accent-color: var(--ph); }
+.dial-row .val { width: 80px; text-align: right; color: var(--ph); flex: none; }
+
+/* === Set list === */
+.setlist-section { margin: 12px 0; }
+.setlist-header { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .1em; margin-bottom: 4px; }
+.preset-row {
+  display: flex; align-items: center; padding: 10px 8px; border-bottom: 1px solid var(--line);
+  cursor: pointer; min-height: 48px;
+}
+.preset-row:hover { background: var(--panel); }
+.preset-row.on-air { border-left: 3px solid var(--ph); background: #0a1a0a; }
+.preset-row .idx { color: var(--dim); width: 28px; text-align: right; margin-right: 8px; }
+.preset-row .name { flex: 1; }
+.preset-row .tag { font-size: 10px; color: var(--ph); text-transform: uppercase; margin-left: 8px; }
+
+/* === Panic row === */
+.panic-row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+button.blackout {
+  background: #1a0a0a; border: 2px solid var(--bad); color: var(--bad);
+  padding: 16px; font-size: 18px; font-weight: bold; flex: 1; border-radius: 4px; cursor: pointer;
+}
+button.blackout:active { background: var(--bad); color: var(--bg); }
+.feed-toggle { display: flex; gap: 0; flex: 1; }
+.feed-toggle button {
+  flex: 1; padding: 12px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--fg); cursor: pointer; font: inherit; font-size: 13px;
+}
+.feed-toggle button:first-child { border-radius: 4px 0 0 4px; }
+.feed-toggle button:last-child { border-radius: 0 4px 4px 0; }
+.feed-toggle button.active { background: var(--ph); color: var(--bg); }
+.feed-toggle button.silent { border-color: var(--bad); color: var(--bad); }
+
+/* === Toast notification === */
+#toast {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--warn); color: var(--warn);
+  padding: 12px 24px; border-radius: 4px; z-index: 200; display: none;
+  max-width: 90vw; text-align: center; font-size: 13px;
+}
+#toast.visible { display: block; }
+#toast.error { border-color: var(--bad); color: var(--bad); }
+#toast.success { border-color: var(--ph); color: var(--ph); }
+
+/* === Collapsible sections (SETUP) === */
+.collapsible-header {
+  cursor: pointer; padding: 10px 12px; background: var(--panel); margin: 4px 0;
+  border: 1px solid var(--line); border-radius: 4px; font-weight: bold;
+  display: flex; align-items: center; gap: 8px;
+}
+.collapsible-header:hover { border-color: var(--ph); }
+.collapsible-header::before { content: "▸"; transition: transform 0.15s; display: inline-block; }
+.collapsible-header.open::before { transform: rotate(90deg); }
+.collapsible-content { display: none; padding: 12px; }
+.collapsible-content.open { display: block; }
+
+/* === Inline rename === */
+.inline-rename { display: flex; gap: 4px; margin: 4px 0; }
+.inline-rename input { flex: 1; background: #101b10; border: 1px solid var(--line); color: var(--fg); padding: 4px 8px; border-radius: 4px; font: inherit; }
+.inline-rename button { padding: 4px 12px; }
+
+/* === Confirm dialog === */
+.confirm-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.7);
+  z-index: 150; display: none; align-items: center; justify-content: center;
+}
+.confirm-overlay.active { display: flex; }
+.confirm-box { background: var(--panel); border: 1px solid var(--warn); padding: 24px; border-radius: 8px; max-width: 400px; text-align: center; }
+.confirm-box p { margin-bottom: 16px; }
+.confirm-box .confirm-btns { display: flex; gap: 8px; justify-content: center; }
+.confirm-box .confirm-btns button { padding: 8px 24px; border-radius: 4px; }
+
+/* === Stats grid === */
+.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.stats-grid .stat { display: flex; flex-direction: column; }
+.stats-grid .stat label { color: var(--dim); font-size: 11px; }
+.stats-grid .stat value { font-size: 14px; }
+
+/* === Chips === */
+.chip { display: inline-block; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; margin: 2px; cursor: pointer; background: var(--panel); }
+.chip.active { background: #1a2b1a; border-color: var(--ph); color: var(--ph); }
+.chip:hover { border-color: var(--ph); }
+
+/* === Slave sheet overlay === */
+.slave-sheet {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg);
+  z-index: 100; overflow-y: auto; display: none;
+}
+.slave-sheet.active { display: block; }
+.slave-sheet-header {
+  position: sticky; top: 0; z-index: 101; background: var(--bg);
+  padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex;
+  align-items: center; justify-content: space-between;
+}
+.slave-sheet-header h2 { font-size: 16px; color: var(--ph); }
+.slave-sheet-close {
+  background: none; border: 1px solid var(--line); color: var(--fg);
+  font-size: 20px; padding: 4px 12px; cursor: pointer; border-radius: 4px;
+}
+.slave-sheet-close:hover { border-color: var(--ph); }
+.slave-sheet-inner { padding: 16px; }
+.slave-sheet-inner h3 { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; margin: 12px 0 6px; }
+.slave-sheet-inner h3:first-child { margin-top: 0; }
+
+/* Verdict */
+.verdict { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 12px; margin-bottom: 12px; }
+.verdict.bad { border-color: var(--bad); color: var(--bad); }
+.verdict.ok { border-color: var(--ph); }
+
+/* Source 3-way */
+.source-3way { display: flex; gap: 4px; }
+.source-3way button { flex: 1; padding: 12px 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); cursor: pointer; text-align: center; font: inherit; }
+.source-3way button:first-child { border-radius: 4px 0 0 4px; }
+.source-3way button:last-child { border-radius: 0 4px 4px 0; }
+.source-3way button.active { background: #1a2b1a; border-color: var(--ph); color: var(--ph); }
+
+/* Expandable section */
+.expandable { border: 1px solid var(--line); border-radius: 4px; margin: 8px 0; }
+.expandable-header { cursor: pointer; padding: 8px 12px; background: var(--panel); display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.expandable-header:hover { border-color: var(--ph); }
+.expandable-header::after { content: "▸"; }
+.expandable-header.open::after { content: "▾"; }
+.expandable-content { display: none; padding: 8px 12px; font-size: 13px; line-height: 1.5; color: var(--dim); }
+.expandable-content.open { display: block; }
+
+/* Battery bar in sheet */
+.battery-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
+.battery-row .battery-bar { margin: 0; }
+
+/* Action buttons row */
+.action-row { display: flex; gap: 8px; margin: 12px 0; }
+.action-row button { flex: 1; padding: 12px; border-radius: 4px; }
+
+/* === Generic === */
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.row label { width: 80px; color: var(--dim); flex: none; }
+input[type="range"] { flex: 1; min-width: 120px; accent-color: var(--ph); }
+.val { width: 72px; text-align: right; color: var(--ph); flex: none; }
+select, input[type="number"], input[type="text"], textarea {
+  background: #101b10; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 5px; padding: 5px 12px; font: inherit;
+}
+button { background: #101b10; color: var(--fg); border: 1px solid var(--line); border-radius: 5px; padding: 5px 12px; font: inherit; cursor: pointer; }
+button:hover { border-color: var(--ph); }
+button.on { background: var(--ph); color: #031003; border-color: var(--ph); }
+button.off { background: #1a0a0a; color: var(--dim); }
+
+/* === Timer table === */
+.timer-table { width: 100%; border-collapse: collapse; }
+.timer-table th { text-align: left; color: var(--dim); font-weight: normal; font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.timer-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.timer-table .status-cannot-fire { color: var(--bad); font-size: 12px; }
+
+/* === Help section === */
+.help-content { line-height: 1.6; }
+.help-content h3 { color: var(--ph); margin: 12px 0 6px; font-size: 14px; }
+.help-content p { margin-bottom: 8px; color: var(--dim); }
+.help-content code { background: var(--panel); padding: 1px 4px; border-radius: 3px; }
+
+/* === Media queries === */
+@media (max-width: 640px), (max-height: 500px) {
+  body { padding: 8px; }
+  .rig-strip { grid-template-columns: repeat(4, 1fr); }
+  .rig-tile { min-height: 60px; padding: 6px; }
+  .tile-id { font-size: 14px; }
+  .dial-row { flex-direction: column; align-items: stretch; gap: 2px; }
+  .dial-row label { width: auto; }
+}
+
+/* === Mode class toggles === */
+body.show .setup-only { display: none !important; }
+body.setup .show-only { display: none !important; }
+/* Both modes show header */
+body.show .both-modes, body.setup .both-modes { display: block; }
+</style>
+</head>
+<body>
+<!-- Disconnection banner (F1) -->
+<div id="conn-banner" class="disconnection-banner"></div>
+
+<!-- === HEADER (both modes) === -->
+<header class="both-modes">
   <h1>HYPEROSCI</h1>
-  <button id="stream" class="on" onclick="toggleStream()"
-    title="Master switch: does this page send audio at all? OFF = nothing is sent and every slave draws its own local pattern. Independent of each slave's 'draw' setting.">STREAM ON</button>
-  <span style="color:var(--dim)"
-    title="set every slave's draw setting at once — same buttons as on each slave card">all draw:</span>
-  <span class="seg" id="allseg"></span>
+  <span id="conn-status" class="ok">●</span>
+  <button id="mode-toggle" onclick="toggleMode()">SETUP</button>
 </header>
-<div id="offbanner">⏻ STREAM IS OFF — this page is sending no audio; every
- slave draws its own local pattern. Press STREAM ON to resume the network
- show (slaves need ~1 s to rebuffer).</div>
-<div id="top">
-  <canvas id="scope" width="520" height="520"
-    title="Preview of the pattern being streamed (not a measurement — watch the real scope)"></canvas>
-  <div id="controls" class="panel">
-    <div style="color:var(--dim)"
-      title="These settings shape the audio sent over WiFi. They only affect slaves whose draw setting is STREAM or HYBRID — local patterns are generated on the slave itself and ignore this panel.">streamed
-      pattern <span id="pnote" style="color:var(--bad)"></span></div>
-    <div class="row"><label title="Waveform streamed to all STREAM/HYBRID slaves">pattern</label>
+
+<!-- === SHOW MODE === -->
+<div id="show-section" class="show-only">
+
+  <!-- Rig strip (sticky) -->
+  <div id="rig-strip" class="rig-strip panel">
+    <!-- Tiles are built dynamically by JS -->
+  </div>
+
+  <!-- On air -->
+  <div class="panel">
+    <div class="on-air-label">ON AIR</div>
+    <div id="preview-wrap"><canvas id="preview" width="400" height="400"></canvas></div>
+    <div class="on-air-name" id="on-air-name">—</div>
+    <div class="on-air-detail" id="on-air-detail"></div>
+  </div>
+
+  <!-- PREV / NEXT -->
+  <div class="nav-row">
+    <button class="thumb-btn" id="btn-prev" onclick="goPrev()">◀ PREV</button>
+    <button class="thumb-btn" id="btn-next" onclick="goNext()">NEXT ▶</button>
+  </div>
+  <div class="nav-next" id="nav-next-hint"></div>
+
+  <!-- Live dials -->
+  <div class="panel">
+    <div class="dial-row">
+      <label>SIZE</label>
+      <input type="range" id="amp" min="0" max="100" step="1" oninput="liveDials()" onchange="setP({amp:this.value/100})">
+      <span class="val" id="ampv">—</span>
+    </div>
+    <div class="dial-row">
+      <label>SPEED</label>
+      <input type="range" id="freq" min="10" max="2000" step="1" oninput="liveDials()" onchange="setP({freq:+this.value})">
+      <span class="val" id="freqv">—</span>
+    </div>
+  </div>
+
+  <!-- Set list -->
+  <div class="setlist-section">
+    <div class="setlist-header">SET LIST</div>
+    <div class="panel" id="setlist">
+      <!-- Built dynamically -->
+    </div>
+  </div>
+
+  <!-- Panic row -->
+  <div class="panic-row">
+    <button class="blackout" id="btn-blackout" onclick="toggleBlackout()">BLACKOUT</button>
+    <div class="feed-toggle" id="feed-toggle">
+      <button id="feed-on" onclick="setStream(true)">SENDING</button>
+      <button id="feed-off" onclick="setStream(false)">SILENT</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- === SETUP MODE === -->
+<div id="setup-section" class="setup-only">
+
+  <!-- Pattern -->
+  <div class="collapsible-header open" onclick="toggleCollapsible(this)">Pattern</div>
+  <div class="collapsible-content open panel">
+    <div class="row">
+      <label>pattern</label>
       <span class="seg" id="kindseg">
-        <button data-k="circle" title="X=cos Y=sin — one circle per period" onclick="setP({kind:'circle'})">circle</button>
-        <button data-k="lissajous" title="X/Y sine ratio a:b — classic Lissajous figures" onclick="setP({kind:'lissajous'})">lissajous</button>
-        <button data-k="rose" title="r=sin(a·t) rosette — 'a' petals (2a when a is even)" onclick="setP({kind:'rose'})">rose</button>
-        <button data-k="text" title="draw text in a Hershey vector font (single-stroke, made for scopes)" onclick="setP({kind:'text'})">text</button>
-      </span></div>
-    <div class="row"><label title="Base repetition rate of the figure. Low = slower beam, brighter trace; high = faster redraw, dimmer">freq</label>
-      <input type="range" id="freq" min="10" max="400" step="1"
-             oninput="live()" onchange="setP({freq:+this.value})">
-      <span class="val" id="freqv"></span></div>
-    <div class="row"><label title="Deflection size: 100% ≈ 2.1 Vpp per axis at the DAC">amp</label>
-      <input type="range" id="amp" min="0" max="100" step="1"
-             oninput="live()" onchange="setP({amp:this.value/100})">
-      <span class="val" id="ampv"></span></div>
-    <div class="row" id="ratiorow"><label title="lissajous: X:Y frequency ratio · rose: petal count (a)">ratio</label>
-      <input type="number" id="ra" min="1" max="9" style="width:64px"
-             onchange="setP({a:+this.value})"> :
-      <input type="number" id="rb" min="1" max="9" style="width:64px"
-             onchange="setP({b:+this.value})"></div>
-    <div class="row" id="textrow" style="display:none"><label
-        title="text to draw — accents welcome (é ü ñ ç are composed from the face's own strokes), Enter starts a new line">text</label>
-      <textarea id="text" maxlength="80" rows="2" spellcheck="false"
-             style="flex:1;min-width:120px;background:#101b10;color:var(--fg);
-                    border:1px solid var(--line);border-radius:5px;
-                    padding:5px 8px;font:inherit;resize:vertical"
-             onchange="setP({text:this.value})"></textarea>
-      <select id="font" title="Hershey typeface"
-              onchange="setP({font:this.value})">
+        <button data-k="circle" onclick="setP({kind:'circle'})">circle</button>
+        <button data-k="lissajous" onclick="setP({kind:'lissajous'})">lissajous</button>
+        <button data-k="rose" onclick="setP({kind:'rose'})">rose</button>
+        <button data-k="text" onclick="setP({kind:'text'})">text</button>
+      </span>
+    </div>
+    <!-- kind-specific controls -->
+    <div class="row" id="ratiorow" style="display:none">
+      <label id="ratio-label">ratio</label>
+      <input type="number" id="ra" min="1" max="9" style="width:64px" onchange="setP({a:+this.value})"> :
+      <input type="number" id="rb" min="1" max="9" style="width:64px" onchange="setP({b:+this.value})">
+    </div>
+    <div class="row" id="petalsrow" style="display:none">
+      <label>petals</label>
+      <input type="number" id="petals" min="1" max="9" style="width:80px" onchange="setP({a:+this.value})">
+      <span style="color:var(--dim);font-size:12px">(rose petal count — uses same input as ratio `a`)</span>
+    </div>
+    <div class="row" id="textrow" style="display:none">
+      <label>text</label>
+      <textarea id="text" maxlength="80" rows="2" spellcheck="false" style="flex:1;min-width:120px;background:#101b10;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px 8px;font:inherit;resize:vertical"></textarea>
+      <button onclick="setP({text:document.getElementById('text').value})">Apply</button>
+      <select id="font" onchange="setP({font:this.value})">
         <option>simplex</option><option>duplex</option><option>script</option>
         <option>gothic</option><option>times</option><option>italic</option>
       </select>
-      <button id="fxbtn" title="mirror left-right — fix a scope whose X polarity is inverted (text reads backwards)"
-              onclick="setP({flip_x:!S.pattern.flip_x})">⇋ X</button>
-      <button id="fybtn" title="mirror top-bottom — fix a scope whose Y polarity is inverted (text is upside down)"
-              onclick="setP({flip_y:!S.pattern.flip_y})">⇵ Y</button></div>
-    <div class="row" id="pulserow" style="display:none"><label
-        title="amplitude pulse: how deep the text 'breathes' and how fast">pulse</label>
-      <input type="range" id="pdepth" min="0" max="100" step="1"
-             title="pulse depth — 0% = steady"
-             oninput="live()" onchange="setP({pulse_depth:this.value/100})">
-      <span class="val" id="pdepthv"></span>
-      <input type="range" id="prate" min="1" max="80" step="1"
-             title="pulse rate in Hz"
-             oninput="live()" onchange="setP({pulse_rate:this.value/10})">
-      <span class="val" id="pratev"></span></div>
-    <div class="row" id="rotrow" style="display:none"><label
-        title="continuous rotation in revolutions per second — 0 = static">spin</label>
-      <input type="range" id="rot" min="-100" max="100" step="1"
-             oninput="live()" onchange="setP({rot:this.value/100})">
-      <span class="val" id="rotv"></span></div>
-    <div class="row" id="presetrow"><label
-        title="saved snapshots of everything in this panel — prepare artist names before the show, then switch in one tap">presets</label>
-      <span id="plist"></span>
-      <button id="updbtn" style="display:none" onclick="updatePreset()"></button>
-      <button title="save the current pattern settings under a NEW name (max __PRESETS_MAX__)"
-              onclick="savePreset()">+ save as…</button></div>
+    </div>
+    <div class="row" id="pulsedepthrow">
+      <label>pulse depth</label>
+      <input type="range" id="pdepth" min="0" max="100" step="1" oninput="showPdepth()" onchange="setP({pulse_depth:this.value/100})">
+      <span class="val" id="pdepthv">—</span>
+    </div>
+    <div class="row" id="puleraterow">
+      <label>pulse rate</label>
+      <input type="range" id="prate" min="1" max="80" step="1" oninput="showPrate()" onchange="setP({pulse_rate:this.value/10})">
+      <span class="val" id="pratev">—</span>
+    </div>
+    <div class="row" id="spinrow">
+      <label>spin</label>
+      <input type="range" id="rot" min="-100" max="100" step="1" oninput="showRot()" onchange="setP({rot:this.value/100})">
+      <span class="val" id="rotv">—</span>
+      <button onclick="document.getElementById('rot').value=0;showRot();setP({rot:0})">0</button>
+    </div>
+    <div class="row">
+      <label>amplitude</label>
+      <input type="range" id="s-amp" min="0" max="100" step="1" oninput="showAmp()" onchange="setP({amp:this.value/100})">
+      <span class="val" id="s-ampv">—</span>
+    </div>
+    <div class="row">
+      <label>frequency</label>
+      <input type="range" id="s-freq" min="1" max="2000" step="1" oninput="showFreq()" onchange="setP({freq:+this.value})">
+      <span class="val" id="s-freqv">—</span>
+    </div>
+    <div class="row">
+      <label>mirror X</label>
+      <button id="fxbtn" onclick="setP({flip_x:!S.pattern.flip_x})">toggle</button>
+      <span style="color:var(--dim);font-size:12px">affects text only, applies to all scopes</span>
+    </div>
+    <div class="row">
+      <label>mirror Y</label>
+      <button id="fybtn" onclick="setP({flip_y:!S.pattern.flip_y})">toggle</button>
+      <span style="color:var(--dim);font-size:12px">affects text only, applies to all scopes</span>
+    </div>
+  </div>
+
+  <!-- Set list (setup) -->
+  <div class="collapsible-header open" onclick="toggleCollapsible(this)">Set List</div>
+  <div class="collapsible-content open panel">
+    <div style="margin-bottom:8px">
+      <span id="preset-count" style="color:var(--dim);font-size:12px"></span>
+      <button id="edit-toggle" onclick="toggleEditMode()" style="margin-left:8px">Edit</button>
+    </div>
+    <div id="setup-setlist">
+      <!-- Built dynamically with edit controls -->
+    </div>
+    <div style="margin-top:8px;display:flex;gap:4px;">
+      <button onclick="setupSavePreset()">Save preset</button>
+      <button id="setup-updbtn" style="display:none" onclick="setupUpdatePreset()">Update current</button>
+    </div>
+  </div>
+
+  <!-- Idents (timers) -->
+  <div class="collapsible-header" onclick="toggleCollapsible(this)">Idents</div>
+  <div class="collapsible-content panel">
+    <div id="holdnote" style="color:var(--ph);margin-bottom:8px"></div>
+    <div id="timer-table-wrap">
+      <!-- Built dynamically -->
+    </div>
+    <div class="row" id="taddrow" style="margin-top:10px">
+      <label>add</label>
+      <select id="tpreset"></select>
+      <span style="color:var(--dim)">on</span>
+      <span class="seg" id="ttargets"></span>
+      <span>for</span>
+      <input type="number" id="thold" min="1" max="600" value="20" style="width:66px">
+      <span>s every</span>
+      <input type="number" id="tevery" min="0.1" max="1440" step="any" value="5" style="width:74px">
+      <span>min</span>
+      <button onclick="addTimer()">+ add</button>
+    </div>
+    <div id="timer-cannot-fire" style="color:var(--bad);font-size:12px;margin-top:6px;display:none">
+      Feed is SILENT — timers cannot fire until sending resumes.
+    </div>
+  </div>
+
+  <!-- Rig -->
+  <div class="collapsible-header" onclick="toggleCollapsible(this)">Rig</div>
+  <div class="collapsible-content panel">
+    <!-- Set all row -->
+    <div class="row" style="margin-bottom:12px">
+      <label style="width:auto">set all</label>
+      <span class="seg" id="allseg"></span>
+    </div>
+    <div id="setup-rig">
+      <!-- Per-slave cards built dynamically -->
+    </div>
+  </div>
+
+  <!-- Diagnostics -->
+  <div class="collapsible-header" onclick="toggleCollapsible(this)">Diagnostics</div>
+  <div class="collapsible-content panel">
+    <div id="diag-section">
+      <!-- Built dynamically -->
+    </div>
+  </div>
+
+  <!-- Help -->
+  <div class="collapsible-header" onclick="toggleCollapsible(this)">Help</div>
+  <div class="collapsible-content panel">
+    <div class="help-content">
+      <h3>How it works</h3>
+      <p>Two switches control what the scopes draw: the global <strong>feed</strong> toggle (SENDING/SILENT) and each slave's <strong>SOURCE</strong> setting.</p>
+      <p><strong>STREAM</strong>: slave plays the audio streamed from this page. Falls back to its local pattern if the stream stops.</p>
+      <p><strong>HYBRID</strong>: streamed pattern + slave's own mic mixed at 50%.</p>
+      <p><strong>ON ITS OWN</strong>: slave generates its own pattern (mic, circle, lissajous, ramp, square). The controller sends it no audio.</p>
+      <h3>Fallback</h3>
+      <p>A STREAM slave that stops receiving audio for ~1 s automatically draws its local pattern instead — whichever was last set. "ON ITS OWN" pattern doubles as this safety net.</p>
+      <h3>buf / lead</h3>
+      <p>Received audio queued ahead of playback. Healthy ≈ 450 ms: the stream runs ahead because the WiFi radio pauses for ~300 ms every ~1.4 s. Hitting 0 = buffer underrun (beam blinks).</p>
+      <h3>drop/s, lost/s, under/s</h3>
+      <p>Should all be 0. Drops = late/duplicate packets. Lost = packets that never arrived (WiFi loss). Underruns = buffer ran dry (visible blink).</p>
+      <h3>tx-drop vs lost</h3>
+      <p>High lost/s with tx-drop ≈ 0 means the WiFi air is bad. High tx-drop means packets died in this controller's send buffer — no antenna fix. This distinction cost a night of debugging.</p>
+      <h3>Blackout</h3>
+      <p>Forces amplitude to 0 and sets all slaves to network mode. Does NOT write to slave flash. Survives controller crash (slaves fall back to local pattern).</p>
+      <h3>Presets</h3>
+      <p>Snapshots of pattern settings saved on the controller. Survive restarts with one generation of undo (.bak file). Max 20 presets. Do NOT update during a timer hold — it will save the ident, not the artist.</p>
+      <h3>Interval timers</h3>
+      <p>Periodically interrupt the show with a preset (e.g., station ident between acts). Only one hold can run at a time. A timer that cannot fire (feed is SILENT) will say so instead of counting down.</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- === SLAVE SHEET OVERLAY === -->
+<div id="slave-sheet" class="slave-sheet">
+  <div class="slave-sheet-header">
+    <h2 id="sheet-title">SLAVE</h2>
+    <button class="slave-sheet-close" onclick="closeSlaveSheet()">✕</button>
+  </div>
+  <div class="slave-sheet-inner" id="sheet-body">
+    <!-- Populated dynamically -->
   </div>
 </div>
-<div id="timerpanel" class="panel" style="margin-bottom:14px">
-  <div style="color:var(--dim)" title="periodically interrupt the show with a preset — a station ident between acts, say">interval
-    timers <span id="holdnote" style="color:var(--ph)"></span></div>
-  <div id="tlist"></div>
-  <div class="row" id="taddrow" style="margin-top:10px">
-    <label title="build a rule: which preset, on which slaves, how long, how often">add</label>
-    <select id="tpreset" title="the preset this rule shows"></select>
-    <span style="color:var(--dim)">on</span>
-    <span class="seg" id="ttargets"></span>
-    <span class="grp">for
-      <input type="number" id="thold" min="1" max="600" value="20"
-             style="width:66px" title="seconds to hold the preset">s</span>
-    <span class="grp">every
-      <input type="number" id="tevery" min="0.1" max="1440" step="any"
-             value="5" style="width:74px"
-             title="minutes between starts (clamped to at least 5 s, and to
-                    longer than the hold)">min</span>
-    <button onclick="addTimer()">+ add</button>
-  </div>
-  <div style="color:var(--dim);font-size:12.5px;margin-top:10px">
-    the rig has <b>one</b> streamed pattern: during a hold the chosen slaves
-    are switched to STREAM, and any other slave already on STREAM/HYBRID sees
-    the same figure. Everything is put back afterwards — and touching the
-    pattern panel ends a hold early rather than reverting you later.
+
+<!-- === CONFIRM DIALOG === -->
+<div id="confirm-overlay" class="confirm-overlay">
+  <div class="confirm-box">
+    <p id="confirm-question"></p>
+    <div class="confirm-btns">
+      <button class="danger" id="confirm-yes">Yes</button>
+      <button id="confirm-no">No</button>
+    </div>
   </div>
 </div>
-<div id="slaves" class="panel"><div id="none">no slaves discovered yet…</div></div>
-<details><summary>ℹ how to read this dashboard</summary>
- <table>
- <tr><th>who decides what?</th><td>two switches only: the global <b>STREAM</b>
-  button (does this page send audio at all) and each slave's <b>draw</b>
-  setting. draw = <b>STREAM</b> plays this page's streamed pattern; <b>HYBRID</b>
-  adds the slave's own mic at 50%; every other choice (mic / circle /
-  lissajous / ramp / square) is generated on the slave itself. The controller
-  only sends audio to STREAM/HYBRID slaves — a slave on a local pattern
-  receives nothing (its rx/s = 0 is normal).</td></tr>
- <tr><th>fallback</th><td>a STREAM slave that stops receiving audio for 1 s
-  (stream switched off, WiFi outage…) automatically draws its local pattern
-  instead — whichever was last chosen (mic after power-up). So
-  "LOCAL·mic" on a STREAM slave simply means: no stream right now.</td></tr>
- <tr><th>mic pattern</th><td>microphone on X, pot-filtered microphone on Y —
-  the pot on the unit sets the filter cutoff. ramp &amp; square are
-  alignment/test figures (DC deflection, filter ringing).</td></tr>
- <tr><th>buf</th><td>received audio queued ahead of its play deadline. Healthy
-  ≈ 450 ms: the stream deliberately runs that far ahead because the UNO-Q's
-  WiFi radio pauses for up to ~0.3 s every ~1.4 s (chip quirk) — the buffer
-  rides those pauses out. Hitting 0 = an underrun (beam collapses to a dot
-  until it refills, ~1 s).</td></tr>
- <tr><th>drop/s, lost/s &amp; under/s</th><td>should all sit at 0. Drops =
-  packets arriving too late (or duplicated); lost = packets that never arrived
-  at all (sequence gaps — silent WiFi loss); underruns = the buffer ran dry —
-  each one is a visible dot-blink on the scope.</td></tr>
- <tr><th>gain</th><td>per-slave output scale (saved on the slave, survives
-  reboot). Use it to match deflection between different scopes.</td></tr>
- </table>
-</details>
+
+<!-- === TOAST === -->
+<div id="toast"></div>
+
+<!-- === SETUP INLINE RENAME === -->
+<div id="rename-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);z-index:150;align-items:center;justify-content:center;">
+  <div style="background:var(--panel);border:1px solid var(--line);padding:16px;border-radius:8px;max-width:320px;width:90%;">
+    <p style="margin-bottom:8px;color:var(--dim);">Rename preset:</p>
+    <div class="inline-rename">
+      <input type="text" id="rename-input" maxlength="48">
+      <button onclick="submitRename()">Save</button>
+    </div>
+    <button onclick="document.getElementById('rename-overlay').style.display='none'" style="margin-top:8px;width:100%">Cancel</button>
+  </div>
+</div>
+
 <script>
 "use strict";
-let S = null;
-const hist = {};   // ip -> previous counters for rate calculation
 
-// Show the controller's {err} instead of swallowing it: "+ save as" at the
-// 20-preset cap used to look exactly like a save that worked.
+/* === STATE === */
+var S = null;
+var pollFailures = 0;
+var lastKnownState = null;
+var activeSlaveSheet = null;
+var curPresetIdx = 0;
+/* parseFloat(null) is NaN, not null — and NaN !== null, so an unset key used to
+   send the FIRST press down the undo branch and post {amp: NaN}. The panic
+   button has to work on a phone that has never loaded this page before. */
+var blackoutAmp = null;
+try {
+  var _ba = parseFloat(localStorage.getItem('blackoutAmp'));
+  if (isFinite(_ba)) blackoutAmp = _ba;
+} catch(e) {}
+var editModeOn = false;
+var renameTarget = null;
+var renameNewName = null;
+
+/* Per-slave change tracking (F2 fix) */
+var slaveLastChange = {};
+
+/* Incremental DOM elements (F4 fix) */
+var slaveTiles = {};
+var presetRowEls = {};
+var setupRigEls = {};
+
+/* Expected slave roster — remembered across polls (F8 fix) */
+var knownSlaveIds = (function() {
+  try { var d = localStorage.getItem('hyperosci-known-ids'); return d ? JSON.parse(d) : []; }
+  catch(e) { return []; }
+})();
+function persistKnownIds() {
+  localStorage.setItem('hyperosci-known-ids', JSON.stringify(knownSlaveIds));
+}
+
+/* === TOAST (F5 fix — replaces alert) === */
+function showToast(msg, duration, cls) {
+  duration = duration || 3000;
+  cls = cls || 'warn';
+  var toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.className = 'visible ' + cls;
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(function() { toast.className = ''; }, duration);
+}
+
+/* === NON-BLOCKING CONFIRM (F5 fix — replaces confirm) === */
+function askConfirm(question, onYes, onNo) {
+  var overlay = document.getElementById('confirm-overlay');
+  document.getElementById('confirm-question').textContent = question;
+  overlay.classList.add('active');
+  document.getElementById('confirm-yes').onclick = function() {
+    overlay.classList.remove('active');
+    if (onYes) onYes();
+  };
+  document.getElementById('confirm-no').onclick = function() {
+    overlay.classList.remove('active');
+    if (onNo) onNo();
+  };
+}
+
+/* === MODE TOGGLE === */
+function getMode() {
+  return localStorage.getItem('hyperosci-mode') || (window.innerWidth < 900 ? 'show' : 'setup');
+}
+
+function setMode(mode) {
+  document.body.className = mode;
+  localStorage.setItem('hyperosci-mode', mode);
+  document.getElementById('mode-toggle').textContent = mode === 'show' ? 'SETUP' : 'SHOW';
+  render();
+}
+
+function toggleMode() {
+  var cur = getMode();
+  setMode(cur === 'show' ? 'setup' : 'show');
+}
+
+/* === POST (with toast instead of alert) === */
 function post(path, body) {
   return fetch(path, {method:"POST", body:JSON.stringify(body)})
-    .then(r => r.json().catch(() => null))
-    .then(d => { if (d && (d.err || d.note)) alert(d.err || d.note); })
-    .catch(() => {})            // controller restarting; poll() retries
-    .then(() => poll());
-}
-const setP = p => post("/api/pattern", p);
-const cmd = (ip, c) => post("/api/cmd", {ip:ip, cmd:c});
-let lastChange = 0;  // last stream-toggle/draw-command — "buffering" grace
-function toggleStream() {
-  lastChange = performance.now();
-  post("/api/pattern", {stream: !S.stream_on});
+    .then(function(r) { return r.json().catch(function() { return null; }); })
+    .then(function(d) {
+      if (d && (d.err || d.note)) {
+        showToast(d.err || d.note, 4000, 'error');
+      }
+      return d;
+    })
+    .catch(function() {})
+    .then(function() { return refresh(); });   /* not poll() — see poll() */
 }
 
-// One draw setting per slave: STREAM/HYBRID = play this page's pattern,
-// anything else = a pattern the slave generates itself (mode LOCAL).
-const DRAWS = ["stream","hybrid","mic","circle","lissajous","ramp","square"];
-const DRAW_TIPS = {
-  stream:"play the audio streamed from this page (falls back to the local pattern if the stream stops)",
-  hybrid:"this page's stream + the slave's own mic mixed in at 50%",
-  mic:"local render on the slave: mic on X, pot-filtered mic on Y — the controller stops sending it audio",
-  circle:"test pattern generated on the slave itself — the controller stops sending it audio",
-  lissajous:"test pattern generated on the slave itself — the controller stops sending it audio",
-  ramp:"local alignment pattern: slow full-scale triangles (DC/deflection go-no-go)",
-  square:"local test pattern: sharp 4-corner jumps (interpolation-ringing test)"};
-function drawCmd(ip, w) {
-  lastChange = performance.now();
-  if (w === "stream") return cmd(ip, {cmd:"set_mode", mode:"network"});
-  if (w === "hybrid") return cmd(ip, {cmd:"set_mode", mode:"hybrid"});
-  return cmd(ip, {cmd:"set_pattern", pattern:w})
-      .then(() => cmd(ip, {cmd:"set_mode", mode:"local"}));
-}
-function drawSeg(ip, active) {
-  return DRAWS.map(w =>
-    `<button class="${w===active?'on':''}" title="${DRAW_TIPS[w]}"
-       onclick="drawCmd('${ip}','${w}')">` +
-    (w==="stream"||w==="hybrid" ? w.toUpperCase() : w) + "</button>").join("");
-}
+var setP = function(p) { return post("/api/pattern", p); };
+var cmd = function(ip, c) { return post("/api/cmd", {ip:ip, cmd:c}); };
 
-function fmtUp(s) {
-  if (s >= 3600) return (s/3600).toFixed(1) + "h";
-  if (s >= 60) return Math.floor(s/60) + "m" + (s%60) + "s";
-  return s + "s";
-}
-const fmtN = n => n >= 1e6 ? (n/1e6).toFixed(1)+"M"
-              : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : ""+n;
-
-function live() {
-  document.getElementById("freqv").textContent =
-      document.getElementById("freq").value + " Hz";
-  document.getElementById("ampv").textContent =
-      document.getElementById("amp").value + " %";
-  document.getElementById("pdepthv").textContent =
-      document.getElementById("pdepth").value + " %";
-  document.getElementById("pratev").textContent =
-      (document.getElementById("prate").value/10).toFixed(1) + " Hz";
-  document.getElementById("rotv").textContent =
-      (document.getElementById("rot").value/100).toFixed(2) + " rev/s";
-  drawScope();
-}
-
-// Presets: snapshots of the whole streamed-pattern panel, kept on the
-// controller (~/hype_presets.json) so they survive restarts.
-//
-// "current" = the preset this browser last applied or wrote. The controller
-// has no session, so it is purely client-side -- but it lives in
-// localStorage, because the phone locks its screen mid-set and the reloaded
-// page must still be able to write back into the preset you were shaping
-// instead of only ever making another one.
-let curPreset = localStorage.getItem("hypePreset") || "";
-function setCur(n) {
-  curPreset = n || "";
-  if (curPreset) localStorage.setItem("hypePreset", curPreset);
-  else localStorage.removeItem("hypePreset");
-}
-function savePreset() {
-  const p = S.pattern;
-  const def = (p.kind === "text" ? p.text.split("\\n")[0] : p.kind).slice(0, 24);
-  const name = prompt("new preset name (e.g. the artist):", def);
-  if (!name || !name.trim()) return;
-  setCur(name.trim());
-  post("/api/preset", {op:"save", name:name.trim()});
-}
-// op=save has always overwritten a same-named preset in place server-side;
-// reaching it used to mean retyping the name exactly and guessing what
-// sanitize_name would do to it. This just gives that path a button.
-function updatePreset() {
-  if (curPreset && confirm(`overwrite preset "${curPreset}" with the current settings?`))
-    post("/api/preset", {op:"save", name:curPreset});
-}
-function loadPreset(n) {
-  setCur(n);
-  return post("/api/preset", {op:"load", name:n});
-}
-function delPreset(n) {
-  if (!confirm(`delete preset "${n}"?`)) return;
-  if (n === curPreset) setCur("");
-  post("/api/preset", {op:"delete", name:n});
-}
-function presetChips() {
-  const names = S.presets || [];
-  if (curPreset && !names.includes(curPreset)) setCur("");  // deleted elsewhere
-  // During a hold the panel shows the TIMER's preset, not the one this
-  // browser last applied. Highlight what is actually on the scopes -- the
-  // update button keeps following curPreset, which is still what a write
-  // would land on.
-  const onAir = (S.hold && S.hold.preset) || curPreset;
-  document.getElementById("plist").innerHTML = names.map(n =>
-    `<span class="chip"><button class="${n === onAir ? "on" : ""}"
-        title="apply preset '${esc(n)}'"
-        onclick="loadPreset('${n}')">${esc(n)}</button><button class="danger"
-        title="delete preset '${esc(n)}'" onclick="delPreset('${n}')">×</button></span>`
-  ).join("") || '<span style="color:var(--dim)">none saved yet</span>';
-  const u = document.getElementById("updbtn");
-  u.style.display = curPreset ? "" : "none";
-  if (curPreset) {
-    u.textContent = `\u27f3 update "${curPreset}"`;
-    u.title = `overwrite "${curPreset}" with what is on this panel right now`;
+/* === SLAVE CHANGE TRACKING (F2 fix — per-slave) === */
+function noteSlaveChange(id) {
+  if (id === 'all') {
+    for (var i = 0; i < (S && S.slaves ? S.slaves.length : 0); i++) {
+      slaveLastChange[S.slaves[i].id] = performance.now();
+    }
+  } else {
+    slaveLastChange[id] = performance.now();
   }
 }
 
-// Interval timers: "show preset P on slaves 1+2 for 20 s every 5 min".
-// The controller owns the schedule; this is only the editor for it.
-let tTargets = new Set();   // ids picked in the add row; empty = every slave
-function tgTarget(i) {
-  tTargets.has(i) ? tTargets.delete(i) : tTargets.add(i);
-  targetBtns();
-}
-function targetBtns() {
-  const ids = [...new Set((S.slaves || []).map(s => s.id))].sort((a,b)=>a-b);
-  document.getElementById("ttargets").innerHTML =
-    `<button class="${tTargets.size ? "" : "on"}"
-       title="every slave, including any that appear later"
-       onclick="tTargets.clear();targetBtns()">all</button>` +
-    ids.map(i => `<button class="${tTargets.has(i) ? "on" : ""}"
-       title="slave ${i}" onclick="tgTarget(${i})">${i}</button>`).join("");
-}
-const fmtEvery = s => s >= 60 ? +(s/60).toFixed(1) + " min" : s + " s";
-const fmtLeft = s => s >= 60
-    ? Math.floor(s/60) + "m" + String(s%60).padStart(2,"0") + "s" : s + "s";
-
-function addTimer() {
-  const preset = document.getElementById("tpreset").value;
-  if (!preset) return alert("save a preset first — a timer shows a preset");
-  post("/api/timer", {op:"save", preset:preset, targets:[...tTargets],
-    hold_s: +document.getElementById("thold").value,
-    every_s: Math.round(+document.getElementById("tevery").value * 60)});
-}
-const timerOp = (op, id) => post("/api/timer", {op:op, id:id});
-function delTimer(id, preset) {
-  if (confirm(`delete the timer for "${preset}"?`)) timerOp("delete", id);
-}
-// Options are rebuilt only when the preset list actually changes, so the
-// select does not snap back to the first entry once a second.
-function presetOptions() {
-  const sel = document.getElementById("tpreset"), names = S.presets || [];
-  const want = names.join("\\u0000");
-  if (sel.dataset.names === want) return;
-  const cur = sel.value;
-  sel.innerHTML = names.map(n => `<option>${esc(n)}</option>`).join("");
-  sel.dataset.names = want;
-  if (names.includes(cur)) sel.value = cur;
-}
-function timerRows() {
-  const ts = S.timers || [], hold = S.hold;
-  document.getElementById("holdnote").textContent = hold
-    ? `— on air: "${hold.preset}", ${fmtLeft(hold.left_s)} left` : "";
-  document.getElementById("tlist").innerHTML = ts.map(t => {
-    const who = t.targets.length ? "slave " + t.targets.join("+")
-                                 : "every slave";
-    const when = hold && hold.id === t.id
-      ? `<b style="color:var(--ph)">on air, ${fmtLeft(hold.left_s)} left</b>`
-      : !t.enabled ? "paused"
-      : t.next_in == null ? "" : `next in ${fmtLeft(t.next_in)}`;
-    return `<div class="row" style="margin-top:6px">
-      <button class="${t.enabled ? "on" : "off"}"
-        title="${t.enabled ? "pause this rule" : "arm this rule"}"
-        onclick="timerOp('toggle',${t.id})">${t.enabled ? "ON" : "OFF"}</button>
-      <span style="flex:1;min-width:170px">"${esc(t.preset)}" on ${who}
-        · ${t.hold_s} s every ${fmtEvery(t.every_s)}
-        <span style="color:var(--dim)">· ${when}</span></span>
-      <span class="grp"><button
-        title="run this rule now instead of waiting for its next turn"
-        onclick="timerOp('fire',${t.id})">▶ test</button><button class="danger"
-        title="delete this timer"
-        onclick="delTimer(${t.id},'${t.preset}')">×</button></span></div>`;
-  }).join("") ||
-    '<div style="color:var(--dim);margin-top:6px">none — nothing interrupts the show</div>';
+/* === STREAM TOGGLE (F13 fix — guards against null S) === */
+function setStream(on) {
+  if (!S) return;
+  noteSlaveChange('all');
+  post("/api/pattern", {stream: on});
 }
 
-// Text-path preview: fetched only when the server-side table changes (tver).
-let TP = {ver: -1, pts: []};
+/* === TOGGLE COLLAPSIBLE === */
+function toggleCollapsible(header) {
+  header.classList.toggle('open');
+  var content = header.nextElementSibling;
+  if (content && content.classList.contains('collapsible-content')) {
+    content.classList.toggle('open');
+  }
+}
+
+/* === LIVE DIALS === */
+function liveDials() {
+  document.getElementById('ampv').textContent = document.getElementById('amp').value + ' %';
+  document.getElementById('freqv').textContent = document.getElementById('freq').value + ' Hz';
+  drawPreview();
+}
+
+function showPdepth() {
+  document.getElementById('pdepthv').textContent = document.getElementById('pdepth').value + ' %';
+}
+
+function showPrate() {
+  document.getElementById('pratev').textContent = (document.getElementById('prate').value / 10).toFixed(1) + ' Hz';
+}
+
+function showRot() {
+  document.getElementById('rotv').textContent = (document.getElementById('rot').value / 100).toFixed(2) + ' rev/s';
+}
+
+/* SETUP's own dials — distinct ids, or getElementById returns SHOW's copy and
+   the panel you are dragging never moves. */
+function showAmp() {
+  document.getElementById('s-ampv').textContent = Math.round(document.getElementById('s-amp').value) + ' %';
+}
+
+function showFreq() {
+  document.getElementById('s-freqv').textContent = document.getElementById('s-freq').value + ' Hz';
+}
+
+/* === FORMAT HELPERS === */
+function fmtUp(s) {
+  if (s >= 3600) return (s/3600).toFixed(1) + 'h';
+  if (s >= 60) return Math.floor(s/60) + 'm' + (s%60) + 's';
+  return s + 's';
+}
+
+function fmtN(n) {
+  if (n == null) return '—';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+  return '' + n;
+}
+
+function fmtLeft(s) {
+  if (s == null) return '';
+  if (s >= 60) return Math.floor(s/60) + 'm' + String(s%60).padStart(2,'0') + 's';
+  return s + 's';
+}
+
+function esc(t) {
+  return t.replace(/[&<>"]/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+}
+
+/* === PRESET HELPERS === */
+var curPreset = localStorage.getItem('hypePreset') || '';
+function setCur(n) {
+  curPreset = n || '';
+  if (curPreset) localStorage.setItem('hypePreset', curPreset);
+  else localStorage.removeItem('hypePreset');
+}
+
+/* === BLACKOUT (§5.6 — amp=0, not gain=0) === */
+function toggleBlackout() {
+  if (blackoutAmp === null) {
+    if (!S) return;
+    blackoutAmp = S.pattern.amp;
+    localStorage.setItem('blackoutAmp', blackoutAmp.toString());
+    /* Force all slaves to network mode first (N15) */
+    for (var i = 0; i < S.slaves.length; i++) {
+      cmd(S.slaves[i].ip, {cmd: 'set_mode', mode: 'network'});
+    }
+    setP({amp: 0});
+    showToast('BLACKOUT — amplitude zeroed', 2000, 'error');
+    document.getElementById('btn-blackout').textContent = 'UNDO BLACKOUT';
+    document.getElementById('btn-blackout').style.borderColor = 'var(--ph)';
+    document.getElementById('btn-blackout').style.color = 'var(--ph)';
+  } else {
+    setP({amp: blackoutAmp});
+    blackoutAmp = null;
+    try { localStorage.removeItem('blackoutAmp'); } catch(e) {}
+    showToast('Blackout cancelled', 2000, 'success');
+    document.getElementById('btn-blackout').textContent = 'BLACKOUT';
+    document.getElementById('btn-blackout').style.borderColor = '';
+    document.getElementById('btn-blackout').style.color = '';
+  }
+}
+
+/* === NAV (PREV/NEXT) === */
+function goPrev() {
+  var presets = S ? (S.presets || []) : [];
+  if (!presets.length) return;
+  var curName = (S.hold && S.hold.preset) || curPreset;
+  curPresetIdx = presets.indexOf(curName);
+  if (curPresetIdx < 0) curPresetIdx = presets.length - 1;
+  curPresetIdx = (curPresetIdx - 1 + presets.length) % presets.length;
+  applyPreset(presets[curPresetIdx]);
+}
+
+function goNext() {
+  var presets = S ? (S.presets || []) : [];
+  if (!presets.length) return;
+  var curName = (S.hold && S.hold.preset) || curPreset;
+  curPresetIdx = presets.indexOf(curName);
+  if (curPresetIdx < 0) curPresetIdx = 0;
+  curPresetIdx = (curPresetIdx + 1) % presets.length;
+  applyPreset(presets[curPresetIdx]);
+}
+
+function applyPreset(name) {
+  if (!S) return;
+  setCur(name);
+  noteSlaveChange('all');
+  post("/api/preset", {op: 'load', name: name});
+}
+
+/* === PREVIEW CANVAS === */
+var TP = {ver: -1, pts: []};
+
 async function fetchPreview() {
   try {
-    const d = await (await fetch("/api/textpreview")).json();
-    TP = d; drawScope();
-  } catch (e) { /* controller restarting */ }
+    var d = await (await fetch("/api/textpreview")).json();
+    TP = d;
+    drawPreview();
+  } catch(e) {}
 }
 
-function drawScope() {
+function drawPreview() {
   if (!S) return;
-  const c = document.getElementById("scope"), g = c.getContext("2d");
-  const p = S.pattern, w = c.width, h = c.height;
-  const amp = (+document.getElementById("amp").value / 100) * w * 0.44;
-  g.fillStyle = "#020402"; g.fillRect(0, 0, w, h);
-  g.strokeStyle = "#0e1a0e"; g.lineWidth = 1;         // graticule
-  for (let i = 1; i < 8; i++) {
+  var c = document.getElementById('preview');
+  if (!c) return;
+  var g = c.getContext('2d');
+  var p = S.pattern;
+  var w = c.width, h = c.height;
+  var amp = 0;
+  var ampSlider = document.getElementById('amp');
+  if (ampSlider) amp = (+ampSlider.value / 100) * w * 0.44;
+  else amp = p.amp * w * 0.44;
+
+  g.fillStyle = '#020402';
+  g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#0e1a0e';
+  g.lineWidth = 1;
+  for (var i = 1; i < 8; i++) {
     g.beginPath(); g.moveTo(i*w/8, 0); g.lineTo(i*w/8, h); g.stroke();
     g.beginPath(); g.moveTo(0, i*h/8); g.lineTo(w, i*h/8); g.stroke();
   }
-  g.strokeStyle = "#39ff14"; g.lineWidth = 2;
-  g.shadowColor = "#39ff14"; g.shadowBlur = 8;
+  g.strokeStyle = '#39ff14';
+  g.lineWidth = 2;
+  g.shadowColor = '#39ff14';
+  g.shadowBlur = 8;
   g.beginPath();
-  if (p.kind === "text") {
-    const sx = p.flip_x ? -1 : 1, sy = p.flip_y ? -1 : 1;
-    for (let i = 0; i < TP.pts.length; i++) {
-      const px = w/2 + amp*sx*TP.pts[i][0], py = h/2 - amp*sy*TP.pts[i][1];
+
+  if (p.kind === 'text' && TP.pts.length) {
+    var sx = p.flip_x ? -1 : 1;
+    var sy = p.flip_y ? -1 : 1;
+    for (var i = 0; i < TP.pts.length; i++) {
+      var px = w/2 + amp*sx*TP.pts[i][0];
+      var py = h/2 - amp*sy*TP.pts[i][1];
       i ? g.lineTo(px, py) : g.moveTo(px, py);
     }
-    g.stroke(); g.shadowBlur = 0;
-    return;
+  } else {
+    var N = 1200;
+    var k = p.kind;
+    var a = p.a;
+    var b = p.b;
+    var hp = Math.PI/2;
+    for (var i = 0; i <= N; i++) {
+      var t = 2*Math.PI*i/N;
+      var x, y;
+      if (k === 'lissajous') { x = Math.sin(a*t + hp); y = Math.sin(b*t); }
+      else if (k === 'rose') { var r = Math.sin(a*t); x = r*Math.cos(t); y = r*Math.sin(t); }
+      else { x = Math.cos(t); y = Math.sin(t); }
+      var px = w/2 + amp*x;
+      var py = h/2 - amp*y;
+      i ? g.lineTo(px, py) : g.moveTo(px, py);
+    }
   }
-  const N = 1200, k = p.kind, a = p.a, b = p.b, hp = Math.PI/2;
-  for (let i = 0; i <= N; i++) {
-    const t = 2*Math.PI*i/N;
-    let x, y;
-    if (k === "lissajous") { x = Math.sin(a*t + hp); y = Math.sin(b*t); }
-    else if (k === "rose") { const r = Math.sin(a*t);
-                             x = r*Math.cos(t); y = r*Math.sin(t); }
-    else { x = Math.cos(t); y = Math.sin(t); }
-    const px = w/2 + amp*x, py = h/2 - amp*y;
-    i ? g.lineTo(px, py) : g.moveTo(px, py);
-  }
-  g.stroke(); g.shadowBlur = 0;
+  g.stroke();
+  g.shadowBlur = 0;
 }
 
-// What is this slave's beam doing right now, in words?
-const esc = t => t.replace(/[&<>"]/g,
-    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-function playing(s) {
-  const lp = s.lpat || "mic", p = S.pattern;
+/* === SLAVE VERDICT (one sentence) === */
+function slaveVerdict(s) {
+  var p = S.pattern;
   if (s.source) {
-    let what = s.mode === 2 ? p.kind + " + own mic (HYBRID)" : p.kind;
-    if (p.kind === "text") what = `text "${esc(p.text)}" (${p.font})` +
-        (s.mode === 2 ? " + own mic (HYBRID)" : "");
-    return {cls:"ok", txt:`▶ network stream — ${what} @ ${p.freq} Hz`};
+    var what = s.mode === 2 ? p.kind + ' + own mic (HYBRID)' : p.kind;
+    if (p.kind === 'text') what = 'text "' + esc(p.text) + '" (' + (p.font||'duplex') + ')' + (s.mode === 2 ? ' + mic' : '');
+    return {cls: 'ok', txt: 'Playing network stream — ' + what + ' @ ' + p.freq + ' Hz'};
   }
-  if (s.mode === 0) return {cls:"ok",
-      txt:`▶ local ${lp} (generated on the slave — no stream sent to it)`};
-  if (!S.stream_on) return {cls:"warn",
-      txt:`▶ local ${lp} — the STREAM switch is OFF`};
-  if (performance.now() - lastChange < 4000) return {cls:"warn",
-      txt:"▶ buffering the stream… (normal for ~1 s after a change)"};
-  return {cls:"bad",
-      txt:`▶ stream not arriving — drawing local ${lp} (WiFi problem?)`};
+  if (s.mode === 0) return {cls: 'ok', txt: 'Drawing local ' + (s.lpat || 'mic') + ' (generated on slave)'};
+  if (!S.stream_on) return {cls: 'warn', txt: 'Drawing local ' + (s.lpat || 'mic') + ' — feed is SILENT'};
+  /* Stream not arriving */
+  var changeTime = slaveLastChange[s.id];
+  if (changeTime && performance.now() - changeTime < 4000) {
+    return {cls: 'warn', txt: 'Buffering stream… (normal after a change)'};
+  }
+  return {cls: 'bad', txt: 'Not receiving the stream — drawing local ' + (s.lpat || 'mic') + ' instead'};
 }
 
-function rates(s) {
-  const h = hist[s.ip], now = performance.now();
-  let r = null;
-  if (h && now - h.t > 300 && s.rx >= h.rx) {
-    const dt = (now - h.t) / 1000;
-    r = {rx: Math.round((s.rx-h.rx)/dt),
-         drop: (s.drop-h.drop)/dt, und: (s.under-h.under)/dt,
-         lost: (s.lost==null||h.lost==null) ? null : (s.lost-h.lost)/dt};
+function modeName(s) {
+  if (s.source) return s.mode === 2 ? 'HYBRID' : 'STREAM';
+  return 'OWN';
+}
+
+function modeGlyph(s) {
+  if (s.source) return s.mode === 2 ? '■HYB' : '■NET';
+  return '▲OWN';
+}
+
+/* === BATTERY BAR === */
+function batteryLevel(vbat_mv) {
+  /* Approximate LiPo: 4200 = 100%, 3200 = 0% */
+  if (vbat_mv == null || vbat_mv === 0) return 0;
+  return Math.min(5, Math.max(0, Math.round((vbat_mv - 3200) / 200)));
+}
+
+function batteryEstimate(vbat_mv) {
+  if (vbat_mv == null || vbat_mv === 0) return '? h';
+  /* rough: ~3.8V = ~2h typical for a small LiPo driving an oscilloscope */
+  var frac = (vbat_mv - 3200) / 1000;
+  if (frac <= 0) return '<1h';
+  return '~' + Math.round(frac * 2) + ' h';
+}
+
+/* === RIG TILE BUILDING (F4 fix — incremental DOM) === */
+function ensureTileGrid() {
+  var strip = document.getElementById('rig-strip');
+  if (!strip) return;
+  /* Merge known IDs with current state */
+  var ids = [];
+  if (S && S.slaves) {
+    for (var i = 0; i < S.slaves.length; i++) ids.push(S.slaves[i].id);
   }
-  hist[s.ip] = {rx: s.rx, drop: s.drop, under: s.under, lost: s.lost, t: now};
+  /* Add known IDs not in current state */
+  for (var i = 0; i < knownSlaveIds.length; i++) {
+    if (ids.indexOf(knownSlaveIds[i]) < 0) ids.push(knownSlaveIds[i]);
+  }
+  ids.sort(function(a,b) { return a - b; });
+
+  /* Create tiles for new IDs */
+  for (var i = 0; i < ids.length; i++) {
+    var id = ids[i];
+    if (!slaveTiles[id]) {
+      var tile = document.createElement('div');
+      tile.className = 'rig-tile';
+      tile.setAttribute('data-id', id);
+      tile.onclick = (function(tid) { return function() { openSlaveSheet(tid); }; })(id);
+      tile.innerHTML = '<div class="tile-id">?</div><div class="tile-mode">?</div><div class="tile-status">LOST</div><div class="battery-bar"><span></span><span></span><span></span><span></span><span></span></div><div class="tile-age"></div>';
+      strip.appendChild(tile);
+      slaveTiles[id] = tile;
+    }
+  }
+  /* Track known IDs */
+  for (var i = 0; i < ids.length; i++) {
+    if (knownSlaveIds.indexOf(ids[i]) < 0) {
+      knownSlaveIds.push(ids[i]);
+    }
+  }
+  persistKnownIds();
+}
+
+function patchTile(s) {
+  var tile = slaveTiles[s.id];
+  if (!tile) return;
+  var verdict = slaveVerdict(s);
+  var age = s.age_ms / 1000;
+  var vbat = batteryLevel(s.vbat_mv || 0);
+  var tiles = tile.querySelectorAll('.battery-bar span');
+  /* Reset battery bar */
+  for (var i = 0; i < tiles.length; i++) tiles[i].classList.remove('filled');
+  for (var i = 0; i < vbat; i++) {
+    if (!tiles[i]) {
+      var span = document.createElement('span');
+      tile.querySelector('.battery-bar').appendChild(span);
+    }
+    tiles[i].classList.add('filled');
+  }
+  /* Remove extra cells */
+  for (var i = vbat; i < tiles.length; i++) tiles[i].classList.remove('filled');
+
+  tile.querySelector('.tile-id').textContent = s.id;
+  tile.querySelector('.tile-mode').textContent = modeGlyph(s);
+
+  var statusEl = tile.querySelector('.tile-status');
+  var ageEl = tile.querySelector('.tile-age');
+  tile.classList.remove('lost', 'stale');
+
+  if (age > 5) {
+    tile.classList.add('lost');
+    statusEl.style.display = 'block';
+    statusEl.textContent = 'LOST ' + Math.round(age) + 's';
+    ageEl.textContent = '';
+  } else if (age > 3) {
+    tile.classList.add('stale');
+    statusEl.style.display = 'none';
+    ageEl.textContent = Math.round(age) + 's ago';
+  } else {
+    statusEl.style.display = 'none';
+    ageEl.textContent = age.toFixed(1) + 's';
+  }
+}
+
+/* === SET LIST (SHOW mode — no delete) === */
+function renderSetList() {
+  var container = document.getElementById('setlist');
+  if (!container) return;
+  var presets = S.presets || [];
+  var curName = (S.hold && S.hold.preset) || curPreset;
+
+  /* Build rows incrementally (F4) */
+  var existingNames = Object.keys(presetRowEls);
+  var newNames = presets.map(function(p) { return p.name || p; });
+
+  /* Remove rows for deleted presets */
+  for (var i = 0; i < existingNames.length; i++) {
+    var nm = existingNames[i];
+    if (newNames.indexOf(nm) < 0) {
+      presetRowEls[nm].remove();
+      delete presetRowEls[nm];
+    }
+  }
+
+  /* Create/update rows */
+  container.innerHTML = '';
+  for (var i = 0; i < newNames.length; i++) {
+    var nm = typeof presets[i] === 'string' ? presets[i] : presets[i].name;
+    if (!presetRowEls[nm]) {
+      var row = document.createElement('div');
+      row.className = 'preset-row';
+      row.onclick = (function(name) { return function() { applyPreset(name); }; })(nm);
+      row.innerHTML = '<span class="idx"></span><span class="name"></span><span class="tag"></span>';
+      presetRowEls[nm] = row;
+    }
+    var row = presetRowEls[nm];
+    row.querySelector('.idx').textContent = (i + 1);
+    row.querySelector('.name').textContent = nm;
+    row.classList.toggle('on-air', nm === curName);
+    if (nm === curName) row.querySelector('.tag').textContent = 'ON AIR';
+    else row.querySelector('.tag').textContent = '';
+    container.appendChild(row);
+  }
+
+  if (!presets.length) {
+    container.innerHTML = '<div style="color:var(--dim);text-align:center;padding:12px">No presets saved</div>';
+  }
+}
+
+/* === ON AIR === */
+function renderOnAir() {
+  var curName = curPreset;
+  var holdIndicator = '';
+  if (S.hold && S.hold.preset) {
+    curName = S.hold.preset;
+    holdIndicator = '▶ HOLD ';
+  }
+  var presets = S.presets || [];
+  /* Index off the preset name, before the text decoration below -- decorated,
+     it never matches the set list and every tile read "1 of N". */
+  var idx = presets.length ? presets.indexOf(curName) : -1;
+
+  /* Show text content for text patterns (N17) */
+  if (S.pattern.kind === 'text' && S.pattern.text) {
+    curName = curName ? S.pattern.text + ' (' + curName + ')' : S.pattern.text;
+  }
+
+  document.getElementById('on-air-name').textContent = curName || '—';
+  /* On a phone that has not loaded a preset this session there is no way to
+     know which one is on air. "1 of 7" was a guess printed as fact, and PREV
+     stepped from it. Say the kind and stop. */
+  document.getElementById('on-air-detail').textContent = (S.pattern.kind || '?')
+    + (idx >= 0 ? ' · ' + (idx + 1) + ' of ' + presets.length : '');
+
+  /* NAV next hint */
+  document.getElementById('nav-next-hint').textContent =
+    (idx >= 0 && presets.length > 1)
+      ? 'next → ' + presets[(idx + 1) % presets.length] : '';
+
+  /* Enable/disable nav */
+  document.getElementById('btn-prev').disabled = presets.length < 2;
+  document.getElementById('btn-next').disabled = presets.length < 2;
+
+  /* Feed toggle */
+  var on = S.stream_on;
+  document.getElementById('feed-on').classList.toggle('active', on);
+  document.getElementById('feed-off').classList.toggle('active', !on);
+  document.getElementById('feed-off').classList.toggle('silent', !on);
+}
+
+/* === SLAVE SHEET === */
+function openSlaveSheet(id) {
+  if (!S) return;
+  var slave = null;
+  for (var i = 0; i < S.slaves.length; i++) {
+    if (S.slaves[i].id === id) { slave = S.slaves[i]; break; }
+  }
+  if (!slave) return;
+  activeSlaveSheet = id;
+  document.getElementById('sheet-title').textContent = 'SLAVE ' + id + '  ' + slave.ip;
+
+  var verdict = slaveVerdict(slave);
+  var vbat = batteryLevel(slave.vbat_mv || 0);
+  var vbatStr = (slave.vbat_mv / 1000).toFixed(2) + ' V';
+  var battEst = batteryEstimate(slave.vbat_mv || 0);
+  var rssi = slave.rssi + ' dBm';
+  var rssiLabel = slave.rssi > -60 ? 'good' : slave.rssi > -75 ? 'marginal' : 'poor';
+  var buf = Math.round(slave.depth / 48) + ' ms';
+
+  /* Source: active mode */
+  var activeSource = slave.source ? (slave.mode === 2 ? 'hybrid' : 'stream') : 'local';
+
+  /* TX-drop info */
+  var net = S.net || {};
+  var tx = (net.tx || {})[slave.ip] || {};
+  var txDropPct = tx.pct || 0;
+  var txDropFull = tx.full || 0;
+  var txDropErr = tx.err || 0;
+  var whyHtml = '';
+  if (!slave.source && S.stream_on) {
+    if (txDropPct > 0) {
+      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets never arrived.</p>';
+      whyHtml += '<p>' + txDropPct.toFixed(1) + '% died in this controller\\'s send buffer before reaching the air.</p>';
+      whyHtml += '<p style="color:var(--warn)">That is airtime, not antenna — try reducing packet rate or increasing airtime.</p>';
+    } else {
+      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets lost, tx-drop ≈ 0.</p>';
+      whyHtml += '<p style="color:var(--warn)">This is WiFi loss — signal, interference, or range.</p>';
+    }
+  } else if (!S.stream_on) {
+    whyHtml = '<p>Feed is SILENT — no audio is being sent to any slave.</p>';
+  } else {
+    whyHtml = '<p>Slave is receiving the stream normally.</p>';
+  }
+
+  var body = document.getElementById('sheet-body');
+  body.innerHTML =
+    '<div class="verdict ' + verdict.cls + '">' + verdict.txt + '</div>' +
+
+    '<h3>SOURCE</h3>' +
+    '<div class="source-3way">' +
+      '<button class="' + (activeSource === 'stream' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + slave.ip + '\\',\\'network\\')">STREAM</button>' +
+      '<button class="' + (activeSource === 'hybrid' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + slave.ip + '\\',\\'hybrid\\')">HYBRID<br><span style="font-size:11px;color:var(--dim)">+ its mic</span></button>' +
+      '<button class="' + (activeSource === 'local' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + slave.ip + '\\',\\'local\\')">ON ITS<br>OWN</button>' +
+    '</div>' +
+
+    '<div class="expandable">' +
+      '<div class="expandable-header" onclick="this.classList.toggle(\\'open\\');this.nextElementSibling.classList.toggle(\\'open\\')">why?</div>' +
+      '<div class="expandable-content">' + whyHtml + '</div>' +
+    '</div>' +
+
+    '<h3>POWER &amp; SIGNAL</h3>' +
+    '<div class="battery-row">' +
+      '<span style="color:var(--dim);width:80px">battery</span>' +
+      '<div class="battery-bar">' +
+        '<span class="' + (vbat >= 1 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 2 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 3 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 4 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 5 ? 'filled' : '') + '"></span>' +
+      '</div>' +
+      '<span>' + vbatStr + '</span>' +
+      '<span style="color:var(--dim)">' + battEst + '</span>' +
+    '</div>' +
+    '<div class="battery-row">' +
+      '<span style="color:var(--dim);width:80px">signal</span>' +
+      '<span>' + rssi + '</span>' +
+      '<span style="color:var(--dim)">' + rssiLabel + '</span>' +
+    '</div>' +
+
+    '<div class="expandable">' +
+      '<div class="expandable-header" onclick="this.classList.toggle(\\'open\\');this.nextElementSibling.classList.toggle(\\'open\\')">all numbers</div>' +
+      '<div class="expandable-content">' +
+        '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">LINK</p>' +
+        '<div class="stats-grid">' +
+          '<div class="stat"><label>buf</label><value>' + buf + '</value></div>' +
+          '<div class="stat"><label>up</label><value>' + fmtUp(slave.uptime || 0) + '</value></div>' +
+          '<div class="stat"><label>age</label><value>' + (slave.age_ms/1000).toFixed(1) + 's</value></div>' +
+        '</div>' +
+        '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">STREAM</p>' +
+        '<div class="stats-grid">' +
+          '<div class="stat"><label>rx</label><value>' + fmtN(slave.rx) + '</value></div>' +
+          '<div class="stat"><label>drop</label><value>' + fmtN(slave.drop) + '</value></div>' +
+          '<div class="stat"><label>lost</label><value>' + (slave.lost == null ? '—' : fmtN(slave.lost)) + '</value></div>' +
+          '<div class="stat"><label>under</label><value>' + fmtN(slave.under) + '</value></div>' +
+          '<div class="stat"><label>tx-drop</label><value>' + txDropPct + '%</value></div>' +
+          '<div class="stat"><label>tx full</label><value>' + fmtN(txDropFull) + '</value></div>' +
+        '</div>' +
+        '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">POWER</p>' +
+        '<div class="stats-grid">' +
+          '<div class="stat"><label>vbat</label><value>' + slave.vbat_mv + ' mV</value></div>' +
+          '<div class="stat"><label>rssi</label><value>' + slave.rssi + ' dBm</value></div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<h3>ACTIONS</h3>' +
+    '<div class="action-row">' +
+      '<button onclick="cmd(\\'' + slave.ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +
+      '<button class="danger" onclick="askConfirm(\\'Reboot slave ' + slave.id + '? (2 s outage)\\', function(){cmd(\\'' + slave.ip + '\\',{cmd:\\'reboot\\'})})">REBOOT</button>' +
+    '</div>';
+
+  document.getElementById('slave-sheet').classList.add('active');
+}
+
+function closeSlaveSheet() {
+  document.getElementById('slave-sheet').classList.remove('active');
+  activeSlaveSheet = null;
+}
+
+function setSlaveSource(ip, mode) {
+  var slaveId = null;
+  for (var i = 0; i < (S && S.slaves ? S.slaves.length : 0); i++) {
+    if (S.slaves[i].ip === ip) { slaveId = S.slaves[i].id; break; }
+  }
+  if (slaveId) noteSlaveChange(slaveId);
+  if (mode === 'network') cmd(ip, {cmd: 'set_mode', mode: 'network'});
+  else if (mode === 'hybrid') cmd(ip, {cmd: 'set_mode', mode: 'hybrid'});
+  else cmd(ip, {cmd: 'set_mode', mode: 'local'});
+  /* Reopen sheet to refresh */
+  setTimeout(function() { openSlaveSheet(parseInt(activeSlaveSheet)); }, 200);
+}
+
+/* === RATES (for diagnostics) === */
+var rateHistory = {};
+function rates(s) {
+  var h = rateHistory[s.ip];
+  var now = performance.now();
+  var r = null;
+  if (h && now - h.t > 300 && s.rx >= h.rx) {
+    var dt = (now - h.t) / 1000;
+    r = {
+      rx: Math.round((s.rx - h.rx) / dt),
+      drop: (s.drop - h.drop) / dt,
+      und: (s.under - h.under) / dt,
+      lost: (s.lost == null || h.lost == null) ? null : (s.lost - h.lost) / dt
+    };
+  }
+  rateHistory[s.ip] = {rx: s.rx, drop: s.drop, under: s.under, lost: s.lost, t: now};
   return r;
 }
 
-// Packets that died in this box's own send buffer rather than in the air.
-// Worth its own number next to lost/s: without it a full buffer looks exactly
-// like WiFi loss, which is how a night at 43% local drop got read as
-// interference. lost/s high + tx-drop 0 => the air. tx-drop high => us, and
-// no amount of antenna will help.
-function txdrop(s) {
-  const t = ((S.net && S.net.tx) || {})[s.ip];
-  if (!t || (!t.full && !t.err)) return "";
-  const cls = t.pct >= 5 ? "bad" : t.pct > 0 ? "warn" : "ok";
-  const other = t.err ? ` + ${fmtN(t.err)} other` : "";
-  const tip = "audio packets this controller could not hand to the radio: "
-    + "its send buffer was full (EAGAIN/ENOBUFS). They never reached the air, "
-    + "so this is NOT WiFi loss — the fix is airtime or packet rate, not "
-    + `signal or antenna. Lifetime ${fmtN(t.full)} buffer-full${other}.`;
-  return `<span title="${tip}">tx-drop <b class="${cls}">${t.pct}%</b></span>`;
-}
-
-function card(s, r) {
-  const src = s.source
-    ? '<span class="badge net" title="beam source right now: the network stream">NET</span>'
-    : `<span class="badge mic" title="beam source right now: a pattern generated locally on the slave">LOCAL·${s.lpat||"?"}</span>`;
-  const p = playing(s);
-  const active = s.mode===1 ? "stream" : s.mode===2 ? "hybrid"
-                                       : (s.lpat||"mic");
-  const fed = S.stream_on && s.mode !== 0;  // is it being sent audio at all?
-  const rcls = v => v === 0 ? "ok" : v < 1 ? "warn" : "bad";
-  const rline = r === null
-    ? '<span title="rates appear after two status beacons">health <b>…</b></span>'
-    : `<span title="audio packets accepted per second (200/s = a perfect stream; 0 is normal when the slave is not being sent audio)">rx/s <b class="${fed ? (r.rx>180?'ok':r.rx>0?'warn':'bad') : ''}">${r.rx}</b></span>
-       <span title="late/stale/duplicate packets discarded per second — should be 0">drop/s <b class="${rcls(r.drop)}">${r.drop.toFixed(1)}</b></span>
-       <span title="packets that never arrived per second, inferred from sequence gaps — catches silent WiFi/lwIP loss that drop/s cannot see. Should be 0">lost/s <b class="${r.lost==null?'':rcls(r.lost)}">${r.lost==null?"–":r.lost.toFixed(1)}</b></span>
-       <span title="buffer ran dry per second — each one blinks the beam to a dot. Should be 0">under/s <b class="${rcls(r.und)}">${r.und.toFixed(1)}</b></span>
-       <span title="seconds since the last status heartbeat (sent once per second)">age <b>${(s.age_ms/1000).toFixed(1)}s</b></span>`;
-  return `<div class="card ${s.age_ms>3000?'stale':''}" style="padding:4px 0">
-    <h2>SLAVE ${s.id} ${src}<small>${s.ip} · ${s.mac}</small></h2>
-    <div class="play ${p.cls}">${p.txt}</div>
-    <div class="stats">
-      <span title="WiFi signal strength at the slave: −30 excellent · −60 good · −75 marginal · −85 unusable">rssi <b>${s.rssi} dBm</b></span>
-      <span title="battery voltage measured by the slave (≈0 on the bench: VBAT pin grounded, no battery)">vbat <b>${s.vbat_mv} mV</b></span>
-      <span title="audio buffered ahead of playback. Healthy ≈ 450 ms (the stream runs ahead on purpose to ride out WiFi pauses); 0 during local render">buf <b>${Math.round(s.depth/48)} ms</b></span>
-      <span title="time since the slave booted">up <b>${fmtUp(s.uptime)}</b></span>
-      ${rline}
-      ${txdrop(s)}
-      <span title="lifetime accepted audio packets">rx <b>${fmtN(s.rx)}</b></span>
-      <span title="lifetime discarded packets (late, duplicate, or buffer-full)">drop <b>${fmtN(s.drop)}</b></span>
-      <span title="lifetime underruns (buffer ran dry)">under <b>${fmtN(s.under)}</b></span>
-      <span title="lifetime packets that never arrived (inferred from sequence gaps)">lost <b>${s.lost==null?"–":fmtN(s.lost)}</b></span>
-    </div>
-    <div class="row">
-      <label style="width:auto;color:var(--dim)"
-        title="what should this slave draw? STREAM/HYBRID play this page's streamed pattern; the rest are generated on the slave itself (and double as its fallback if the stream dies)">draw</label>
-      <span class="seg">${drawSeg(s.ip, active)}</span>
-    </div>
-    <div class="row" style="margin-top:6px">
-      <button title="blink this slave's LEDs for 3 s to identify it" onclick="cmd('${s.ip}',{cmd:'identify'})">ID</button>
-      <label style="width:auto;color:var(--dim)" title="per-slave output scale (persisted on the slave) — match deflection between scopes">gain</label>
-      <input type="range" min="0" max="100" value="100" style="width:90px"
-        title="per-slave output scale (persisted on the slave)"
-        onchange="cmd('${s.ip}',{cmd:'set_gain',gain:this.value/100})">
-      <button class="danger" title="restart the slave (2 s outage)"
-        onclick="if(confirm('reboot slave ${s.id}?'))
-                 cmd('${s.ip}',{cmd:'reboot'})">reboot</button>
-    </div></div>`;
-}
-
+/* === RENDER === */
 function render() {
-  const p = S.pattern;
-  const sb = document.getElementById("stream");
-  sb.textContent = S.stream_on ? "STREAM ON" : "STREAM OFF";
-  sb.className = S.stream_on ? "on" : "off";
-  document.getElementById("offbanner").style.display =
-      S.stream_on ? "none" : "block";
-  document.getElementById("controls").style.opacity =
-      S.stream_on ? "1" : ".45";
-  document.getElementById("pnote").textContent =
-      S.stream_on ? "" : "— OFF, nothing is being sent";
-  for (const b of document.querySelectorAll("#kindseg button"))
-    b.className = b.dataset.k === p.kind ? "on" : "";
-  const isText = p.kind === "text";
-  document.getElementById("ratiorow").style.display =
-      (p.kind === "circle" || isText) ? "none" : "flex";
-  for (const id of ["textrow", "pulserow", "rotrow"])
-    document.getElementById(id).style.display = isText ? "flex" : "none";
-  document.getElementById("fxbtn").className = p.flip_x ? "on" : "";
-  document.getElementById("fybtn").className = p.flip_y ? "on" : "";
-  presetChips();
-  presetOptions(); targetBtns(); timerRows();
-  if (isText && p.tver !== TP.ver) fetchPreview();
-  // Don't fight the user mid-drag: only sync widgets nobody is touching.
-  const act = document.activeElement;
-  const sync = (id, v) => { const e = document.getElementById(id);
-                            if (e !== act) e.value = v; };
-  sync("freq", p.freq); sync("amp", Math.round(p.amp*100));
-  sync("ra", p.a); sync("rb", p.b);
-  sync("text", p.text); sync("font", p.font);
-  sync("pdepth", Math.round(p.pulse_depth*100));
-  sync("prate", Math.round(p.pulse_rate*10));
-  sync("rot", Math.round(p.rot*100));
-  live();
-  // Rates must be sampled every poll even if the card DOM isn't rebuilt.
-  const rr = {};
-  for (const s of S.slaves) rr[s.ip] = rates(s);
-  const div = document.getElementById("slaves");
-  if (!S.slaves.length) {
-    // An empty list has two very different causes and they look identical.
-    const n = S.net || {};
-    div.innerHTML = n.egress === false
-      ? '<div id="none" class="down"><b>Wi-Fi AP is DOWN</b> — no interface holds '
-        + n.iface + ', so no slave can associate and no audio is leaving this box.'
-        + '<br>on the controller: <code>sudo nmcli c up hyperosci-ap</code>'
-        + '<br>(this panel recovers on its own within a second — no restart needed)</div>'
-      : '<div id="none">no slaves discovered yet…</div>';
-  } else if (!(act && div.contains(act))) {  // keep gain sliders draggable
-    div.innerHTML =
-        S.slaves.sort((a,b)=>a.id-b.id).map(s => card(s, rr[s.ip])).join("");
+  if (!S) return;
+  renderHeader();
+  renderRigStrip();
+  renderOnAir();
+  renderFeedToggle();
+  renderSetList();
+  renderDials();
+  /* Draw preview (N4: fetch for text patterns) */
+  if (S.pattern.kind === 'text' && S.pattern.tver !== TP.ver) {
+    fetchPreview();
+  }
+  drawPreview();
+  if (document.body.className === 'setup') renderSetup();
+}
+
+function renderHeader() {
+  var cs = document.getElementById('conn-status');
+  if (pollFailures === 0) {
+    cs.textContent = '●';
+    cs.className = 'ok';
+  } else {
+    cs.textContent = '⚠ ' + pollFailures + 's';
+    cs.className = 'stale';
   }
 }
 
-async function poll() {
-  try { S = await (await fetch("/api/state")).json(); render(); }
-  catch (e) { /* controller restarting; retry next tick */ }
+function renderRigStrip() {
+  ensureTileGrid();
+  /* Patch existing tiles with current state */
+  var activeIds = {};
+  if (S.slaves) {
+    for (var i = 0; i < S.slaves.length; i++) {
+      activeIds[S.slaves[i].id] = S.slaves[i];
+      patchTile(S.slaves[i]);
+    }
+  }
+  /* Hide tiles for slaves no longer known (but keep them as "lost") */
+  for (var id in slaveTiles) {
+    if (!activeIds[parseInt(id)]) {
+      var tile = slaveTiles[id];
+      tile.classList.add('lost');
+      tile.querySelector('.tile-status').style.display = 'block';
+      tile.querySelector('.tile-status').textContent = 'LOST';
+    }
+  }
 }
-document.getElementById("allseg").innerHTML = drawSeg("all", null);
-poll(); setInterval(poll, 1000);
-</script></body></html>
+
+function renderFeedToggle() {
+  var on = S.stream_on;
+  document.getElementById('feed-on').classList.toggle('active', on);
+  document.getElementById('feed-off').classList.toggle('active', !on);
+}
+
+function renderDials() {
+  var p = S.pattern;
+  var act = document.activeElement;
+  var ampEl = document.getElementById('amp');
+  var freqEl = document.getElementById('freq');
+  if (ampEl !== act) ampEl.value = Math.round(p.amp * 100);
+  if (freqEl !== act) freqEl.value = p.freq;
+  document.getElementById('ampv').textContent = Math.round(p.amp * 100) + ' %';
+  document.getElementById('freqv').textContent = p.freq + ' Hz';
+}
+
+/* === SETUP RENDER === */
+function renderSetup() {
+  var p = S.pattern;
+
+  /* Kind buttons */
+  var kindBtns = document.querySelectorAll('#kindseg button');
+  for (var i = 0; i < kindBtns.length; i++) {
+    kindBtns[i].classList.toggle('on', kindBtns[i].getAttribute('data-k') === p.kind);
+  }
+
+  /* Show/hide kind-specific rows */
+  var isText = p.kind === 'text';
+  document.getElementById('ratiorow').style.display = (p.kind === 'lissajous') ? 'flex' : 'none';
+  document.getElementById('petalsrow').style.display = (p.kind === 'rose') ? 'flex' : 'none';
+  document.getElementById('textrow').style.display = isText ? 'flex' : 'none';
+  document.getElementById('pulsedepthrow').style.display = isText ? 'flex' : 'none';
+  document.getElementById('puleraterow').style.display = isText ? 'flex' : 'none';
+  document.getElementById('spinrow').style.display = isText ? 'flex' : 'none';
+  document.getElementById('pulsedepthrow').style.display = isText ? 'flex' : 'none';
+  document.getElementById('puleraterow').style.display = isText ? 'flex' : 'none';
+  document.getElementById('spinrow').style.display = isText ? 'flex' : 'none';
+
+  /* Update ratio label */
+  var rlabel = document.getElementById('ratio-label');
+  if (p.kind === 'lissajous') rlabel.textContent = 'a : b';
+  else if (p.kind === 'rose') rlabel.textContent = 'petals';
+
+  /* Sync inputs (F9 fix — scoped) */
+  var act = document.activeElement;
+  var el = document.getElementById('ra'); if (el !== act) el.value = p.a;
+  el = document.getElementById('rb'); if (el !== act) el.value = p.b;
+  el = document.getElementById('petals'); if (el !== act) el.value = p.a;
+  el = document.getElementById('text'); if (el !== act) el.value = p.text;
+  el = document.getElementById('font'); if (el !== act) el.value = p.font;
+  el = document.getElementById('pdepth'); if (el !== act) el.value = Math.round(p.pulse_depth * 100);
+  el = document.getElementById('prate'); if (el !== act) el.value = Math.round(p.pulse_rate * 10);
+  el = document.getElementById('rot'); if (el !== act) el.value = Math.round(p.rot * 100);
+  document.getElementById('pdepthv').textContent = Math.round(p.pulse_depth * 100) + ' %';
+  document.getElementById('pratev').textContent = (p.pulse_rate).toFixed(1) + ' Hz';
+  document.getElementById('rotv').textContent = (p.rot).toFixed(2) + ' rev/s';
+  el = document.getElementById('s-amp'); if (el !== act) el.value = Math.round(p.amp * 100);
+  document.getElementById('s-ampv').textContent = Math.round((p.amp * 100)) + ' %';
+  el = document.getElementById('s-freq'); if (el !== act) el.value = p.freq;
+  document.getElementById('s-freqv').textContent = p.freq.toFixed(0) + ' Hz';
+  document.getElementById('fxbtn').classList.toggle('on', p.flip_x);
+  document.getElementById('fybtn').classList.toggle('on', p.flip_y);
+
+  /* Text preview fetch */
+  if (isText && p.tver !== TP.ver) fetchPreview();
+
+  /* Allseg (set all) */
+  var allseg = document.getElementById('allseg');
+  if (allseg) {
+    allseg.innerHTML = ['stream','hybrid','mic','circle','lissajous','ramp','square'].map(function(w) {
+      return '<button class="chip" onclick="setAllSource(\\'' + w + '\\')">' +
+        (w === 'stream' || w === 'hybrid' ? w.toUpperCase() : w) + '</button>';
+    }).join('');
+  }
+
+  /* "Update current" is the only save path with the hold guard on it, and it
+     shipped display:none with nothing to un-hide it. It is meaningful only
+     once a preset has been loaded this session, so key it on that and say
+     which one it will overwrite. */
+  var upd = document.getElementById('setup-updbtn');
+  if (upd) {
+    upd.style.display = curPreset ? '' : 'none';
+    upd.textContent = 'Update "' + curPreset + '"';
+  }
+
+  /* Setup set list */
+  renderSetupSetList();
+  renderTimers();
+  renderSetupRig();
+  renderDiagnostics();
+
+  /* Timer cannot-fire indicator */
+  var noFire = document.getElementById('timer-cannot-fire');
+  if (noFire) noFire.style.display = (!S.stream_on) ? 'block' : 'none';
+
+  renderTargetBtns();
+}
+
+/* === SETUP SET LIST === */
+function renderSetupSetList() {
+  if (document.activeElement && document.activeElement.closest('#setup-setlist')) return;
+  var container = document.getElementById('setup-setlist');
+  if (!container) return;
+  var presets = S.presets || [];
+  container.innerHTML = '';
+  for (var i = 0; i < presets.length; i++) {
+    var nm = typeof presets[i] === 'string' ? presets[i] : presets[i].name;
+    var row = document.createElement('div');
+    row.className = 'preset-row';
+    row.innerHTML = '<span class="idx">' + (i+1) + '</span>' +
+      '<span class="name">' + esc(nm) + '</span>' +
+      '<span class="edit-controls" style="display:' + (editModeOn ? 'flex' : 'none') + ';gap:4px;margin-left:auto;">' +
+        '<button onclick="event.stopPropagation();openRename(\\'' + nm + '\\', ' + i + ')" title="rename">✎</button>' +
+        '<button class="danger" onclick="event.stopPropagation();delPreset(\\'' + nm + '\\')" title="delete">✕</button>' +
+      '</span>';
+    row.onclick = function(name) { return function() { applyPreset(name); }; }(nm);
+    container.appendChild(row);
+  }
+  document.getElementById('preset-count').textContent = presets.length + ' of __PRESETS_MAX__';
+}
+
+function toggleEditMode() {
+  editModeOn = !editModeOn;
+  document.getElementById('edit-toggle').textContent = editModeOn ? 'Done' : 'Edit';
+  renderSetupSetList();
+}
+
+/* One overlay, two jobs. Reassigning the shared Save button's onclick left the
+   save-as closure installed whenever the dialog was dismissed any other way
+   (Cancel, or a second thought) -- and the next tap of a row's rename pencil
+   then saved the on-air pattern over that artist's preset, silently. A mode
+   flag cannot leak: every path that opens the overlay sets it first. */
+var overlayMode = 'rename';
+
+function openRename(existingName, idx) {
+  overlayMode = 'rename';
+  renameTarget = existingName;
+  var overlay = document.getElementById('rename-overlay');
+  overlay.querySelector('p').textContent = 'Rename preset:';
+  overlay.style.display = 'flex';
+  var input = document.getElementById('rename-input');
+  input.value = existingName;
+  input.focus();
+  input.select();
+}
+
+function setupSavePreset() {
+  if (!S) return;
+  var p = S.pattern;
+  var def = (p.kind === 'text' ? p.text.split('\\n')[0] : p.kind).slice(0, 24);
+  overlayMode = 'saveas';
+  renameTarget = null;
+  var overlay = document.getElementById('rename-overlay');
+  overlay.querySelector('p').textContent = 'New preset name:';
+  overlay.style.display = 'flex';
+  var inp = document.getElementById('rename-input');
+  inp.value = def;
+  inp.focus();
+  inp.select();
+}
+
+function submitRename() {
+  var overlay = document.getElementById('rename-overlay');
+  var name = document.getElementById('rename-input').value.trim();
+  if (!name) return;
+  overlay.style.display = 'none';
+  if (overlayMode === 'saveas') {
+    var names = (S && S.presets) || [];
+    var exists = false;
+    for (var i = 0; i < names.length; i++) {
+      if ((typeof names[i] === 'string' ? names[i] : names[i].name) === name) exists = true;
+    }
+    /* Saving onto a name already in the set list is the destructive case, and
+       it is the one the operator reaches by accident. Ask. */
+    if (exists) {
+      askConfirm('Overwrite preset "' + name + '" with current settings?', function() {
+        setCur(name);
+        post("/api/preset", {op: 'save', name: name});
+      });
+    } else {
+      setCur(name);
+      post("/api/preset", {op: 'save', name: name});
+    }
+    return;
+  }
+  if (name === renameTarget) return;
+  post("/api/preset", {op: 'rename', name: renameTarget, new_name: name});
+}
+
+function setupUpdatePreset() {
+  if (!curPreset) return showToast('No preset loaded yet — use Save preset', 3000, 'error');
+  if (S.hold) {
+    showToast('Cannot update: timer hold is on air. Update would save the ident, not the artist.', 5000, 'error');
+    return;
+  }
+  askConfirm('Overwrite preset "' + curPreset + '" with current settings?', function() {
+    post("/api/preset", {op: 'save', name: curPreset});
+  });
+}
+
+function delPreset(n) {
+  askConfirm('Delete preset "' + n + '"?', function() {
+    if (n === curPreset) setCur('');
+    post("/api/preset", {op: 'delete', name: n});
+  });
+}
+
+/* === TIMERS === */
+var tTargets = new Set();
+
+function tgTarget(i) {
+  if (tTargets.has(i)) tTargets.delete(i);
+  else tTargets.add(i);
+  renderTargetBtns();
+}
+
+function renderTargetBtns() {
+  var ids = [];
+  if (S && S.slaves) {
+    var seen = {};
+    for (var i = 0; i < S.slaves.length; i++) {
+      var sid = S.slaves[i].id;
+      if (!seen[sid]) { ids.push(sid); seen[sid] = true; }
+    }
+  }
+  ids.sort(function(a,b) { return a - b; });
+  var container = document.getElementById('ttargets');
+  if (!container) return;
+  var html = '<button class="' + (tTargets.size ? '' : 'on') + '" onclick="tTargets.clear();renderTargetBtns();">all</button>';
+  for (var i = 0; i < ids.length; i++) {
+    html += '<button class="' + (tTargets.has(ids[i]) ? 'on' : '') + '" onclick="tgTarget(' + ids[i] + ')">' + ids[i] + '</button>';
+  }
+  container.innerHTML = html;
+}
+
+function addTimer() {
+  var preset = document.getElementById('tpreset').value;
+  if (!preset) return showToast('Save a preset first — a timer shows a preset', 3000, 'error');
+  post("/api/timer", {
+    op: 'save',
+    preset: preset,
+    targets: [...tTargets],
+    hold_s: +document.getElementById('thold').value,
+    every_s: Math.round(+document.getElementById('tevery').value * 60)
+  });
+}
+
+function renderTimers() {
+  if (document.activeElement && document.activeElement.closest('#timer-table-wrap')) return;
+  var ts = S.timers || [];
+  var hold = S.hold;
+  var container = document.getElementById('timer-table-wrap');
+  if (!container) return;
+
+  /* Fill preset select before early return (N12) */
+  var sel = document.getElementById('tpreset');
+  if (sel) {
+    var cur = sel.value;
+    var names = S.presets || [];
+    sel.innerHTML = names.map(function(n) { return '<option>' + esc(n) + '</option>'; }).join('');
+    if (names.indexOf(cur) >= 0) sel.value = cur;
+  }
+
+  document.getElementById('holdnote').textContent = hold
+    ? '— on air: "' + (hold.preset || '?') + '", ' + fmtLeft(hold.left_s) + ' left' : '';
+
+  if (!ts.length) {
+    container.innerHTML = '<div style="color:var(--dim);padding:8px">No timers configured</div>';
+    return;
+  }
+
+  var html = '<table class="timer-table"><tr><th>rule</th><th>schedule</th><th>status</th><th>actions</th></tr>';
+  for (var i = 0; i < ts.length; i++) {
+    var t = ts[i];
+    var who = t.targets.length ? 'slave ' + t.targets.join('+') : 'every slave';
+    var when = '';
+    if (hold && hold.id === t.id) {
+      when = '<span style="color:var(--ph);font-weight:bold">on air, ' + fmtLeft(hold.left_s) + ' left</span>';
+    } else if (!t.enabled) {
+      when = 'paused';
+    } else if (t.next_in != null) {
+      when = 'next in ' + fmtLeft(t.next_in);
+    }
+
+    /* Cannot fire indicator */
+    if (t.enabled && !S.stream_on) {
+      when += ' <span class="status-cannot-fire">⚠ cannot fire (feed SILENT)</span>';
+    }
+
+    html += '<tr>' +
+      '<td>"' + esc(t.preset) + '" on ' + esc(who) + '</td>' +
+      '<td>' + t.hold_s + 's every ' + (t.every_s >= 60 ? (t.every_s/60).toFixed(1) + ' min' : t.every_s + 's') + '</td>' +
+      '<td>' + when + '</td>' +
+      '<td>' +
+        '<button class="' + (t.enabled ? 'on' : 'off') + '" onclick="timerOp(\\'toggle\\',' + t.id + ')">' + (t.enabled ? 'ON' : 'OFF') + '</button> ' +
+        '<button onclick="timerOp(\\'fire\\',' + t.id + ')">run now</button> ' +
+        '<button class="danger" onclick="delTimer(' + t.id + ',\\'' + esc(t.preset) + '\\')">✕</button>' +
+      '</td></tr>';
+  }
+  html += '</table>';
+  container.innerHTML = html;
+
+}
+
+function timerOp(op, id) { post("/api/timer", {op: op, id: id}); }
+
+function delTimer(id, preset) {
+  askConfirm('Delete timer for "' + preset + '"?', function() {
+    post("/api/timer", {op: 'delete', id: id});
+  });
+}
+
+/* === SETUP RIG (per-slave cards) === */
+function renderSetupRig() {
+  if (document.activeElement && document.activeElement.closest('#setup-rig')) return;
+  var container = document.getElementById('setup-rig');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!S.slaves) return;
+
+  for (var i = 0; i < S.slaves.length; i++) {
+    var s = S.slaves[i];
+    var verdict = slaveVerdict(s);
+    var activeMode = s.source ? (s.mode === 2 ? 'hybrid' : 'stream') : 'local';
+
+    var card = document.createElement('div');
+    card.className = 'panel';
+    card.style.marginBottom = '8px';
+    card.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+        '<strong>SLAVE ' + s.id + '</strong> <small style="color:var(--dim)">' + s.ip + '</small>' +
+      '</div>' +
+      '<div class="verdict ' + verdict.cls + '" style="margin-bottom:8px">' + verdict.txt + '</div>' +
+      '<div class="row">' +
+        '<label>source</label>' +
+        '<div class="source-3way">' +
+          '<button class="' + (activeMode === 'stream' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + s.ip + '\\',\\'network\\')">STREAM</button>' +
+          '<button class="' + (activeMode === 'hybrid' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + s.ip + '\\',\\'hybrid\\')">HYBRID</button>' +
+          '<button class="' + (activeMode === 'local' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + s.ip + '\\',\\'local\\')">OWN</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<label>fallback</label>' +
+        '<select onchange="cmd(\\'' + s.ip + '\\',{cmd:\\'set_pattern\\',pattern:this.value})">' +
+          ['mic','circle','lissajous','ramp','square'].map(function(p) {
+            return '<option value="' + p + '"' + (s.lpat === p ? ' selected' : '') + '>' + p + '</option>';
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<label>level</label>' +
+        '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'set_gain\\',gain:0.9})" style="padding:4px 16px">−</button>' +
+        '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'set_gain\\',gain:1.1})" style="padding:4px 16px">+</button>' +
+        '<span style="color:var(--dim);font-size:12px;margin-left:8px">(nudges — value not readable)</span>' +
+      '</div>' +
+      '<div class="row" style="margin-top:8px">' +
+        '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +
+        '<button class="danger" onclick="askConfirm(\\'Reboot slave ' + s.id + '?\\')/* fixed below */">REBOOT</button>' +
+      '</div>';
+
+    container.appendChild(card);
+  }
+
+  /* Fix reboot buttons (inline onclick won't have closure, so use delegation) */
+  var rebootBtns = container.querySelectorAll('.danger');
+  var slaveList = S.slaves;
+  for (var i = 0; i < rebootBtns.length; i++) {
+    (function(idx) {
+      rebootBtns[idx].onclick = function() {
+        askConfirm('Reboot slave ' + slaveList[idx].id + '? (2 s outage)', function() {
+          cmd(slaveList[idx].ip, {cmd: 'reboot'});
+        });
+      };
+    })(i);
+  }
+}
+
+function setAllSource(mode) {
+  if (!S || !S.slaves) return;
+  noteSlaveChange('all');
+  for (var i = 0; i < S.slaves.length; i++) {
+    let ip = S.slaves[i].ip;
+    if (mode === 'stream') cmd(ip, {cmd: 'set_mode', mode: 'network'});
+    else if (mode === 'hybrid') cmd(ip, {cmd: 'set_mode', mode: 'hybrid'});
+    else cmd(ip, {cmd: 'set_pattern', pattern: mode}).then(function() {
+      return cmd(ip, {cmd: 'set_mode', mode: 'local'});
+    });
+  }
+}
+
+/* === DIAGNOSTICS === */
+function renderDiagnostics() {
+  if (document.activeElement && document.activeElement.closest('#setup-diagnostics')) return;
+  var container = document.getElementById('diag-section');
+  if (!container) return;
+  if (!S.slaves || !S.slaves.length) {
+    container.innerHTML = '<div style="color:var(--dim)">No slave data</div>';
+    return;
+  }
+
+  var html = '';
+  for (var i = 0; i < S.slaves.length; i++) {
+    var s = S.slaves[i];
+    var r = rates(s);
+    html += '<h3 style="color:var(--ph);margin:12px 0 4px">SLAVE ' + s.id + ' ' + s.ip + '</h3>';
+    html += '<div class="stats-grid">';
+
+    /* LINK group */
+    html += '<div class="stat"><label style="grid-column:1/4;color:var(--dim);border-bottom:1px solid var(--line)">LINK</label></div>';
+    html += '<div class="stat"><label>rssi</label><value>' + s.rssi + ' dBm</value></div>';
+    html += '<div class="stat"><label>buf</label><value>' + Math.round(s.depth/48) + ' ms</value></div>';
+    html += '<div class="stat"><label>up</label><value>' + fmtUp(s.uptime || 0) + '</value></div>';
+
+    /* STREAM group */
+    html += '<div class="stat"><label style="grid-column:1/4;color:var(--dim);border-bottom:1px solid var(--line);margin-top:4px">STREAM</label></div>';
+    html += '<div class="stat"><label>rx/s</label><value>' + (r ? r.rx : '—') + '</value></div>';
+    html += '<div class="stat"><label>drop/s</label><value>' + (r ? r.drop.toFixed(1) : '—') + '</value></div>';
+    html += '<div class="stat"><label>lost/s</label><value>' + (r && r.lost != null ? r.lost.toFixed(1) : '—') + '</value></div>';
+    html += '<div class="stat"><label>under/s</label><value>' + (r ? r.und.toFixed(1) : '—') + '</value></div>';
+    html += '<div class="stat"><label>age</label><value>' + (s.age_ms/1000).toFixed(1) + 's</value></div>';
+    html += '<div class="stat"><label>rx</label><value>' + fmtN(s.rx) + '</value></div>';
+    html += '<div class="stat"><label>drop</label><value>' + fmtN(s.drop) + '</value></div>';
+    html += '<div class="stat"><label>lost</label><value>' + (s.lost == null ? '—' : fmtN(s.lost)) + '</value></div>';
+    html += '<div class="stat"><label>under</label><value>' + fmtN(s.under) + '</value></div>';
+
+    /* POWER group */
+    html += '<div class="stat"><label style="grid-column:1/4;color:var(--dim);border-bottom:1px solid var(--line);margin-top:4px">POWER</label></div>';
+    html += '<div class="stat"><label>vbat</label><value>' + (s.vbat_mv || 0) + ' mV</value></div>';
+
+    html += '</div>';
+  }
+
+  /* Network state */
+  var net = S.net || {};
+  html += '<h3 style="color:var(--ph);margin:16px 0 8px">NETWORK</h3>';
+  if (net.egress === false) {
+    html += '<div style="background:#3d1010;border:1px solid var(--bad);padding:12px;border-radius:4px;color:var(--bad)">' +
+      '<strong>Wi-Fi AP is DOWN</strong> — no interface holds ' + (net.iface || '?') + '.<br>' +
+      'On the controller: <code>sudo nmcli c up hyperosci-ap</code><br>' +
+      '(this panel recovers on its own within a second — no restart needed)</div>';
+  } else {
+    html += '<div style="color:var(--ph)">AP is UP — stream can reach slaves</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+/* === STALE RENDER (F1 — never freeze) === */
+function renderStale(staleState, failures) {
+  /* Update conn-status */
+  var cs = document.getElementById('conn-status');
+  cs.textContent = '⚠ ' + failures + 's';
+  cs.className = 'stale';
+
+  /* Mark tiles stale */
+  if (staleState.slaves) {
+    for (var i = 0; i < staleState.slaves.length; i++) {
+      var s = staleState.slaves[i];
+      var tile = slaveTiles[s.id];
+      if (tile) {
+        tile.classList.add('stale');
+        tile.classList.remove('lost');
+        var ageEl = tile.querySelector('.tile-age');
+        if (ageEl) ageEl.textContent = 'STALE';
+      }
+    }
+  }
+}
+
+/* === POLL (F1 — count failures, never freeze) ===
+   refresh() fetches and draws once. poll() is the only thing that schedules
+   the next one. They are separate because post() wants a fresh frame right
+   after a command: when that called poll(), every tap forked a second
+   self-perpetuating chain and the rate climbed for the rest of the night --
+   six taps measured 1/s -> 7/s, and each request takes the same state.lock
+   the 5 ms stream loop needs. */
+async function refresh() {
+  try {
+    S = await (await fetch("/api/state")).json();
+    pollFailures = 0;
+    lastKnownState = S;
+    document.body.classList.remove('disconnected');
+  } catch (e) {
+    pollFailures++;
+    if (pollFailures >= 3) {
+      document.body.classList.add('disconnected');
+      document.getElementById('conn-banner').textContent =
+        '⚠ No contact with controller for ' + pollFailures + 's — last state shown';
+    }
+    /* Still render with stale data so UI doesn't freeze (F1 fix) */
+    if (lastKnownState) renderStale(lastKnownState, pollFailures);
+  }
+  /* render() gets its own catch: a render bug must not read as a dead
+     controller -- that banner is the one message the operator is taught to
+     trust. */
+  try {
+    render();
+  } catch (e) {
+    console.error('render failed', e);
+  }
+}
+
+function poll() {
+  /* finally, not then: a refresh that throws must still re-arm, or the page
+     freezes on a stale frame with no banner to say so. */
+  refresh().catch(function(e) { console.error('refresh failed', e); })
+           .then(function() { setTimeout(poll, 1000); });
+}
+
+/* === INIT === */
+(function init() {
+  /* Set initial mode (F13 — neutral until first poll) */
+  setMode(getMode());
+
+  /* Header starts neutral */
+  document.getElementById('conn-status').textContent = '○';
+
+  /* Start polling */
+  poll();
+})();
+</script>
+</body>
+</html>
 """
 # Keep the page's "max N" in step with the constant. A targeted replace, not
 # .format(): the page is full of JS braces.
@@ -1643,6 +2779,7 @@ def make_http_handler(state, cmds):
                 if not ip or not isinstance(cmd_obj, dict):
                     return self._json({"err": "need ip + cmd"}, 400)
                 cmds.send(ip, cmd_obj)
+                self._takeover(state)  # end any hold so draw change persists (F11)
                 self._json({"ok": True})
             else:
                 self._json({"err": "not found"}, 404)
@@ -1688,31 +2825,106 @@ def make_http_handler(state, cmds):
         def _preset(self, state, body):
             op = body.get("op")
             name = sanitize_name(body.get("name", ""))
-            if op not in ("save", "load", "delete") or not name:
+            if op not in ("save", "load", "delete", "move", "rename") or not name:
                 return self._json({"err": "need op + name"}, 400)
+            # Each branch below decides under the lock and replies after it is
+            # dropped. _json writes to the client socket, and a phone on a
+            # marginal AP link can make that block -- held under state.lock
+            # that is a stall in the 5 ms stream loop, i.e. an audible gap on
+            # every scope at once.
             if op == "save":
+                held = full = False
+                plist = None
                 with state.lock:
-                    snap = {"name": name,
-                            "kind": state.kind, "freq": state.freq,
-                            "amp": state.amp, "a": state.ratio_a,
-                            "b": state.ratio_b, "text": state.text,
-                            "font": state.font,
-                            "pulse_rate": state.pulse_rate,
-                            "pulse_depth": state.pulse_depth,
-                            "rot": state.rot_speed,
-                            "flip_x": state.flip_x,
-                            "flip_y": state.flip_y}
-                    for i, p in enumerate(state.presets):
-                        if p["name"] == name:  # overwrite in place
-                            state.presets[i] = snap
-                            break
+                    # F0: no saving the ident over an artist's preset mid-hold
+                    if state.timer_hold is not None:
+                        held = True
                     else:
-                        if len(state.presets) >= PRESETS_MAX:
-                            return self._json(
-                                {"err": f"max {PRESETS_MAX} presets"}, 400)
-                        state.presets.append(snap)
-                    plist = list(state.presets)
+                        snap = {"name": name,
+                                "kind": state.kind, "freq": state.freq,
+                                "amp": state.amp, "a": state.ratio_a,
+                                "b": state.ratio_b, "text": state.text,
+                                "font": state.font,
+                                "pulse_rate": state.pulse_rate,
+                                "pulse_depth": state.pulse_depth,
+                                "rot": state.rot_speed,
+                                "flip_x": state.flip_x,
+                                "flip_y": state.flip_y}
+                        for i, p in enumerate(state.presets):
+                            if p["name"] == name:  # overwrite in place
+                                state.presets[i] = snap
+                                break
+                        else:
+                            if len(state.presets) >= PRESETS_MAX:
+                                full = True
+                            else:
+                                state.presets.append(snap)
+                        if not full:
+                            plist = list(state.presets)
+                if held:
+                    return self._json(
+                        {"err": "cannot save — timer hold active"}, 409)
+                if full:
+                    return self._json(
+                        {"err": f"max {PRESETS_MAX} presets"}, 400)
                 save_presets(plist)  # file IO outside the lock
+                return self._json({"ok": True})
+            if op == "move":
+                try:
+                    idx = int(body.get("index", -1))
+                except (TypeError, ValueError):
+                    return self._json({"err": "need index"}, 400)
+                plist = None
+                with state.lock:
+                    try:
+                        p = state.presets.pop(
+                            next(i for i, x in enumerate(state.presets)
+                                 if x["name"] == name))
+                    except StopIteration:
+                        p = None
+                    if p is not None:
+                        # Clamp: insert(-1) would quietly land it second to
+                        # last, and a bad index must not reorder the set list.
+                        idx = max(0, min(idx, len(state.presets)))
+                        state.presets.insert(idx, p)
+                        plist = list(state.presets)
+                if plist is None:
+                    return self._json({"err": "no such preset"}, 404)
+                save_presets(plist)
+                return self._json({"ok": True})
+            if op == "rename":
+                new_name = sanitize_name(body.get("new_name", ""))
+                if not new_name:
+                    return self._json({"err": "need new_name"}, 400)
+                plist = tlist = None
+                clash = False
+                with state.lock:
+                    # The page keys its set-list rows by name; two presets
+                    # sharing one would collapse into a single row.
+                    if any(p["name"] == new_name for p in state.presets):
+                        clash = True
+                    else:
+                        for p in state.presets:
+                            if p["name"] == name:
+                                p["name"] = new_name
+                                touched = [t for t in state.timers
+                                           if t["preset"] == name]
+                                for t in touched:
+                                    t["preset"] = new_name
+                                plist = list(state.presets)
+                                # Rewritten in memory but never written out,
+                                # the rule came back after a restart pointing
+                                # at a name that no longer exists -- enabled,
+                                # counting down, unable to ever fire.
+                                tlist = list(state.timers) if touched else None
+                                break
+                if clash:
+                    return self._json({"err": "name already used"}, 409)
+                if plist is None:
+                    return self._json({"err": "no such preset"}, 404)
+                save_presets(plist)
+                if tlist is not None:
+                    save_timers(tlist)
                 return self._json({"ok": True})
             if op == "delete":
                 with state.lock:
@@ -1767,30 +2979,43 @@ def make_http_handler(state, cmds):
                 t = clean_timer(body)
                 if not t["preset"]:
                     return self._json({"err": "need a preset"}, 400)
+                missing = full = False
+                tlist = None
                 with state.lock:
                     if not any(p["name"] == t["preset"]
                                for p in state.presets):
-                        return self._json({"err": "no such preset"}, 404)
-                    for i, old in enumerate(state.timers):
-                        if old["id"] == t["id"] and t["id"]:
-                            state.timers[i] = t
-                            break
+                        missing = True
                     else:
-                        if len(state.timers) >= TIMERS_MAX:
-                            return self._json(
-                                {"err": f"max {TIMERS_MAX} timers"}, 400)
-                        t["id"] = state.next_timer_id
-                        state.next_timer_id += 1
-                        state.timers.append(t)
-                    # Re-arm to a full period out, so tweaking "every" at
-                    # 4m59s does not fire the moment you let go -- and so the
-                    # countdown the page draws is right immediately, not from
-                    # timer_loop's next tick.
-                    state.timer_next[t["id"]] = (mono_us()
-                                                 + t["every_s"] * 1_000_000)
-                    tlist = list(state.timers)
+                        for i, old in enumerate(state.timers):
+                            if old["id"] == t["id"] and t["id"]:
+                                state.timers[i] = t
+                                break
+                        else:
+                            if len(state.timers) >= TIMERS_MAX:
+                                full = True
+                            else:
+                                t["id"] = state.next_timer_id
+                                state.next_timer_id += 1
+                                state.timers.append(t)
+                        if not full:
+                            # Re-arm to a full period out, so tweaking "every"
+                            # at 4m59s does not fire the moment you let go --
+                            # and so the countdown the page draws is right
+                            # immediately, not from timer_loop's next tick.
+                            state.timer_next[t["id"]] = (
+                                mono_us() + t["every_s"] * 1_000_000)
+                            tlist = list(state.timers)
+                if missing:
+                    return self._json({"err": "no such preset"}, 404)
+                if full:
+                    return self._json({"err": f"max {TIMERS_MAX} timers"}, 400)
                 save_timers(tlist)
-                return self._json({"ok": True, "id": t["id"]})
+                # W8: echo the clamped period back, so a page that asked for
+                # 2 s and got the 10 s minimum shows 10 s instead of quietly
+                # drawing a schedule the controller is not running.
+                return self._json({"ok": True, "id": t["id"],
+                                   "every_s": t["every_s"],
+                                   "hold_s": t["hold_s"]})
             try:
                 tid = int(body.get("id", 0))
             except (TypeError, ValueError):
@@ -1804,6 +3029,12 @@ def make_http_handler(state, cmds):
                 reason = fire_timer(state, cmds, t)
                 if reason:
                     return self._json({"err": "not now — " + reason}, 409)
+                # F12: a hand-fired hold costs the rule its turn. Without this
+                # the schedule is untouched, so "run now" plays the ident and
+                # then the rule plays it again seconds later -- twice, mid-set.
+                with state.lock:
+                    state.timer_next[tid] = (mono_us()
+                                             + t["every_s"] * 1_000_000)
                 return self._json({"ok": True})
             with state.lock:
                 if op == "delete":
@@ -2068,12 +3299,19 @@ def stream_loop(state, iface_ip):
                             "lpat": lpat, "last_us": mono_us(),
                         }
 
-        # Forget slaves silent for > 5 s so we stop streaming into the void.
+        # Two-stage eviction: mark at 5s, delete at 30s (F8 tombstone).
+        # CRITICAL: use list() to avoid RuntimeError on dict mutation during iteration.
+        # CRITICAL: use "gone" field, not "lost" (which collides with lost-packet counter).
         with state.lock:
-            for ip in [ip for ip, s in state.slaves.items()
-                       if now - s["last_us"] > 5_000_000]:
-                print(f"[lost] {ip}", flush=True)
-                del state.slaves[ip]
+            for ip, s in list(state.slaves.items()):
+                age = now - s["last_us"]
+                if age > 30_000_000:  # 30s: truly gone
+                    print(f"[lost] {ip}", flush=True)
+                    del state.slaves[ip]
+                elif age > 5_000_000 and not s.get("gone"):  # 5s: mark lost
+                    s["gone"] = True
+                    s["lost_since"] = now
+                    print(f"[lost] {ip} — marked (will delete at 30s)", flush=True)
 
 
 def main():
