@@ -31,3 +31,8 @@ __pycache__/
 fp-info-cache
 *-backups/
 _autosave-*
+
+# 3D-printed case: venv and large derived meshes (STEP/STL of the parts are kept)
+hw/case/.venv/
+hw/case/out/carrier.step
+hw/case/out/board.stl
