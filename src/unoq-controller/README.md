@@ -47,7 +47,8 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    no external assets so it works on the AP without internet):
    <http://192.168.50.1:8080> (on `HYPEROSCI_AP`) or <http://10.42.0.5:8080>
    (USB tether). Pattern/text/effect controls with live canvas preview,
-   stream on/off, per-slave draw mode (stream/hybrid/mic/local patterns),
+   stream on/off, three per-node switches (streaming / logos / artists) that
+   the controller turns into each slave's draw mode, the two pair cycles,
    identify/gain/reboot, per-second health rates (rx/drop/lost/under).
    When no slave is listed the panel distinguishes the two causes: if
    `/api/state`'s `net.egress` is false, nothing holds `192.168.50.1`, so the
@@ -72,27 +73,30 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    **`+ save as…`** (a new name). Which preset is "current" is a client-side
    notion kept in `localStorage`; the controller has no session, and a phone
    that locked its screen still comes back able to update the right one.
-6. **Interval timers** — up to 8 rules of the form *"show preset **IDENT** on
-   slaves 1+2 for 20 s every 5 minutes"*, persisted at `~/hype_timers.json`.
-   A rule fires on its own thread (`timer_loop`, same reasoning as
-   `persist_loop`: a font rebuild on the stream thread is an audible gap on
-   every scope): the preset goes on air, the targeted slaves are switched to
-   STREAM, and when the hold expires both the pattern and each target's
-   previous draw setting are put back. Targets are slave **ids**, not ips, so
-   a rule survives a DHCP lease.
+6. **Interval timers (idents)** — up to 8 rules of the form *"show preset
+   **IDENT** on slaves 1+2 for 20 s every 5 minutes"*, persisted at
+   `~/hype_timers.json`. A rule fires on its own thread (`timer_loop`, same
+   reasoning as `persist_loop`: a font rebuild on the stream thread is an
+   audible gap on every scope): the preset goes on air and the hold records
+   its targets. It sends no `set_mode` itself — `policy_loop` reads the hold,
+   brings the targeted nodes onto the stream and leaves the rest on their own
+   mic. When the hold expires the pattern is restored and every node's mode is
+   re-derived from its switches, not from a remembered draw setting. Targets
+   are slave **ids**, not ips, so a rule survives a DHCP lease.
 
    Three things worth knowing:
-   - **There is one streamed pattern for the whole rig.** Targeting slaves
-     1+2 switches *those* to STREAM; a slave already on STREAM/HYBRID sees
-     the same figure for the duration. Nothing forces a non-target off the
-     stream — that would be a bigger intervention than the rule asked for.
+   - **There is one streamed pattern for the whole rig**, so a targeted hold
+     is enforced at the nodes: targeting 1+2 puts those on the stream and the
+     others on mic for the duration. Untargeted (the default) means every node
+     whose switches allow it. An ident is subject to those switches like
+     anything else — an artist ident does not appear on a scope with
+     `artists` off.
    - **Touching the pattern panel ends a hold early**, keeping what the
      operator just set. Reverting them fifteen seconds later is worse than
      the rule missing a cycle.
-   - **A hold is never persisted** as the live pattern, and a fire is
-     refused for `HOLD_COOLDOWN_US` after a release — a slave's mode is only
-     known from its 1 Hz STATUS beacon, so firing inside that window would
-     record the forced mode as the "previous" one and strand it on STREAM.
+   - **A hold is never persisted** as the live pattern, and a fire is refused
+     for `HOLD_COOLDOWN_US` after a release — two stings back to back read as
+     a fault on stage, not as a show.
 
 HTTP API: `GET /api/state`, `GET /api/shapepreview` (the live point table,
 decimated — text and figure both); `POST /api/pattern`,

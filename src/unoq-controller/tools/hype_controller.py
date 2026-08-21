@@ -2003,7 +2003,6 @@ var S = null;
 var pollFailures = 0;
 var lastKnownState = null;
 var activeSlaveSheet = null;
-var curPresetIdx = 0;
 /* The settings sheet's group, or null when it is closed. */
 var activeCycleGroup = null;
 var editModeOn = false;
