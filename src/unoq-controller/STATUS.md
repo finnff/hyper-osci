@@ -785,3 +785,20 @@ boot banner names the running cycle and every switched-off node.
 Measured on the board: `test_policy.py` (46 checks) plus the existing four
 suites all pass; a 5 s/3 s logo cycle stepped 4.9 s / 3.3 s on the wall clock
 over five transitions.
+
+**Phased idents (same day).** Two idents can never be on air together — there
+is one hold — so an overlap was never a double exposure, it was a queue: the
+second rule fired the instant the first released, two stings back to back.
+Each enabled rule now gets a phase (`timer_phases`), placed shortest period
+first, each next rule taking the offset whose closest approach to everything
+already placed is largest. "Logos 10 s every 2 min" + "artists 15 s every
+1 min" stops being 0/120/240 for both and becomes 32/152/272 against
+0/60/120/180 — 17 s of clearance, zero collisions. Periods that share no
+useful common multiple (97 s against 60 s) cannot all miss forever; the
+placement takes the best of what it can see (2 collisions per 12 fires
+instead of 13) and `timer_loop`'s queue is still underneath as the thing that
+guarantees correctness. The offset is printed in the ident table rather than
+left as a mystery. The search is 40 ms at the 8-rule cap and runs off a copy
+with no lock held — the stream loop wants `state.lock` every 5 ms.
+
+Cycle default is now **5 s a side**, not 30.

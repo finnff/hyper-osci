@@ -208,8 +208,9 @@ ok(cmds.modes() == {"10.0.0.1": "local"},
 # ------------------------------------------------------------------ cycles
 print("\n[cycle] clamps and the seeded config")
 c = hc.clean_cycle({}, "artists")
-ok(c["enabled"] is False and c["show_s"] == 30 and c["pause_s"] == 0,
-   "an empty config fills from the defaults, and starts OFF", json.dumps(c))
+ok(c["enabled"] is False and c["show_s"] == 5 and c["pause_s"] == 0,
+   "an empty config fills from the defaults (5 s a side), and starts OFF",
+   json.dumps(c))
 ok(len(c["pairs"]) == 3, "the artists seed carries the three b2b pairs",
    json.dumps(c["pairs"]))
 ok(hc.clean_cycle({"show_s": 9999}, "logos")["show_s"] == 600,

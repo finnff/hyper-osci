@@ -180,6 +180,76 @@ ok(hc.fire_timer(st, cmds, rule(preset="GONE")) == hc.FIRE_NO_PRESET,
    "a rule whose preset was deleted does not fire")
 ok(st.timer_hold is None, "and leaves no half-claimed hold")
 
+# --------------------------------------------------------------- phasing
+# Two rules can never be on air together (one hold), so a collision is a
+# queue: the second fires the instant the first releases and the room gets
+# two stings back to back. Phases pull them apart instead of dropping one.
+print("\n[timers] two rules that would land together are pulled apart")
+
+
+def collisions(rs, phases):
+    """(closest approach, number of overlapping fires) across every pair."""
+    worst, hits = None, 0
+    for i, a in enumerate(rs):
+        for b in rs[i + 1:]:
+            g, h, _ = hc._placement_score(
+                hc._fire_windows(phases[a["id"]], a["every_s"], a["hold_s"]),
+                hc._fire_windows(phases[b["id"]], b["every_s"], b["hold_s"]))
+            worst = g if worst is None else min(worst, g)
+            hits += -h
+    return worst, hits
+
+
+# The case from the desk: logos 10 s every 2 min, artists 15 s every 1 min.
+pair = [rule(id=1, preset="IDENT", every_s=120, hold_s=10),
+        rule(id=2, preset="SHOW", every_s=60, hold_s=15)]
+ph = hc.timer_phases(pair)
+gap, hits = collisions(pair, ph)
+ok(hits == 0 and gap > 0,
+   "unphased they would both fire at 0, 120, 240 — phased they never touch",
+   f"phases={ph} closest approach {gap}s")
+ok(ph[2] == 0 and 0 < ph[1] < 120,
+   "the shortest period keeps phase 0 and the longer one moves around it",
+   str(ph))
+
+solo = [rule(id=1, every_s=120, hold_s=10)]
+ok(hc.timer_phases(solo) == {1: 0}, "one rule needs no offset")
+off = [rule(id=1, every_s=120, hold_s=10),
+       rule(id=2, preset="SHOW", every_s=60, hold_s=15, enabled=False)]
+ok(hc.timer_phases(off) == {1: 0},
+   "a paused rule is not scheduled around", str(hc.timer_phases(off)))
+
+# 97 s against 60 s share no useful common multiple: some collision is
+# unavoidable. The placement must still beat the naive all-at-zero.
+odd = pair + [rule(id=3, preset="IDENT", every_s=97, hold_s=8)]
+ph = hc.timer_phases(odd)
+_, hits_phased = collisions(odd, ph)
+_, hits_zero = collisions(odd, {1: 0, 2: 0, 3: 0})
+ok(hits_phased < hits_zero,
+   "periods that cannot all miss forever still miss far more often",
+   f"{hits_phased} collisions phased vs {hits_zero} at phase 0")
+
+print("\n[timers] the search is cheap enough to sit on a request")
+many = [rule(id=i + 1, preset="IDENT", every_s=60 + 30 * i, hold_s=10)
+        for i in range(8)]
+_t0 = time.perf_counter()
+hc.timer_phases(many)
+_ms = (time.perf_counter() - _t0) * 1000
+ok(_ms < 400, "eight rules place in well under a second", f"{_ms:.0f} ms")
+
+print("\n[timers] restaging re-arms every rule off one epoch")
+st, cmds = fresh(), StubCmds()
+st.timers = pair
+hc.restage_timers(st)
+_now = hc.mono_us()
+due = {t["id"]: (st.timer_next[t["id"]] - _now) / 1e6 for t in pair}
+ok(abs(due[2] - 60) < 1.0 and abs(due[1] - (120 + st.timer_phase[1])) < 1.0,
+   "each first fire is a full period out, plus its offset", str(due))
+st.timers = [t for t in st.timers if t["id"] != 1]
+hc.restage_timers(st)
+ok(1 not in st.timer_next and 1 not in st.timer_phase,
+   "a deleted rule leaves nothing armed behind", str(st.timer_next))
+
 # --------------------------------------------------------------- persistence
 print("\n[timers] a hold must not become the persisted live pattern")
 st, cmds = fresh(), StubCmds()

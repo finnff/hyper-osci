@@ -307,6 +307,121 @@ def save_timers(timers):
         print(f"[timers] save failed: {e}", flush=True)
 
 
+# Spreading the rules out in time.
+#
+# Two idents can never be on air together -- there is one hold -- so an
+# overlap is not a double exposure, it is a queue: the second rule fires the
+# moment the first releases and the audience gets two stings back to back,
+# which reads as a fault. Rather than dropping one of the two rules (the
+# operator configured both, and the one that would go is the one they see
+# most), each rule gets a phase: "logos every 2 min for 10 s" and "artists
+# every 1 min for 15 s" become 0, 120, 240 and 37, 97, 157 instead of both
+# landing on 0, 120, 240. Only the gaps between rules matter, never the
+# absolute moment, so a phase is free to be anything.
+#
+# Best effort by construction: periods that share no useful common multiple
+# (97 s against 60 s) cannot all be made to miss forever. The placement takes
+# the best of what it can see, and timer_loop's queue is still underneath as
+# the thing that guarantees correctness.
+# Kept deliberately small. This is a search, and it runs on an HTTP thread on
+# a board whose stream loop wants state.lock every 5 ms -- so it is costed to
+# stay in the tens of milliseconds at the 8-rule cap, and it runs off a copy
+# with no lock held. Twelve fires each is far enough ahead to see any pattern
+# that repeats; anything beyond it is a schedule nobody will still be running.
+SCHED_WINDOWS = 12      # fire windows per rule considered when placing
+SCHED_CANDIDATES = 60   # phases tried per rule
+
+
+def _fire_windows(phase, period, dur, n=SCHED_WINDOWS):
+    return [(phase + k * period, phase + k * period + dur) for k in range(n)]
+
+
+def _placement_score(cands, placed):
+    """How well a candidate phase sits against the rules already placed.
+
+    -> (smallest gap, -collisions, when the first collision happens), ordered
+    so that bigger is better. Three parts because the first one alone ties
+    badly: periods that share no useful common multiple (97 s against 60 s)
+    collide somewhere in every phase, and with only the gap to go on the
+    search then picks phase 0 -- the two rules firing together on the very
+    first pass, which is the one collision the operator is guaranteed to see.
+    """
+    worst = None
+    hits = 0
+    first = None
+    for a0, a1 in cands:
+        for b0, b1 in placed:
+            if a0 < b1 and b0 < a1:
+                gap = -(min(a1, b1) - max(a0, b0))
+                hits += 1
+                if first is None or a0 < first:
+                    first = a0
+            elif b0 >= a1:
+                gap = b0 - a1
+            else:
+                gap = a0 - b1
+            if worst is None or gap < worst:
+                worst = gap
+    return (worst if worst is not None else 0, -hits,
+            first if first is not None else float("inf"))
+
+
+def timer_phases(timers):
+    """Enabled rules -> {id: phase seconds} that keeps their holds apart.
+
+    Shortest period first (it has the most windows and the least room), then
+    each next rule takes the phase that scores best against everything already
+    placed -- the middle of the biggest gap, not merely the first spot that
+    fits, so a slider nudge later does not immediately collide.
+    """
+    rules = sorted((t for t in timers if t["enabled"] and t["preset"]),
+                   key=lambda t: (t["every_s"], t["id"]))
+    phases = {}
+    placed = []
+    for t in rules:
+        if not placed:
+            phases[t["id"]] = 0
+            placed = _fire_windows(0, t["every_s"], t["hold_s"])
+            continue
+        step = max(1, t["every_s"] // SCHED_CANDIDATES)
+        best_phase, best = 0, None
+        for phase in range(0, t["every_s"], step):
+            score = _placement_score(
+                _fire_windows(phase, t["every_s"], t["hold_s"]), placed)
+            if best is None or score > best:
+                best_phase, best = phase, score
+        phases[t["id"]] = best_phase
+        placed += _fire_windows(best_phase, t["every_s"], t["hold_s"])
+    return phases
+
+
+def restage_timers(state):
+    """Re-phase every enabled rule against a common epoch.
+
+    Called whenever the rule set changes, never per tick: the phases are only
+    meaningful relative to each other, so they all have to be laid out in one
+    pass off the same `now`. First fire is a full period out, as before -- a
+    restart must not fire into a rig someone is still cabling up.
+
+    Caller must NOT hold state.lock: the placement is a search, and the stream
+    loop wants that lock every 5 ms. It runs off a copy, and only the write
+    back is locked.
+    """
+    with state.lock:
+        rules = [dict(t) for t in state.timers]
+    phases = timer_phases(rules)
+    now = mono_us()
+    with state.lock:
+        state.timer_phase = phases
+        live = {t["id"] for t in state.timers}
+        for t in state.timers:
+            if t["id"] in phases:
+                state.timer_next[t["id"]] = now + (
+                    t["every_s"] + phases[t["id"]]) * 1_000_000
+        for tid in [i for i in state.timer_next if i not in live]:
+            state.timer_next.pop(tid)
+
+
 # ---------------------------------------------------------------------------
 # Per-node policy and the pair cycles.
 #
@@ -396,7 +511,7 @@ CYCLE_SEED = {
                 ["Eastern Distributor", "Gan D"],
                 ["Guild Navigator", "Liso"]],
 }
-CYCLE_DEFAULTS = {"enabled": False, "show_s": 30, "pause_s": 0, "idx": 0}
+CYCLE_DEFAULTS = {"enabled": False, "show_s": 5, "pause_s": 0, "idx": 0}
 
 
 def clean_cycle(c, group):
@@ -938,11 +1053,13 @@ def timer_loop(state, cmds, tick=0.25):
                 for t in state.timers:
                     if not t["enabled"]:
                         continue
-                    # First sight of a rule schedules it a full period out: a
-                    # restart must not fire into a rig someone is still
-                    # cabling up.
+                    # First sight of a rule schedules it a full period out
+                    # (plus its phase): a restart must not fire into a rig
+                    # someone is still cabling up.
                     nxt = state.timer_next.setdefault(
-                        t["id"], now + t["every_s"] * 1_000_000)
+                        t["id"], now + (t["every_s"]
+                                        + state.timer_phase.get(t["id"], 0))
+                        * 1_000_000)
                     if nxt <= now:
                         due = dict(t)
                         break
@@ -963,7 +1080,16 @@ def timer_loop(state, cmds, tick=0.25):
                 # never stomp a due time an HTTP save/toggle just set.
                 if any(x["id"] == due["id"] for x in state.timers) \
                         and state.timer_next.get(due["id"], 0) <= now:
-                    state.timer_next[due["id"]] = now + delay
+                    # Step the grid, not the clock: counting the next period
+                    # from "when the fire actually happened" lets a rule that
+                    # waited behind a hold walk forward a little every cycle,
+                    # and the phases that keep two rules apart are gone within
+                    # an evening. Fall back to now only if the grid is behind
+                    # (a long mute, a clock the rule slept through).
+                    prev = state.timer_next.get(due["id"], now)
+                    nxt = prev + delay
+                    state.timer_next[due["id"]] = (nxt if nxt > now
+                                                   else now + delay)
 
 
 # A commanded mode is only confirmed by the slave's next STATUS beacon, which
@@ -1171,6 +1297,10 @@ class State:
         # restart starts its period from boot rather than firing immediately
         # into a rig someone is still cabling up.
         self.timer_next = {}
+        # id -> seconds of offset from the common epoch, so two rules whose
+        # periods would land together are pulled apart (see timer_phases).
+        # Staged at boot so a restart comes back on the spread it had.
+        self.timer_phase = timer_phases(self.timers)
         # None, or the rule currently interrupting the show:
         # {"id", "preset", "targets", "until_us",
         #  "pattern": pre-hold live snapshot}
@@ -1235,10 +1365,13 @@ class State:
                            for s in self.slaves.values()],
                 "net": {"iface": self.net_iface, "egress": self.net_egress,
                         "tx": self.net_tx},
-                "timers": [dict(t, next_in=(
-                    None if not t["enabled"] else
-                    max(0, (self.timer_next.get(t["id"], now) - now) // 1000000)
-                )) for t in self.timers],
+                "timers": [dict(
+                    t,
+                    next_in=(None if not t["enabled"] else
+                             max(0, (self.timer_next.get(t["id"], now) - now)
+                                 // 1000000)),
+                    phase=self.timer_phase.get(t["id"], 0),
+                ) for t in self.timers],
                 "hold": None if not self.timer_hold else {
                     "id": self.timer_hold["id"],
                     "preset": self.timer_hold["preset"],
@@ -3070,7 +3203,10 @@ function renderTimers() {
 
     html += '<tr>' +
       '<td>"' + esc(t.preset) + '" on ' + esc(who) + '</td>' +
-      '<td>' + t.hold_s + 's every ' + (t.every_s >= 60 ? (t.every_s/60).toFixed(1) + ' min' : t.every_s + 's') + '</td>' +
+      '<td>' + t.hold_s + 's every ' + (t.every_s >= 60 ? (t.every_s/60).toFixed(1) + ' min' : t.every_s + 's') +
+        /* Say the shift out loud. A rule quietly running 37 s off the one
+           above it looks like a bug the first time someone times it. */
+        (t.phase ? '<br><span style="color:var(--dim);font-size:11px">offset +' + t.phase + 's to clear the others</span>' : '') + '</td>' +
       '<td>' + when + '</td>' +
       '<td>' +
         '<button class="' + (t.enabled ? 'on' : 'off') + '" onclick="timerOp(\\'toggle\\',' + t.id + ')">' + (t.enabled ? 'ON' : 'OFF') + '</button> ' +
@@ -3815,24 +3951,25 @@ def make_http_handler(state, cmds):
                                 state.next_timer_id += 1
                                 state.timers.append(t)
                         if not full:
-                            # Re-arm to a full period out, so tweaking "every"
-                            # at 4m59s does not fire the moment you let go --
-                            # and so the countdown the page draws is right
-                            # immediately, not from timer_loop's next tick.
-                            state.timer_next[t["id"]] = (
-                                mono_us() + t["every_s"] * 1_000_000)
                             tlist = list(state.timers)
                 if missing:
                     return self._json({"err": "no such preset"}, 404)
                 if full:
                     return self._json({"err": f"max {TIMERS_MAX} timers"}, 400)
+                # Re-phase the whole set, not just this rule: the offsets that
+                # keep two idents from queueing are relative, so changing one
+                # period re-opens the question for all of them. Off the lock —
+                # it is a search. It also re-arms a full period out, so
+                # tweaking "every" at 4m59s does not fire as you let go.
+                restage_timers(state)
                 save_timers(tlist)
                 # W8: echo the clamped period back, so a page that asked for
                 # 2 s and got the 10 s minimum shows 10 s instead of quietly
                 # drawing a schedule the controller is not running.
                 return self._json({"ok": True, "id": t["id"],
                                    "every_s": t["every_s"],
-                                   "hold_s": t["hold_s"]})
+                                   "hold_s": t["hold_s"],
+                                   "phase": state.timer_phase.get(t["id"], 0)})
             try:
                 tid = int(body.get("id", 0))
             except (TypeError, ValueError):
@@ -3857,15 +3994,10 @@ def make_http_handler(state, cmds):
                 if op == "delete":
                     state.timers = [x for x in state.timers
                                     if x["id"] != tid]
-                    state.timer_next.pop(tid, None)
                 else:
                     for x in state.timers:
                         if x["id"] == tid:
                             x["enabled"] = not x["enabled"]
-                            # Un-pausing waits a full period rather than
-                            # firing off whatever due time went stale.
-                            state.timer_next[tid] = (
-                                mono_us() + x["every_s"] * 1_000_000)
                 tlist = list(state.timers)
                 # Read under the same lock that took tlist. Tested and
                 # subscripted as two separate unlocked reads, a hold expiring
@@ -3873,6 +4005,11 @@ def make_http_handler(state, cmds):
                 # operator's tap, mid-show.
                 stuck = (state.timer_hold is not None
                          and state.timer_hold["id"] == tid)
+            # Both ops change which rules are in the running, so both re-open
+            # the phasing. Off the lock, like the save path. Un-pausing
+            # therefore waits a full period rather than firing off whatever
+            # due time went stale.
+            restage_timers(state)
             # A rule deleted or switched off mid-hold must not leave the show
             # stuck on its preset.
             if stuck:
