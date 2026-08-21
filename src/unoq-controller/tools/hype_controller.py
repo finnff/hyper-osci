@@ -1900,15 +1900,18 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <div class="row">
         <label>show every</label>
         <input type="number" id="cyc-every" min="0.2" max="1440" step="any"
-               style="width:80px">
+               style="width:80px" oninput="cycTouched()"
+               onchange="applyCycleTimes()">
         <span style="color:var(--dim)">min — mic in between</span>
       </div>
       <div class="row">
         <label>each name for</label>
-        <input type="number" id="cyc-show" min="3" max="600" style="width:72px">
+        <input type="number" id="cyc-show" min="3" max="600" style="width:72px"
+               oninput="cycTouched()" onchange="applyCycleTimes()">
         <span style="color:var(--dim)">s</span>
         <label style="width:auto">mic between them</label>
-        <input type="number" id="cyc-pause" min="0" max="600" style="width:72px">
+        <input type="number" id="cyc-pause" min="0" max="600" style="width:72px"
+               oninput="cycTouched()" onchange="applyCycleTimes()">
         <span style="color:var(--dim)">s (0 = none)</span>
         <button onclick="applyCycleTimes()">Apply</button>
       </div>
@@ -1957,6 +1960,10 @@ var lastKnownState = null;
 var activeSlaveSheet = null;
 /* The settings sheet's group, or null when it is closed. */
 var activeCycleGroup = null;
+/* A number in the sheet the operator has changed but the board has not
+   confirmed yet, and the timer that will send it. */
+var cycDirty = false;
+var cycCommit = null;
 var editModeOn = false;
 var renameTarget = null;
 var renameNewName = null;
@@ -2940,10 +2947,14 @@ function openCycleSheet(group) {
   document.getElementById('cycle-title').textContent =
     group === 'logos' ? 'LOGO SETTINGS' : 'ARTIST SETTINGS';
   document.getElementById('cycle-sheet').classList.add('active');
+  cycClearEdit();
   renderCycleSheet(true);
 }
 
 function closeCycleSheet() {
+  /* Commit before the group goes away, or shutting the sheet on a number you
+     just typed throws it away. setCycle reads activeCycleGroup up front. */
+  if (cycDirty) applyCycleTimes();
   document.getElementById('cycle-sheet').classList.remove('active');
   activeCycleGroup = null;
 }
@@ -2953,17 +2964,44 @@ function cycleCfg() {
   return S.cycles[activeCycleGroup];
 }
 
+function cycClearEdit() {
+  cycDirty = false;
+  if (cycCommit) { clearTimeout(cycCommit); cycCommit = null; }
+}
+
+/* An edited number belongs to the operator until it is committed. The 1 Hz
+   poll used to overwrite these three fields the moment focus left them, so a
+   value typed and not Applied vanished with nothing said -- it read as the
+   panel refusing the edit. Mark the field dirty (renderCycleSheet then leaves
+   it alone) and send it shortly after the typing stops. */
+function cycTouched() {
+  cycDirty = true;
+  if (cycCommit) clearTimeout(cycCommit);
+  cycCommit = setTimeout(function() { applyCycleTimes(true); }, 700);
+}
+
 function setCycle(patch) {
   if (!activeCycleGroup) return;
   patch.group = activeCycleGroup;
   post("/api/cycle", patch).then(function() { return refresh(); })
-    .then(function() { renderCycleSheet(true); });
+    .then(function() { cycClearEdit(); renderCycleSheet(true); });
 }
 
-function applyCycleTimes() {
-  setCycle({show_s: +document.getElementById('cyc-show').value,
-            pause_s: +document.getElementById('cyc-pause').value,
-            every_s: Math.round(+document.getElementById('cyc-every').value * 60)});
+function applyCycleTimes(auto) {
+  if (cycCommit) { clearTimeout(cycCommit); cycCommit = null; }
+  var every = parseFloat(document.getElementById('cyc-every').value);
+  var show = parseFloat(document.getElementById('cyc-show').value);
+  var pause = parseFloat(document.getElementById('cyc-pause').value);
+  if (!isFinite(every) || !isFinite(show) || !isFinite(pause)) {
+    /* Half-typed: the field is empty because a number is being replaced.
+       Posting now would send a 0 and get back whatever the clamp allows. On
+       the timer, wait. On a blur or Apply, put the stored value back. */
+    if (auto) { cycDirty = true; return; }
+    cycClearEdit();
+    renderCycleSheet(true);
+    return;
+  }
+  setCycle({show_s: show, pause_s: pause, every_s: Math.round(every * 60)});
 }
 
 function addCyclePair() {
@@ -3015,7 +3053,7 @@ function renderCycleSheet(force) {
   var seg = document.getElementById('cyc-onoff').querySelectorAll('button');
   seg[0].classList.toggle('on', !!c.enabled);
   seg[1].classList.toggle('on', !c.enabled);
-  if (force || !typing) {
+  if (force || (!typing && !cycDirty)) {
     document.getElementById('cyc-show').value = c.show_s;
     document.getElementById('cyc-pause').value = c.pause_s;
     document.getElementById('cyc-every').value = +(c.every_s / 60).toFixed(2);
