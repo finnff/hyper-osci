@@ -58,6 +58,8 @@ Concurrency contracts:
 ```
             short press: NETWORK → LOCAL → HYBRID → NETWORK
                      (also settable via JSON cmd / console)
+            long press:  WiFi off/on — radio stopped, mode pinned LOCAL,
+                         until the next boot (never persisted)
 
  NETWORK: pull_block ok ────────────▶ play stream       (source = network)
           fail, stream live (<1 s) ─▶ concealment ladder (hold → center)
@@ -68,6 +70,8 @@ Concurrency contracts:
 ```
 
 There is no explicit "fallback state" to enter or leave — the decision is re-made per 5 ms block, so recovery is automatic the moment the buffer refills; the 1 s liveness threshold plus the jitter-buffer start gate provide the hysteresis that keeps imagery from flapping. This satisfies the v3.1 hard requirement: power the unit on with no controller anywhere and it's a standalone mic visualizer within ~6 s (5 s WiFi timeout + 1 s stream timeout).
+
+**WiFi off (MODE long press / `wifi off`).** `mode_manager::set_wifi_enabled(false, reason)` is the only path that moves radio and mode together: `net_rx::set_radio(false)` → `net_task` sends one last STATUS (already carrying `mode=LOCAL`, so the controller's `mode != LOCAL` target filter drops this unit from the unicast fan-out in ~1 s instead of after its 30 s roster eviction), then `esp_wifi_stop` + deinit; mode goes LOCAL, the local pattern resets to `MIC`, and short presses stay pinned to LOCAL while the radio is down. **Nothing is persisted**: every boot starts with the radio on — the only exception is holding MODE *during* power-on, which is a deliberate act, not a state a power cut can restore. The low-battery cutout at 3.30 V takes the same path with `reason="battery"`, so a recharged unit comes back streaming simply because every boot does. `stat` reports the cause (`button` / `console` / `battery` / `boot-hold`), which is what distinguishes a deliberate silence from a flat cell.
 
 ## 5. Jitter buffer & clock discipline
 
@@ -91,6 +95,7 @@ Faithful port of the proven `esp32c3SIGMADELTA` unit:
 | Condition | Behavior |
 |-----------|----------|
 | No WiFi at boot | 5 s timeout → LOCAL rendering (radio keeps retrying in background) |
+| MODE held during power-on | radio never started this boot (no `esp_wifi_init`), LOCAL, NET LED off, banner `wifi=off (MODE held at boot)` — a plain reboot clears it |
 | Stream stops >1 s | auto-fallback per block; NET LED 5 Hz blink |
 | Controller clock never seen | stream still plays (depth-gated only, no deadline policy) — degraded but functional |
 | vbat < 3.45 V | blue LED triple-blink warning |

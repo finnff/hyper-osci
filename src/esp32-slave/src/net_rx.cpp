@@ -267,6 +267,11 @@ void net_task(void*) {
   for (;;) {
     if (!g_radio_on) {
       if (g_wifi_up || connecting) {
+        // Say goodbye while the radio is still up: this STATUS carries
+        // mode=LOCAL, so the controller's target filter drops us from the
+        // audio fan-out on its next tick (~1 s) instead of waiting out its
+        // 30 s roster eviction with 200 pkt/s aimed at a dead station.
+        if (g_wifi_up) send_status();
         on_wifi_down();
         WiFi.disconnect(true, false);
         WiFi.mode(WIFI_OFF);

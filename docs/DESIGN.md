@@ -119,9 +119,9 @@ Key electrical facts (⚠️ VERIFY items covered in verification checklist §12
 
 | Action | Effect |
 |--------|--------|
-| MODE short press | cycle NETWORK → LOCAL → HYBRID |
-| MODE long press (≥2 s) | toggle WiFi radio (battery save / force standalone) |
-| MODE held at power-on | boot straight into LOCAL, WiFi off |
+| MODE short press | cycle NETWORK → LOCAL → HYBRID (pinned to LOCAL while the radio is off — every mode renders the mic there, and the amber LED must not claim a stream is expected) |
+| MODE long press (≥2 s) | **WiFi off/on**: stops the radio outright (`esp_wifi_stop` + deinit, ~70 mA) and forces LOCAL. **Session-only — never persisted:** every boot starts with WiFi on, so a power cut, brownout or reset always comes back streaming. Signature while off: NET green off + MODE amber solid; `stat` names the cause, e.g. `wifi=off(button)` |
+| MODE held at power-on | boot straight into LOCAL, WiFi off — this boot only; a plain reboot comes back on WiFi |
 | BOOT short press (after boot) | cycle local test pattern (mic → circle → Lissajous → ramp → square; ramp = §12 DC test, square = §12 ringing test) |
 
 **Pot (10 kΩ, GPIO3):** in LOCAL/HYBRID modes sets the Y-channel low-pass cutoff (20–300 Hz), exactly like the old unit. Ignored in pure NETWORK mode (reserved for a future streamed-effect parameter).

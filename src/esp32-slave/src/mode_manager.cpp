@@ -22,6 +22,10 @@ volatile uint8_t g_active_source = 0;
 // instant reports "local" for a whole second (UI flaps to "stream lost").
 volatile uint32_t g_last_net_ms = 0;
 uint8_t g_slave_id = 0;
+// Why the radio is currently off ("button" / "console" / "battery" /
+// "boot-hold"), or nullptr while it is on. Diagnostics only — the radio state
+// itself is never persisted.
+const char* g_radio_off_reason = nullptr;
 Preferences prefs;
 
 int16_t mix_buf[AUDIO_BLOCK_FRAMES * 2];
@@ -69,14 +73,43 @@ void fill_conceal(int16_t* frames, size_t frame_count) {
 
 namespace mode_manager {
 
-void init(Mode boot_mode) {
-  g_mode = boot_mode;
+bool init(bool force_local) {
   prefs.begin("hyperosci", false);
+  // The radio state is deliberately NOT persisted: a power cut, brownout or
+  // reset must always come back with WiFi ON. Only the 2 s MODE press (or the
+  // console) turns it off, and only until the next boot. `wifi_off` was an
+  // earlier persisted latch — remove it so units already carrying that key
+  // don't come up silent.
+  prefs.remove("wifi_off");
+  g_mode = force_local ? Mode::LOCAL : Mode::NETWORK;
+  if (force_local) g_radio_off_reason = "boot-hold";
   uint8_t mac[6] = {0};
   esp_read_mac(mac, ESP_MAC_WIFI_STA);  // works before WiFi init
   g_slave_id = prefs.getUChar("slave_id", mac[5]);  // default: MAC last octet
   audio_out::set_gain(prefs.getFloat("gain", 1.0f));
+  return !force_local;
 }
+
+void set_wifi_enabled(bool on, const char* reason) {
+  net_rx::set_radio(on);
+  // Mode follows the radio: with the radio stopped, NETWORK/HYBRID would
+  // render the mic anyway while the LEDs claimed a stream was expected. LOCAL
+  // also lands in the next STATUS, which is what makes the controller drop
+  // this unit from its audio fan-out (mode != LOCAL filter) on its next tick.
+  set_mode(on ? Mode::NETWORK : Mode::LOCAL);
+  if (on) {
+    g_radio_off_reason = nullptr;
+  } else {
+    // Mic-only means the mic: drop whatever bring-up test pattern was
+    // selected, so the gesture always lands on the mic pattern.
+    renderer_local::set_pattern(renderer_local::Pattern::MIC);
+    g_radio_off_reason = reason;
+  }
+}
+
+bool wifi_enabled() { return net_rx::radio_enabled(); }
+
+const char* radio_off_reason() { return g_radio_off_reason; }
 
 void set_mode(Mode m) {
   // Entering LOCAL: drop any buffered stream audio. The controller stops
@@ -89,16 +122,22 @@ void set_mode(Mode m) {
 Mode mode() { return g_mode; }
 
 void cycle_mode() {
-  // NETWORK -> LOCAL -> HYBRID -> NETWORK (DESIGN.md §7 button spec)
+  // NETWORK -> LOCAL -> HYBRID -> NETWORK (DESIGN.md §7 button spec), via
+  // set_mode() so entering LOCAL flushes the jitter buffer exactly as the
+  // console and network paths do.
+  if (!net_rx::radio_enabled()) {
+    set_mode(Mode::LOCAL);  // radio is off: nothing else would be honest
+    return;
+  }
   switch (g_mode) {
     case Mode::NETWORK:
-      g_mode = Mode::LOCAL;
+      set_mode(Mode::LOCAL);
       break;
     case Mode::LOCAL:
-      g_mode = Mode::HYBRID;
+      set_mode(Mode::HYBRID);
       break;
     default:
-      g_mode = Mode::NETWORK;
+      set_mode(Mode::NETWORK);
       break;
   }
 }

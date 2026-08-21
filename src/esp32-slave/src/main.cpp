@@ -49,9 +49,9 @@ void setup() {
 
   ui::init();  // must be first: samples "MODE held at boot"
 
-  const bool boot_local = ui::boot_local_requested();
-  mode_manager::init(boot_local ? mode_manager::Mode::LOCAL
-                                : mode_manager::Mode::NETWORK);
+  // MODE held at power-on forces mic-only for this boot only; nothing else
+  // can start a boot with the radio down.
+  const bool radio_on = mode_manager::init(ui::boot_local_requested());
 
   // I2S before ADC: both allocate GDMA/interrupt resources; probing which one
   // loses the race when they contend (bring-up).
@@ -60,15 +60,16 @@ void setup() {
   renderer_local::init();
 
   net_rx::set_cmd_handler(mode_manager::handle_command);
-  net_rx::init(!boot_local);  // radio off when booted into forced-local
+  net_rx::init(radio_on);
 
   // Audio gets the highest priority in the system after WiFi internals.
   // (4096 is plenty: stack HWM measured ~90% free during the 2026-07-18
   // wedge forensics — the 8192 experiment ruled out stack overflow.)
   xTaskCreate(audio_task, "audio", 4096, nullptr, 10, &g_audio_task);
 
-  Serial.printf("HYPEROSCI slave id=%u mode=%s — 'help' for console\n",
-                mode_manager::slave_id(), mode_manager::mode_name());
+  Serial.printf("HYPEROSCI slave id=%u mode=%s wifi=%s — 'help' for console\n",
+                mode_manager::slave_id(), mode_manager::mode_name(),
+                radio_on ? "on" : "off (MODE held at boot)");
 }
 
 void loop() {

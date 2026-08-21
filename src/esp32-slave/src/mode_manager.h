@@ -10,11 +10,21 @@ namespace mode_manager {
 
 enum class Mode : uint8_t { LOCAL = 0, NETWORK = 1, HYBRID = 2 };
 
-void init(Mode boot_mode);
+// Boot-time setup. `force_local` = MODE held at power-on (DESIGN §7). Returns
+// true if the radio should be started — false only for that hold, which is
+// the one gesture that can start a boot mic-only. Nothing is persisted.
+bool init(bool force_local);
 
 void set_mode(Mode m);
 Mode mode();
 void cycle_mode();
+
+// DESIGN §7 MODE long press: radio and mode move together — off means the
+// radio is stopped (not just idle) and rendering is mic-only. Session-only by
+// design: every boot starts with WiFi ON, whatever a power cut interrupted.
+void set_wifi_enabled(bool on, const char* reason = "button");
+bool wifi_enabled();
+const char* radio_off_reason();  // nullptr while the radio is on
 const char* mode_name();
 
 // Fill one block from the active source. Returns the source actually used:

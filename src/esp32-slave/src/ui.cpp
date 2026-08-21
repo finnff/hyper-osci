@@ -141,8 +141,9 @@ void battery_policy() {
 
   if (mv < VBAT_WIFI_OFF_MV && net_rx::radio_enabled()) {
     Serial.printf("[batt] %u mV — radio off, forcing LOCAL\n", mv);
-    net_rx::set_radio(false);
-    mode_manager::set_mode(mode_manager::Mode::LOCAL);
+    // Same path as the button now that nothing is persisted: a recharged unit
+    // boots back into NETWORK because *every* boot does.
+    mode_manager::set_wifi_enabled(false, "battery");
   }
 
   if (mv < VBAT_SLEEP_MV) {
@@ -176,9 +177,17 @@ void print_stat() {
                 mode_manager::active_source() ? "network" : "local",
                 renderer_local::pattern_name(),
                 (double)renderer_local::current_lpf_hz());
-  Serial.printf("wifi=%s ps=%s stream=%s rssi=%d ip=%s\n",
-                s.wifi_up ? "up" : "down", net_rx::ps_mode(),
-                s.stream_up ? "up" : "down", s.rssi_dbm,
+  // Name *why* the radio is down — the button, the power-on MODE hold and the
+  // low-battery cutout all read "off" but need different actions.
+  char wifi_txt[20];
+  if (net_rx::radio_enabled()) {
+    snprintf(wifi_txt, sizeof(wifi_txt), "%s", s.wifi_up ? "up" : "down");
+  } else {
+    const char* why = mode_manager::radio_off_reason();
+    snprintf(wifi_txt, sizeof(wifi_txt), "off(%s)", why != nullptr ? why : "?");
+  }
+  Serial.printf("wifi=%s ps=%s stream=%s rssi=%d ip=%s\n", wifi_txt,
+                net_rx::ps_mode(), s.stream_up ? "up" : "down", s.rssi_dbm,
                 WiFi.localIP().toString().c_str());
   Serial.printf("rx=%lu drop=%lu gaps=%lu lost=%lu underrun=%lu depth=%u frames\n",
                 (unsigned long)s.rx_packets, (unsigned long)s.rx_dropped,
@@ -238,8 +247,10 @@ void handle_line(char* line) {
     audio_out::set_gain((float)atoi(arg) / 100.0f);
     Serial.printf("gain=%.2f\n", (double)audio_out::gain());
   } else if (strcmp(cmd, "wifi") == 0 && arg != nullptr) {
-    net_rx::set_radio(strcmp(arg, "on") == 0);
-    Serial.printf("wifi=%s\n", net_rx::radio_enabled() ? "on" : "off");
+    mode_manager::set_wifi_enabled(strcmp(arg, "on") == 0, "console");
+    Serial.printf("wifi=%s mode=%s\n",
+                  mode_manager::wifi_enabled() ? "on" : "off",
+                  mode_manager::mode_name());
   } else if (strcmp(cmd, "id") == 0 && arg != nullptr) {
     mode_manager::set_slave_id((uint8_t)atoi(arg));
     Serial.printf("id=%u\n", mode_manager::slave_id());
@@ -304,9 +315,14 @@ void poll() {
       Serial.printf("[btn] mode=%s\n", mode_manager::mode_name());
       break;
     case 2:
-      net_rx::set_radio(!net_rx::radio_enabled());
-      Serial.printf("[btn] wifi=%s\n",
-                    net_rx::radio_enabled() ? "on" : "off");
+      // Radio fully off (esp_wifi_stop + deinit in net_task), mic-only —
+      // sheds ~70 mA and this unit's 200 pkt/s share of the controller's
+      // unicast fan-out. Holds until the button says otherwise or the unit
+      // reboots; a power cut always comes back with WiFi on.
+      mode_manager::set_wifi_enabled(!mode_manager::wifi_enabled());
+      Serial.printf("[btn] wifi=%s mode=%s\n",
+                    mode_manager::wifi_enabled() ? "on" : "off",
+                    mode_manager::mode_name());
       break;
   }
   if (button_poll(btn_boot, false) == 1) {
