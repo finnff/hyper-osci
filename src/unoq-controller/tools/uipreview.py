@@ -42,7 +42,7 @@ def base_state():
         "pattern": {"kind": "text", "freq": 50.0, "amp": 0.9, "a": 3, "b": 2,
                     "text": "HYPERWAVES", "font": "duplex",
                     "pulse_rate": 1.2, "pulse_depth": 0.0, "rot": -0.01,
-                    "flip_x": False, "flip_y": False, "tver": 373},
+                    "flip_x": False, "flip_y": False, "sver": 373},
         "presets": list(PRESETS),
         "stream_on": True,
         "slaves": [
@@ -129,10 +129,10 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         elif self.path == "/api/state":
             self._json(st)
-        elif self.path.startswith("/api/textpreview"):
+        elif self.path.startswith("/api/shapepreview"):
             pts = [[i / 32 - 1, 0.5 * (1 if (i // 8) % 2 else -1)]
                    for i in range(64)]
-            self._json({"ver": st["pattern"]["tver"], "pts": pts})
+            self._json({"ver": st["pattern"]["sver"], "pts": pts})
         else:
             self._json({"err": "not found"}, 404)
 
@@ -161,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"err": f"{k} must be a number"}, 400)
                 st["pattern"][k] = body[k]
         if "text" in body or "font" in body:
-            st["pattern"]["tver"] += 1
+            st["pattern"]["sver"] += 1
         if "stream_on" in body:
             st["stream_on"] = bool(body["stream_on"])
         return self._json({"ok": True})

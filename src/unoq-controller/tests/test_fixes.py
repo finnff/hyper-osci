@@ -45,7 +45,7 @@ print("\n[1.1] OverflowError: text + spin + amp")
 worst = []
 for txt in ("W", "H", "LIVE|SET|2026", "HYPEROSCI", "M", "I") + tuple(NAMES):
     for f in FONTS:
-        tbl, rmax = hc.build_text(txt, f)
+        tbl, rmax = hc.build_shape("text", txt, f)
         if not tbl:
             continue
         worst.append((rmax, txt, f))
@@ -67,7 +67,7 @@ print(f"       worst rmax = {worst[0][0]:.3f} ({worst[0][1]!r}/{worst[0][2]})"
       f"  -> old ceiling amp {32767/(32000*worst[0][0]):.3f}")
 
 # the guard must not shrink anything that was already safe
-tbl, rmax = hc.build_text("HYPEROSCI", "simplex")
+tbl, rmax = hc.build_shape("text", "HYPEROSCI", "simplex")
 g = hc.PatternGen()
 b = g.block(240, params(tbl, rmax, 1.0))
 peak = max(abs(v) for v in memoryview(b).cast("h"))
@@ -78,7 +78,7 @@ ok(32767 / rmax > 32000 and peak == 28800,
    f"rmax={rmax:.3f} ceiling={32767/rmax:.0f} > amp=32000, peak={peak}")
 
 # and it must actually clamp the unsafe one, not merely avoid raising
-tbl, rmax = hc.build_text("W", "times")
+tbl, rmax = hc.build_shape("text", "W", "times")
 g = hc.PatternGen()
 peak = 0
 for _ in range(200):
@@ -90,7 +90,7 @@ ok(32000 < peak <= 32767, "clamped output still uses the full int16 range",
 # ------------------------------------------------------------------ 1.2 rot
 print("\n[1.2] rot resets when spin returns to 0")
 g = hc.PatternGen()
-tbl, rmax = hc.build_text("HYPEROSCI", "simplex")
+tbl, rmax = hc.build_shape("text", "HYPEROSCI", "simplex")
 for _ in range(37):
     g.block(240, params(tbl, rmax, 0.8, rot_speed=0.5))
 spun = g.rot
@@ -137,7 +137,7 @@ try:
     hc.save_presets(ps)
     ok(len(hc.load_presets()) == 4, "round-trip keeps all four")
     # and a bad font must not silently become a circle
-    tbl, _ = hc.build_text(ps[2]["text"], ps[2]["font"])
+    tbl, _ = hc.build_shape("text", ps[2]["text"], ps[2]["font"])
     r = [math.hypot(x, y) for x, y in tbl]
     ok(max(r) - min(r) > 0.2, "loaded preset draws text, not a circle",
        f"radius spread {min(r):.3f}..{max(r):.3f}")
@@ -156,15 +156,17 @@ H = hc.make_http_handler(st, None)
 inst = H.__new__(H)
 inst._json = lambda obj, code=200: obj
 inst._apply_pattern(st, {"text": "one"},
-                    ("one", "gothic") + hc.build_text("one", "gothic"))
+                    ("one", "gothic", "") + hc.build_shape("text", "one",
+                                                           "gothic"))
 ok(st.text == "one" and st.font == "simplex",
    "a text-only POST does not write font back",
    f"text={st.text!r} font={st.font!r}")
 inst._apply_pattern(st, {"font": "times"},
-                    ("one", "times") + hc.build_text("one", "times"))
+                    ("one", "times", "") + hc.build_shape("text", "one",
+                                                          "times"))
 ok(st.font == "times" and st.text == "one", "a font-only POST sets only font")
-ok(st.text_rmax > 0, "rmax travels with every table write",
-   f"{st.text_rmax:.3f}")
+ok(st.shape_rmax > 0, "rmax travels with every table write",
+   f"{st.shape_rmax:.3f}")
 
 # concurrency: two overlapping rebuilds must not lose either field
 st = hc.State("text")
@@ -178,7 +180,8 @@ def poke(body, tf):
                 text, font = st.text, st.font
             text = body.get("text", text)
             font = body.get("font", font)
-            inst._apply_pattern(st, body, (text, font) + hc.build_text(text, font))
+            inst._apply_pattern(st, body, (text, font, "")
+                                + hc.build_shape("text", text, font))
         with st.lock:
             if st.text != tf[0] or st.font not in hc.TEXT_FONTS:
                 errs.append((st.text, st.font))
@@ -197,7 +200,7 @@ print(f"  {'name':22s} {'font':8s} {'rmax':>5s} {'pts':>5s} {'L':>6s} "
       f"{'jump%':>6s} {'90Hz':>5s} {'40Hz':>5s}")
 for nm in NAMES:
     for f in ("simplex", "gothic"):
-        tbl, rmax = hc.build_text(nm, f)
+        tbl, rmax = hc.build_shape("text", nm, f)
         if not tbl:
             ok(False, f"{nm!r}/{f} renders")
             continue
@@ -214,9 +217,9 @@ for nm in NAMES:
 # '?' must not appear: Anémi has to be five real glyphs
 g_simplex = hc._jhf_glyphs(hc.TEXT_FONTS["simplex"])
 q_strokes = g_simplex[ord("?")][2]
-t_acc, _ = hc.build_text("Anémi", "simplex")
-t_plain, _ = hc.build_text("Anemi", "simplex")
-t_q, _ = hc.build_text("An?mi", "simplex")
+t_acc, _ = hc.build_shape("text", "Anémi", "simplex")
+t_plain, _ = hc.build_shape("text", "Anemi", "simplex")
+t_q, _ = hc.build_shape("text", "An?mi", "simplex")
 
 
 def sig(t):
@@ -229,14 +232,14 @@ ok(sig(t_acc) != sig(t_q), "'Anémi' is not rendered as 'An?mi'",
 ok(sig(t_acc) > sig(t_plain), "the acute adds ink over 'Anemi'",
    f"L(acc)={sig(t_acc)} L(plain)={sig(t_plain)}")
 for f in FONTS:
-    t, _ = hc.build_text("Anémi", f)
-    ok(t is not None and sig(t) > sig(hc.build_text("Anemi", f)[0]),
+    t, _ = hc.build_shape("text", "Anémi", f)
+    ok(t is not None and sig(t) > sig(hc.build_shape("text", "Anemi", f)[0]),
        f"accent composes in {f}")
 
 print("\n[extras] wider accent coverage")
 for s in ("ÀÁÂÃÄÅ", "àáâãäå", "çÇñÑ", "ïíìî", "õöøœ", "Straße", "Anémi—Liso",
           "  Gan D  ", "café ’n’ ñu"):
-    t, r = hc.build_text(s, "simplex")
+    t, r = hc.build_shape("text", s, "simplex")
     ok(t is not None and len(t) > 100, f"{s!r} renders", f"pts={len(t)} rmax={r:.3f}")
 
 # sanitizer must pass é through and still drop control chars

@@ -13,6 +13,7 @@ adb shell "cd /tmp/hcstage && python3 test_timers.py"   # interval-timer rules
 adb shell "cp /usr/local/sbin/hyperosci-netwatch /tmp/nw_mod.py && \
            cd /tmp && python3 test_netwatch.py"         # watchdog trigger logic
 adb shell "cd /tmp && python3 live_test.py"             # against the running daemon
+adb shell "cd /tmp/hcstage && python3 test_figure.py"   # kind=figure loader + the show's artwork
 ```
 
 `test_fixes.py`, `test_persist.py` and `test_timers.py` point
@@ -21,6 +22,10 @@ the controller. Keep it that way: `State()` restores the saved live pattern,
 so without the override a test inherits whatever is currently on the scopes
 (an assertion on a default field then fails for the wrong reason) and any
 test that saves would write the show's real preset file.
+
+`test_figure.py` overrides `HYPE_FIGURES` too, then re-points `hc.FIGURE_DIR`
+at the real `~/hype_figures` for a final read-only pass over whatever artwork
+is actually baked onto this board.
 
 `test_timers.py` drives `fire_timer`/`end_hold` directly with a stub
 `CmdSender` and fabricated slaves — no sockets, no HTTP, nothing bound on

@@ -684,7 +684,8 @@ pattern `kind="text"`.
   ASCII, ≤80 chars), `font`, `pulse_depth`/`pulse_rate` (amplitude LFO,
   osci-render's Scale+sine-LFO equivalent), `rot` (rev/s spin), plus the existing
   freq (redraws/s — 40–80 looks best) and amp. Canvas preview via
-  `GET /api/textpreview` (refetched when `pattern.tver` bumps).
+  `GET /api/shapepreview` (refetched when `pattern.sver` bumps; renamed from
+  `textpreview`/`tver` on 2026-08-21, when figures joined text on that table).
 - **Hot path:** text/font changes rebuild a 2000-point equal-arc-length table
   outside the state lock; the per-block loop is a table walk + rotate/scale
   (124 µs vs 94 µs for circle per 5 ms block on the dev box). Verified on
@@ -698,3 +699,40 @@ pattern `kind="text"`.
   (`POST /api/preset` op=save|load|delete), persisted at
   `/home/arduino/hype_presets.json` across restarts — made for pre-saving
   artist names and switching in one tap between stage acts.
+
+## Spin removed from the panel + SVG artwork on the scopes (2026-08-21)
+
+Two changes, both live on the board:
+
+- **Spin is gone from the dashboard.** The slider had been left at −1.0 rev/s
+  with the live preset saying 0, which is how the words ended up crooked. The
+  row is `display:none` and `disabled`; `rot` survives in the renderer, the
+  preset field and `POST /api/pattern`, so re-enabling is one line. All eight
+  presets were rewritten to `rot: 0.0` (backup:
+  `~/hype_presets.json.prespin-20260821-141535`; the daemon's own `.bak`
+  generation was left untouched).
+- **`kind="figure"`: baked SVG artwork.** `tools/bake_svg.py` runs off the
+  board and writes 2000 int16 XY pairs to `~/hype_figures/<name>.tbl`; the
+  daemon unpacks and caches it on (mtime, size). No XML parser on stage —
+  the route the feature-port study §5 recommended. The **HYPERWAVES** preset
+  is now the wordmark artwork instead of Hershey text.
+
+Measured on the board: block 605 µs figure / 652 µs text (5000 µs budget),
+cold `load_figure` 4.45 ms against a 6.17 ms warm `render_text` rebuild, so a
+figure switch is cheaper than a font switch and stays under the 20 ms
+re-anchor threshold. The show's figure draws L = 13.63 with 0.223 of beam
+travel as retrace (0.366 in document order — the baker reorders contours);
+Hershey `HYPERWAVES` in duplex measures 17.97 total travel, so the artwork is
+*less* beam travel than the text it replaced, i.e. no dimmer.
+
+A preset naming artwork this board does not carry keeps its name, draws a
+circle, says so in the dashboard and names it in the boot banner.
+
+**Flux Collective** followed the same route the same day
+(`figures/flux-collective.svg`, potrace-traced, 7 contours, retrace 0.294 →
+0.221 after reordering, block 606 µs). Both figures peak at 81% full scale
+because `rmax` normalisation scales each table to the same drawn radius —
+two logos, matched brightness, no per-preset amp fiddling at the desk. The
+preset keeps its old `text: "Flux\nCollective"` value even though `kind` is
+now `figure`: if the `.tbl` ever goes missing, one field flip puts the words
+back rather than a circle.

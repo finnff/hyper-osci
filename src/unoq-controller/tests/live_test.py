@@ -35,7 +35,7 @@ for nm in NAMES:
     post("/api/pattern", {"kind": "text", "text": nm, "font": "simplex",
                           "freq": 60, "amp": 0.8})
     s = get("/api/state")["pattern"]
-    pv = get("/api/textpreview")["pts"]
+    pv = get("/api/shapepreview")["pts"]
     r = [math.hypot(x, y) for x, y in pv]
     ok(s["text"] == nm and s["kind"] == "text" and len(pv) > 300
        and max(r) - min(r) > 0.2,
@@ -46,7 +46,7 @@ for f in ["simplex", "duplex", "script", "gothic", "times", "italic"]:
     post("/api/pattern", {"text": "Anémi", "font": f})
     s = get("/api/state")["pattern"]
     ok(s["font"] == f and s["text"] == "Anémi", f"Anémi in {f}",
-       f"tver={s['tver']}")
+       f"sver={s['sver']}")
 
 print("\n[live] §1.1 the crash that used to kill the daemon")
 post("/api/pattern", {"kind": "text", "text": "W", "font": "times",

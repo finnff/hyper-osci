@@ -32,6 +32,17 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    [docs/text-rendering-findings.md](../../docs/text-rendering-findings.md));
    the 5 ms hot loop only walks the table. osci-render itself was evaluated
    and **not** integrated (no headless entry point — same doc).
+   **SVG artwork** rides the same table under `kind="figure"`: a `.tbl` of
+   2000 int16 XY pairs, baked off the board by
+   [`tools/bake_svg.py`](tools/bake_svg.py) and dropped in `~/hype_figures/`
+   (`HYPE_FIGURES`). The daemon only unpacks it — no XML parser on stage, per
+   [§5 of the feature-port study](../../docs/osci-render-feature-port-feasibility.md).
+   Board cost: 4.5 ms to load and cache a figure against 6.2 ms for a warm
+   `render_text` rebuild, and the 5 ms block is 605 µs against text's 652 µs
+   (both ~12% of budget — the hot loop cannot tell them apart). The baker
+   traces centrelines, refuses a file with live `<text>` nodes instead of
+   dropping the words, and reorders contours to cut retrace (the show's
+   `hyperwaves` figure: 0.366 → 0.223 of beam travel).
 3. **Web UI** — single embedded page (stdlib `http.server`, port 8080,
    no external assets so it works on the AP without internet):
    <http://192.168.50.1:8080> (on `HYPEROSCI_AP`) or <http://10.42.0.5:8080>
@@ -83,7 +94,8 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
      known from its 1 Hz STATUS beacon, so firing inside that window would
      record the forced mode as the "previous" one and strand it on STREAM.
 
-HTTP API: `GET /api/state`, `GET /api/textpreview`; `POST /api/pattern`,
+HTTP API: `GET /api/state`, `GET /api/shapepreview` (the live point table,
+decimated — text and figure both); `POST /api/pattern`,
 `POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete),
 `POST /api/timer` (op=save|delete|toggle|fire).
 
@@ -96,6 +108,11 @@ its mic" alone is not a safe trigger.
 
 `tools/hype_sender.py` is the original minimal streamer, kept only as a
 protocol reference — never run both (they fight over port 5002).
+
+`tools/bake_svg.py` is the offline SVG baker — it runs on the laptop, imports
+`hype_controller.normalize_resample` so a baked figure and a rendered word are
+normalised by identical arithmetic, and writes the `.tbl` that ships to
+`~/hype_figures/`. Sources live in `figures/`.
 
 ## Deviations from the original plan (kept deliberately)
 

@@ -20,9 +20,9 @@ got = (s2.kind, s2.text, s2.font, s2.freq, s2.rot_speed, s2.amp, s2.flip_y)
 assert got == ("text", "Anémi", "gothic", 55.0, 0.25, 0.93, True), got
 ok("round-trip: %r %s %g Hz amp %.2f rot %g flip_y=%s"
    % (s2.text, s2.font, s2.freq, s2.amp, s2.rot_speed, s2.flip_y))
-assert s2.text_tbl and len(s2.text_tbl) > 100 and s2.text_rmax > 0
+assert s2.shape_tbl and len(s2.shape_tbl) > 100 and s2.shape_rmax > 0
 ok("table rebuilt at boot: %d pts rmax %.3f (accent survived)"
-   % (len(s2.text_tbl), s2.text_rmax))
+   % (len(s2.shape_tbl), s2.shape_rmax))
 assert s2.stream_on is True; ok("stream_on always True on boot (deliberate)")
 
 open(os.environ["HYPE_STATE"], "w").write(

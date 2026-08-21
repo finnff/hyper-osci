@@ -96,6 +96,9 @@ PRESETS_MAX = 20   # the page's "max N" text tracks this, see __PRESETS_MAX__
 # clamps and whitelists both and an older build's file still loads.
 STATE_FILE = os.environ.get(
     "HYPE_STATE", os.path.expanduser("~/hype_state.json"))
+# Every kind the daemon will install. "text" and "figure" are the two that
+# draw a precomputed point table; the rest are generated per sample.
+PATTERN_KINDS = ("circle", "lissajous", "rose", "text", "figure")
 # "name" plus these. Every field is OPTIONAL on load and filled from the
 # default here, so adding an entry can never disqualify a preset written by an
 # older build — the filter used to require all of them, and the next save then
@@ -103,7 +106,7 @@ STATE_FILE = os.environ.get(
 # with no log line.
 PRESET_DEFAULTS = {"kind": "circle", "freq": 100.0, "amp": 0.8, "a": 3, "b": 2,
                    "text": "HYPEROSCI", "font": "simplex", "pulse_rate": 1.5,
-                   "pulse_depth": 0.0, "rot": 0.0,
+                   "pulse_depth": 0.0, "rot": 0.0, "figure": "",
                    "flip_x": False, "flip_y": False}
 
 
@@ -148,7 +151,7 @@ def clean_preset(p):
         except (TypeError, ValueError):
             v = default
         q[k] = v
-    if q["kind"] not in ("circle", "lissajous", "rose", "text"):
+    if q["kind"] not in PATTERN_KINDS:
         q["kind"] = PRESET_DEFAULTS["kind"]
     if q["font"] not in TEXT_FONTS:
         q["font"] = PRESET_DEFAULTS["font"]
@@ -160,6 +163,11 @@ def clean_preset(p):
     q["pulse_depth"] = min(1.0, max(0.0, q["pulse_depth"]))
     q["rot"] = min(2.0, max(-2.0, q["rot"]))
     q["text"] = sanitize_text(q["text"])
+    # Not checked against the directory: a preset may name artwork that is not
+    # on THIS board (bench box, spare controller). load_figure logs and
+    # block() draws a circle -- dropping the name would silently rewrite the
+    # show's set list to something else on the next save.
+    q["figure"] = sanitize_figure(q["figure"])
     return q
 
 
@@ -452,6 +460,17 @@ def render_text(text, font):
             for st in gstrokes:
                 strokes.append([(x + sx - left, sy + dy) for sx, sy in st])
             x += right - left
+    return normalize_resample(strokes)
+
+
+def normalize_resample(strokes):
+    """[[(x, y), ...], ...] -> equal-arc-length point table in [-1, 1].
+
+    Shared by render_text and the offline SVG baker (tools/bake_svg.py imports
+    this module for it) so a baked figure and a rendered word are normalised
+    and traced by exactly the same arithmetic. Pen-up gaps between strokes
+    cost zero table entries: the beam jumps in one sample.
+    """
     pts = [p for s in strokes for p in s]
     if len(pts) < 2:
         return None
@@ -496,9 +515,94 @@ def table_rmax(tbl):
     return max((math.hypot(x, y) for x, y in tbl), default=0.0) if tbl else 0.0
 
 
-def build_text(text, font):
-    """(text, font) -> (table, rmax), the pair every writer of state must set."""
-    tbl = render_text(text, font)
+# ---------------------------------------------------------------------------
+# Baked figures: SVG artwork, flattened and resampled OFF the board by
+# tools/bake_svg.py, shipped as an int16 point table. Deliberately not an
+# on-board SVG parser: the study measured board-side XML at 1.34 ms/300 paths
+# (affordable) but the parser is the stage-failure surface — malformed art,
+# entity bombs, an upload endpoint on an unauthenticated :8080 — and offline
+# baking also buys contour reordering the board could never afford. See
+# docs/osci-render-feature-port-feasibility.md §5.
+# ---------------------------------------------------------------------------
+
+FIGURE_DIR = os.environ.get("HYPE_FIGURES",
+                            os.path.expanduser("~/hype_figures"))
+FIGURE_MAGIC = b"HYPEFIG1"     # bake_svg.py writes it; nothing else loads
+FIGURE_MAX_POINTS = 20000      # a 40 kB table; refuse a runaway/corrupt file
+_figure_cache = {}             # name -> table, keyed by (name, mtime, size)
+
+
+def list_figures():
+    """Names of the baked tables on the board, without the .tbl suffix."""
+    try:
+        return sorted(f[:-4] for f in os.listdir(FIGURE_DIR)
+                      if f.endswith(".tbl"))
+    except OSError:
+        return []
+
+
+def sanitize_figure(s):
+    """Figure name -> a bare stem that cannot escape FIGURE_DIR."""
+    s = os.path.basename(str(s)).strip()
+    if s.endswith(".tbl"):
+        s = s[:-4]
+    return "".join(c for c in s if c.isalnum() or c in "._-")[:48]
+
+
+def load_figure(name):
+    """Baked table name -> [(x, y), ...], or None if it will not load.
+
+    Same float-tuple shape render_text returns, so block() keeps one code
+    path. Cached on (mtime, size): re-selecting a figure during a set must not
+    re-read and re-unpack the file, and dropping a new bake in place still
+    takes effect without a restart.
+    """
+    name = sanitize_figure(name)
+    if not name:
+        return None
+    path = os.path.join(FIGURE_DIR, name + ".tbl")
+    try:
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+        hit = _figure_cache.get(name)
+        if hit and hit[0] == key:
+            return hit[1]
+        with open(path, "rb") as f:
+            blob = f.read()
+    except OSError as e:
+        print(f"[figure] {name}: {e}", flush=True)
+        return None
+    head = len(FIGURE_MAGIC) + 4
+    if len(blob) < head or blob[:len(FIGURE_MAGIC)] != FIGURE_MAGIC:
+        print(f"[figure] {name}: not a baked table", flush=True)
+        return None
+    n = struct.unpack_from("<I", blob, len(FIGURE_MAGIC))[0]
+    if not 1 < n <= FIGURE_MAX_POINTS or len(blob) != head + 4 * n:
+        print(f"[figure] {name}: bad point count {n}", flush=True)
+        return None
+    raw = array("h")
+    raw.frombytes(blob[head:])
+    if sys.byteorder == "big":     # the file is little-endian by contract
+        raw.byteswap()
+    k = 1.0 / 32767.0
+    tbl = [(raw[2 * i] * k, raw[2 * i + 1] * k) for i in range(n)]
+    _figure_cache[name] = (key, tbl)
+    return tbl
+
+
+def build_shape(kind, text, font, figure=""):
+    """Live pattern fields -> (table, rmax), the pair every writer must set.
+
+    Only the table kinds have one; circle/lissajous/rose are generated per
+    sample and get (None, 0.0), which is also what an unreadable figure or an
+    unrenderable string yields — block() then draws a circle.
+    """
+    if kind == "text":
+        tbl = render_text(text, font)
+    elif kind == "figure":
+        tbl = load_figure(figure)
+    else:
+        tbl = None
     return tbl, table_rmax(tbl)
 
 
@@ -546,7 +650,7 @@ def apply_preset(state, p):
     """
     with state.rebuild_lock:
         p = clean_preset(p)   # never install an unknown font (circle!)
-        tbl, rmax = build_text(p["text"], p["font"])
+        tbl, rmax = build_shape(p["kind"], p["text"], p["font"], p["figure"])
         with state.lock:
             state.kind, state.freq, state.amp = p["kind"], p["freq"], p["amp"]
             state.ratio_a, state.ratio_b = p["a"], p["b"]
@@ -555,8 +659,9 @@ def apply_preset(state, p):
             state.rot_speed = p["rot"]
             state.flip_x, state.flip_y = p["flip_x"], p["flip_y"]
             state.text, state.font = p["text"], p["font"]
-            state.text_tbl, state.text_rmax = tbl, rmax
-            state.text_ver += 1
+            state.figure = p["figure"]
+            state.shape_tbl, state.shape_rmax = tbl, rmax
+            state.shape_ver += 1
         state.dirty = True
 
 
@@ -701,6 +806,7 @@ class State:
         self.ratio_b = 2          # lissajous Y multiplier
         self.text = "HYPEROSCI"
         self.font = "simplex"     # TEXT_FONTS key
+        self.figure = ""          # baked table in FIGURE_DIR, kind="figure"
         self.pulse_rate = 1.5     # amplitude-LFO Hz
         self.pulse_depth = 0.0    # 0..1 of amp (0 = steady)
         self.rot_speed = 0.0      # revolutions/s (0 = static)
@@ -714,15 +820,16 @@ class State:
         if saved:
             (self.kind, self.freq, self.amp, self.ratio_a, self.ratio_b,
              self.text, self.font, self.pulse_rate, self.pulse_depth,
-             self.rot_speed, self.flip_x, self.flip_y) = (
+             self.rot_speed, self.flip_x, self.flip_y, self.figure) = (
                 saved["kind"], saved["freq"], saved["amp"], saved["a"],
                 saved["b"], saved["text"], saved["font"],
                 saved["pulse_rate"], saved["pulse_depth"], saved["rot"],
-                saved["flip_x"], saved["flip_y"])
+                saved["flip_x"], saved["flip_y"], saved["figure"])
         # None off-board; rmax rides along so block() can cap amp (see
         # table_rmax) without walking the table.
-        self.text_tbl, self.text_rmax = build_text(self.text, self.font)
-        self.text_ver = 1         # bumped on rebuild; UI refetches preview
+        self.shape_tbl, self.shape_rmax = build_shape(
+            self.kind, self.text, self.font, self.figure)
+        self.shape_ver = 1        # bumped on rebuild; UI refetches preview
         self.presets = load_presets()  # [{name + PRESET_DEFAULTS keys}, ...]
         # Deliberately NOT persisted: a restart always comes back streaming.
         # The failure modes are not symmetric -- a rig that boots silent after
@@ -769,7 +876,8 @@ class State:
     def pattern_params(self):
         with self.lock:
             return (self.kind, self.freq, self.amp * 32000.0,
-                    self.ratio_a, self.ratio_b, self.text_tbl, self.text_rmax,
+                    self.ratio_a, self.ratio_b, self.shape_tbl,
+                    self.shape_rmax,
                     self.pulse_rate, self.pulse_depth, self.rot_speed,
                     self.flip_x, self.flip_y)
 
@@ -780,10 +888,14 @@ class State:
                     "a": self.ratio_a, "b": self.ratio_b, "text": self.text,
                     "font": self.font, "pulse_rate": self.pulse_rate,
                     "pulse_depth": self.pulse_depth, "rot": self.rot_speed,
-                    "flip_x": self.flip_x, "flip_y": self.flip_y}
+                    "flip_x": self.flip_x, "flip_y": self.flip_y,
+                    "figure": self.figure}
 
     def snapshot(self):
         now = mono_us()
+        # Off the lock on purpose: a directory read on the eMMC can block for
+        # tens of ms, and the stream loop takes this lock every 5 ms.
+        figures = list_figures()
         with self.lock:
             return {
                 "pattern": {"kind": self.kind, "freq": self.freq,
@@ -794,7 +906,9 @@ class State:
                             "pulse_depth": self.pulse_depth,
                             "rot": self.rot_speed,
                             "flip_x": self.flip_x, "flip_y": self.flip_y,
-                            "tver": self.text_ver},
+                            "figure": self.figure,
+                            "sver": self.shape_ver},
+                "figures": figures,
                 "presets": [p["name"] for p in self.presets],
                 "stream_on": self.stream_on,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
@@ -822,21 +936,21 @@ class PatternGen:
 
     def __init__(self):
         self.phase = 0.0
-        self.tpos = 0.0  # text: fractional index into the point table
-        self.lfo = 0.0   # text: pulse-LFO phase
-        self.rot = 0.0   # text: current rotation angle
+        self.tpos = 0.0  # table kinds: fractional index into the point table
+        self.lfo = 0.0   # table kinds: pulse-LFO phase
+        self.rot = 0.0   # table kinds: current rotation angle
 
     def block(self, n, params):
-        (kind, freq, amp, a, b, ttbl, rmax,
+        (kind, freq, amp, a, b, tbl, rmax,
          pulse_rate, pulse_depth, rot_speed, flip_x, flip_y) = params
         out = array("h", bytes(4 * n))  # n stereo frames, zeroed
         two_pi = 2.0 * math.pi
         sin = math.sin
-        if kind == "text" and ttbl:
+        if kind in ("text", "figure") and tbl:
             # Walk the precomputed equal-arc-length table at freq redraws/s.
             # Pulse (amp LFO) and rotation advance per block — 5 ms steps are
             # smooth for the sub-10 Hz rates these run at.
-            m = len(ttbl)
+            m = len(tbl)
             tstep = m * freq / SAMPLE_RATE  # table entries per sample
             ae = amp * (1.0 - pulse_depth * (0.5 - 0.5 * sin(self.lfo)))
             if rmax > 0.0:
@@ -859,7 +973,7 @@ class PatternGen:
             if pos >= m:  # table swapped for a shorter one mid-stream
                 pos %= m
             for i in range(n):
-                x, y = ttbl[int(pos)]
+                x, y = tbl[int(pos)]
                 out[2 * i] = int(x * axx - y * axy)      # X
                 out[2 * i + 1] = int(x * ayx + y * ayy)  # Y
                 pos += tstep
@@ -869,7 +983,7 @@ class PatternGen:
             self.lfo = (self.lfo +
                         two_pi * pulse_rate * n / SAMPLE_RATE) % two_pi
             return out.tobytes()
-        # text with no drawable table falls through to a plain circle.
+        # A table kind with no drawable table falls through to a plain circle.
         step = two_pi * freq / SAMPLE_RATE
         p = self.phase
         if kind == "lissajous":
@@ -1279,6 +1393,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
         <button data-k="lissajous" onclick="setP({kind:'lissajous'})">lissajous</button>
         <button data-k="rose" onclick="setP({kind:'rose'})">rose</button>
         <button data-k="text" onclick="setP({kind:'text'})">text</button>
+        <button data-k="figure" onclick="setP({kind:'figure'})">figure</button>
       </span>
     </div>
     <!-- kind-specific controls -->
@@ -1301,6 +1416,11 @@ body.show .both-modes, body.setup .both-modes { display: block; }
         <option>gothic</option><option>times</option><option>italic</option>
       </select>
     </div>
+    <div class="row" id="figurerow" style="display:none">
+      <label>artwork</label>
+      <select id="figure" onchange="setP({figure:this.value})"></select>
+      <span id="figurenote" style="color:var(--dim);font-size:12px"></span>
+    </div>
     <div class="row" id="pulsedepthrow">
       <label>pulse depth</label>
       <input type="range" id="pdepth" min="0" max="100" step="1" oninput="showPdepth()" onchange="setP({pulse_depth:this.value/100})">
@@ -1311,11 +1431,16 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <input type="range" id="prate" min="1" max="80" step="1" oninput="showPrate()" onchange="setP({pulse_rate:this.value/10})">
       <span class="val" id="pratev">—</span>
     </div>
-    <div class="row" id="spinrow">
+    <!-- Spin is hidden on purpose (2026-08-21): the show runs upright text and
+         a slider left off-zero spun the words crooked with nothing on the page
+         saying why. The row stays in the DOM (disabled) so the sync code below
+         keeps working and re-enabling is a one-line revert; the renderer, the
+         preset field and POST /api/pattern {"rot": …} are untouched. -->
+    <div class="row" id="spinrow" style="display:none">
       <label>spin</label>
-      <input type="range" id="rot" min="-100" max="100" step="1" oninput="showRot()" onchange="setP({rot:this.value/100})">
+      <input type="range" id="rot" min="-100" max="100" step="1" disabled oninput="showRot()" onchange="setP({rot:this.value/100})">
       <span class="val" id="rotv">—</span>
-      <button onclick="document.getElementById('rot').value=0;showRot();setP({rot:0})">0</button>
+      <button disabled onclick="document.getElementById('rot').value=0;showRot();setP({rot:0})">0</button>
     </div>
     <div class="row">
       <label>amplitude</label>
@@ -1710,9 +1835,38 @@ function applyPreset(name) {
 /* === PREVIEW CANVAS === */
 var TP = {ver: -1, pts: []};
 
+/* text and figure both draw the server-side point table, so both need the
+   preview fetch and both redraw when sver bumps. */
+function isTableKind(k) { return k === 'text' || k === 'figure'; }
+
+/* Fill the artwork picker from what is actually baked onto the board, and say
+   so plainly when the live preset names a figure this board does not carry —
+   the scopes draw a circle in that case, and an empty dropdown looked like a
+   UI bug rather than a missing file. */
+function syncFigures(p) {
+  var sel = document.getElementById('figure');
+  var note = document.getElementById('figurenote');
+  if (!sel || !note) return;
+  var figs = (S && S.figures) || [];
+  var want = figs.join(',');   /* sanitize_figure bans commas */
+  if (sel.dataset.have !== want) {
+    sel.dataset.have = want;
+    sel.innerHTML = figs.map(function(f) {
+      return '<option>' + esc(f) + '</option>';
+    }).join('');
+  }
+  if (document.activeElement !== sel && figs.indexOf(p.figure) >= 0) {
+    sel.value = p.figure;
+  }
+  note.textContent = !figs.length
+    ? 'no baked artwork on this board (tools/bake_svg.py)'
+    : (p.figure && figs.indexOf(p.figure) < 0
+       ? '"' + p.figure + '" is not on this board — drawing a circle' : '');
+}
+
 async function fetchPreview() {
   try {
-    var d = await (await fetch("/api/textpreview")).json();
+    var d = await (await fetch("/api/shapepreview")).json();
     TP = d;
     drawPreview();
   } catch(e) {}
@@ -1744,7 +1898,7 @@ function drawPreview() {
   g.shadowBlur = 8;
   g.beginPath();
 
-  if (p.kind === 'text' && TP.pts.length) {
+  if ((p.kind === 'text' || p.kind === 'figure') && TP.pts.length) {
     var sx = p.flip_x ? -1 : 1;
     var sy = p.flip_y ? -1 : 1;
     for (var i = 0; i < TP.pts.length; i++) {
@@ -1779,6 +1933,7 @@ function slaveVerdict(s) {
   if (s.source) {
     var what = s.mode === 2 ? p.kind + ' + own mic (HYBRID)' : p.kind;
     if (p.kind === 'text') what = 'text "' + esc(p.text) + '" (' + (p.font||'duplex') + ')' + (s.mode === 2 ? ' + mic' : '');
+    if (p.kind === 'figure') what = 'artwork "' + esc(p.figure || '?') + '"' + (s.mode === 2 ? ' + mic' : '');
     return {cls: 'ok', txt: 'Playing network stream — ' + what + ' @ ' + p.freq + ' Hz'};
   }
   if (s.mode === 0) return {cls: 'ok', txt: 'Drawing local ' + (s.lpat || 'mic') + ' (generated on slave)'};
@@ -1955,6 +2110,8 @@ function renderOnAir() {
   /* Show text content for text patterns (N17) */
   if (S.pattern.kind === 'text' && S.pattern.text) {
     curName = curName ? S.pattern.text + ' (' + curName + ')' : S.pattern.text;
+  } else if (S.pattern.kind === 'figure' && S.pattern.figure) {
+    curName = curName ? S.pattern.figure + ' (' + curName + ')' : S.pattern.figure;
   }
 
   document.getElementById('on-air-name').textContent = curName || '—';
@@ -2141,7 +2298,7 @@ function render() {
   renderSetList();
   renderDials();
   /* Draw preview (N4: fetch for text patterns) */
-  if (S.pattern.kind === 'text' && S.pattern.tver !== TP.ver) {
+  if (isTableKind(S.pattern.kind) && S.pattern.sver !== TP.ver) {
     fetchPreview();
   }
   drawPreview();
@@ -2209,15 +2366,15 @@ function renderSetup() {
 
   /* Show/hide kind-specific rows */
   var isText = p.kind === 'text';
+  var isFig = p.kind === 'figure';
   document.getElementById('ratiorow').style.display = (p.kind === 'lissajous') ? 'flex' : 'none';
   document.getElementById('petalsrow').style.display = (p.kind === 'rose') ? 'flex' : 'none';
   document.getElementById('textrow').style.display = isText ? 'flex' : 'none';
-  document.getElementById('pulsedepthrow').style.display = isText ? 'flex' : 'none';
-  document.getElementById('puleraterow').style.display = isText ? 'flex' : 'none';
-  document.getElementById('spinrow').style.display = isText ? 'flex' : 'none';
-  document.getElementById('pulsedepthrow').style.display = isText ? 'flex' : 'none';
-  document.getElementById('puleraterow').style.display = isText ? 'flex' : 'none';
-  document.getElementById('spinrow').style.display = isText ? 'flex' : 'none';
+  document.getElementById('figurerow').style.display = isFig ? 'flex' : 'none';
+  /* Pulse works off the point table, so it belongs to both table kinds. */
+  document.getElementById('pulsedepthrow').style.display = (isText || isFig) ? 'flex' : 'none';
+  document.getElementById('puleraterow').style.display = (isText || isFig) ? 'flex' : 'none';
+  /* spinrow deliberately absent here — it stays hidden on every kind. */
 
   /* Update ratio label */
   var rlabel = document.getElementById('ratio-label');
@@ -2231,6 +2388,7 @@ function renderSetup() {
   el = document.getElementById('petals'); if (el !== act) el.value = p.a;
   el = document.getElementById('text'); if (el !== act) el.value = p.text;
   el = document.getElementById('font'); if (el !== act) el.value = p.font;
+  syncFigures(p);
   el = document.getElementById('pdepth'); if (el !== act) el.value = Math.round(p.pulse_depth * 100);
   el = document.getElementById('prate'); if (el !== act) el.value = Math.round(p.pulse_rate * 10);
   el = document.getElementById('rot'); if (el !== act) el.value = Math.round(p.rot * 100);
@@ -2244,8 +2402,8 @@ function renderSetup() {
   document.getElementById('fxbtn').classList.toggle('on', p.flip_x);
   document.getElementById('fybtn').classList.toggle('on', p.flip_y);
 
-  /* Text preview fetch */
-  if (isText && p.tver !== TP.ver) fetchPreview();
+  /* Point-table preview fetch */
+  if (isTableKind(p.kind) && p.sver !== TP.ver) fetchPreview();
 
   /* Allseg (set all) */
   var allseg = document.getElementById('allseg');
@@ -2330,7 +2488,8 @@ function openRename(existingName, idx) {
 function setupSavePreset() {
   if (!S) return;
   var p = S.pattern;
-  var def = (p.kind === 'text' ? p.text.split('\\n')[0] : p.kind).slice(0, 24);
+  var def = (p.kind === 'text' ? p.text.split('\\n')[0]
+             : p.kind === 'figure' ? (p.figure || 'figure') : p.kind).slice(0, 24);
   overlayMode = 'saveas';
   renameTarget = null;
   var overlay = document.getElementById('rename-overlay');
@@ -2733,9 +2892,9 @@ def make_http_handler(state, cmds):
                 self.wfile.write(body)
             elif self.path == "/api/state":
                 self._json(state.snapshot())
-            elif self.path == "/api/textpreview":
+            elif self.path == "/api/shapepreview":
                 with state.lock:
-                    tbl, ver = state.text_tbl, state.text_ver
+                    tbl, ver = state.shape_tbl, state.shape_ver
                 dec = max(1, len(tbl) // 400) if tbl else 1
                 self._json({"ver": ver,
                             "pts": [[round(x, 3), round(y, 3)]
@@ -2751,21 +2910,31 @@ def make_http_handler(state, cmds):
                 return self._json({"err": "bad json"}, 400)
 
             if self.path == "/api/pattern":
-                rebuild = "text" in body or "font" in body
+                # The table now depends on the kind too, so a kind switch is
+                # itself a rebuild: text -> figure must load the artwork, and
+                # anything -> circle must drop the table it is not drawing.
+                rebuild = bool({"text", "font", "figure", "kind"} & set(body))
                 # Only a rebuild needs the mutex; slider POSTs must not queue
                 # behind a 36 ms font parse.
                 new_tbl = None
                 with state.rebuild_lock if rebuild else nullcontext():
                     if rebuild:
                         with state.lock:
-                            text, font = state.text, state.font
+                            kind = state.kind
+                            text, font, figure = (state.text, state.font,
+                                                  state.figure)
+                        if body.get("kind") in PATTERN_KINDS:
+                            kind = body["kind"]
                         if "text" in body:
                             text = sanitize_text(body["text"])
                         if body.get("font") in TEXT_FONTS:
                             font = body["font"]
-                        # Rebuild OUTSIDE state.lock: font parsing must never
-                        # stall the 5 ms stream pacing.
-                        new_tbl = (text, font) + build_text(text, font)
+                        if "figure" in body:
+                            figure = sanitize_figure(body["figure"])
+                        # Rebuild OUTSIDE state.lock: font parsing and the
+                        # table read must never stall the 5 ms stream pacing.
+                        new_tbl = ((text, font, figure)
+                                   + build_shape(kind, text, font, figure))
                     self._apply_pattern(state, body, new_tbl)
                 if set(body) - {"stream"}:   # a real pattern edit, not a mute
                     self._takeover(state)
@@ -2786,7 +2955,7 @@ def make_http_handler(state, cmds):
 
         def _apply_pattern(self, state, body, new_tbl):
             with state.lock:
-                if body.get("kind") in ("circle", "lissajous", "rose", "text"):
+                if body.get("kind") in PATTERN_KINDS:
                     state.kind = body["kind"]
                 if "freq" in body:
                     state.freq = min(2000.0, max(1.0, float(body["freq"])))
@@ -2818,8 +2987,10 @@ def make_http_handler(state, cmds):
                         state.text = new_tbl[0]
                     if body.get("font") in TEXT_FONTS:
                         state.font = new_tbl[1]
-                    state.text_tbl, state.text_rmax = new_tbl[2], new_tbl[3]
-                    state.text_ver += 1
+                    if "figure" in body:
+                        state.figure = new_tbl[2]
+                    state.shape_tbl, state.shape_rmax = new_tbl[3], new_tbl[4]
+                    state.shape_ver += 1
             state.dirty = True   # persist_loop writes it within ~3 s
 
         def _preset(self, state, body):
@@ -2849,7 +3020,8 @@ def make_http_handler(state, cmds):
                                 "pulse_depth": state.pulse_depth,
                                 "rot": state.rot_speed,
                                 "flip_x": state.flip_x,
-                                "flip_y": state.flip_y}
+                                "flip_y": state.flip_y,
+                                "figure": state.figure}
                         for i, p in enumerate(state.presets):
                             if p["name"] == name:  # overwrite in place
                                 state.presets[i] = snap
@@ -3338,8 +3510,16 @@ def main():
 
     print(f"[controller] web on :{args.http_port}, iface={args.iface_ip}, "
           f"lead={LEAD_US/1000:.0f}ms", flush=True)
-    shown = (f"text {state.text!r} {state.font}" if state.kind == "text"
-             else state.kind)
+    if state.kind == "text":
+        shown = f"text {state.text!r} {state.font}"
+    elif state.kind == "figure":
+        # Say it here or nowhere: a preset naming artwork this board does not
+        # carry draws a circle, and the journal is the only place that can
+        # tell you why at 03:00 with no dashboard open.
+        shown = (f"figure {state.figure!r}"
+                 + ("" if state.shape_tbl else " — NOT ON THIS BOARD, drawing a circle"))
+    else:
+        shown = state.kind
     print(f"[controller] pattern {shown} {state.freq:g} Hz amp {state.amp:.2f}"
           + ("" if load_live() else "  (defaults — no saved state yet)"),
           flush=True)
