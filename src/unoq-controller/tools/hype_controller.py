@@ -292,15 +292,17 @@ def _placement_score(cands, placed):
 # Per-node policy and the pair cycles.
 #
 # One authority for every slave's draw mode: policy_loop. Before this the mode
-# was set from four places (the slave sheet, "set all", a timer hold, the
+# was set from four places (the slave sheet, "set all", an ident's hold, the
 # slave's own button) and the only way to know what a scope would draw was to
-# walk the rig and look. Now each node carries three switches -- stream,
-# logos, artists -- and the mode follows from them plus what is on air:
+# walk the rig and look. The idents are gone now, but the rule they forced
+# stands: each node carries three switches -- stream, logos, artists -- and
+# the mode follows from them plus what is on air:
 #
 #   stream off                  -> local (own mic). The scope is not in XY, or
 #                                  its operator wants it out of the show.
 #   a logo on air, logos off    -> local. Same for a name and artists off.
-#   a cycle pause               -> local, every node: the pause IS the mic.
+#   between bursts, and during  -> local, every node: the rig's resting state
+#   a burst's mic pause            is the microphone.
 #   otherwise                   -> network.
 #
 # The controller only streams audio to slaves in NETWORK mode (see the
@@ -315,7 +317,7 @@ def _placement_score(cands, placed):
 
 NODES_FILE = os.environ.get(
     "HYPE_NODES", os.path.expanduser("~/hype_nodes.json"))
-# Keyed by slave id, like timer targets: an id survives a DHCP lease and a
+# Keyed by slave id and not by ip: an id survives a DHCP lease and a
 # reflash, and it is what the tile prints.
 NODE_DEFAULTS = {"stream": True, "logos": True, "artists": True}
 # A slave with no entry is fully in the show. Anything else and a node added
@@ -1071,7 +1073,7 @@ def advance_cycle(state, tick_us):
 def policy_loop(state, cmds, tick=0.25):
     """The one authority for slave draw modes, and the pair-cycle clock.
 
-    Its own thread, like timer_loop: applying a preset parses a font or reads
+    Its own thread, like persist_loop: applying a preset parses a font or reads
     a table off the eMMC, and neither belongs on the 5 ms stream thread.
     """
     tick_us = int(tick * 1_000_000)

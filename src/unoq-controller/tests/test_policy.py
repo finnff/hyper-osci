@@ -7,10 +7,12 @@ parses Hershey fonts at import time and those only exist there.
 What this is defending, in one sentence each:
   - a node switched out of a group draws its own mic while that group is on
     air, and nothing else can quietly put it back;
-  - the cycle walks A, pause, B, pause and freezes rather than drifting when
-    the feed is muted or an ident interrupts;
-  - a pair naming a preset that is not in the set list is skipped instead of
-    stalling the rotation on a name nobody can see.
+  - the microphone is the resting state, and a burst is a periodic
+    interruption that hands the stream straight back;
+  - the two grids are offset so their bursts miss, and a slot that lands
+    inside the other group's burst is skipped rather than queued behind it;
+  - a pair naming a preset that is not in the set list plays nothing instead
+    of stalling the burst on a name nobody can see.
 """
 import json
 import os
