@@ -99,6 +99,18 @@ decimated — text and figure both); `POST /api/pattern`,
 `POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete),
 `POST /api/timer` (op=save|delete|toggle|fire).
 
+Per-node switches and the pair cycles (2026-08-21): every node carries
+`stream` / `logos` / `artists` in `~/hype_nodes.json` (keyed by slave id, so
+they can be set with the rig powered off), and `policy_loop` is the **only**
+writer of slave draw modes — it turns those switches plus what is on air into
+`network` or `local`, level-triggered against the STATUS beacon, so a node
+that reboots or has its own button pressed is pulled back within a beacon.
+HYBRID is no longer reachable and the blackout button is gone. Each of the two
+cycles (`~/hype_cycles.json`) runs a pair — A for N s, an optional mic pause,
+B, pause, round again — and freezes while the feed is SILENT or an ident is on
+air. `POST /api/node {"id":121,"logos":false}`,
+`POST /api/cycle {"group":"artists","idx":1,...}`.
+
 `deploy/hyperosci-netwatch` (+ `.service`/`.timer`) is a separate root-owned
 watchdog that every 30 s re-activates `hyperosci-ap` if nothing holds
 192.168.50.1, and bounces it if no slave has *received a packet* for three

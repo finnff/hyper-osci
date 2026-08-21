@@ -3,8 +3,9 @@
 
 Supersedes hype_sender.py (kept as a minimal protocol reference). Adds:
   - Embedded web UI (stdlib http.server, port 8080) — pattern / frequency /
-    amplitude control, stream on/off, per-slave and all-slave mode toggles
-    (network / local-mic / hybrid), identify, gain, reboot.
+    amplitude control, stream on/off, three per-node switches (streaming /
+    logos / artists) that the controller turns into slave draw modes,
+    identify, gain, reboot.
   - HYPE_CMD sender (JSON, unicast :5001) driving mode_manager::handle_command.
 
 Streaming engine is inherited from hype_sender.py: SYNC multicast beacons,
@@ -304,6 +305,186 @@ def save_timers(timers):
         os.replace(tmp, TIMERS_FILE)
     except OSError as e:
         print(f"[timers] save failed: {e}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-node policy and the pair cycles.
+#
+# One authority for every slave's draw mode: policy_loop. Before this the mode
+# was set from four places (the slave sheet, "set all", a timer hold, the
+# slave's own button) and the only way to know what a scope would draw was to
+# walk the rig and look. Now each node carries three switches -- stream,
+# logos, artists -- and the mode follows from them plus what is on air:
+#
+#   stream off                  -> local (own mic). The scope is not in XY, or
+#                                  its operator wants it out of the show.
+#   a logo on air, logos off    -> local. Same for a name and artists off.
+#   a cycle pause               -> local, every node: the pause IS the mic.
+#   otherwise                   -> network.
+#
+# The controller only streams audio to slaves in NETWORK mode (see the
+# fan-out filter in stream_loop), so "local" also takes the node off the air
+# and gives its share of the radio back to the rig.
+#
+# HYBRID is not reachable any more. It was network + own mic mixed, which on
+# stage read as "the logo is broken" -- and with three switches to explain it
+# was a fourth state nobody could predict. A node found in hybrid (its own
+# button still cycles into it) is pulled back to whatever policy says.
+# ---------------------------------------------------------------------------
+
+NODES_FILE = os.environ.get(
+    "HYPE_NODES", os.path.expanduser("~/hype_nodes.json"))
+# Keyed by slave id, like timer targets: an id survives a DHCP lease and a
+# reflash, and it is what the tile prints.
+NODE_DEFAULTS = {"stream": True, "logos": True, "artists": True}
+# A slave with no entry is fully in the show. Anything else and a node added
+# an hour before doors would come up dark for no stated reason.
+
+
+def clean_node(d):
+    """Per-node switches -> a full set of booleans."""
+    if not isinstance(d, dict):
+        d = {}
+    return {k: bool(d.get(k, v)) for k, v in NODE_DEFAULTS.items()}
+
+
+def load_nodes():
+    """-> {slave id: switches}. Only nodes someone actually changed are in
+    the file; the rest default in."""
+    try:
+        with open(NODES_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    if isinstance(data, dict):
+        for k, v in data.items():
+            try:
+                sid = int(k)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= sid <= 255:
+                out[sid] = clean_node(v)
+    return out
+
+
+def save_nodes(nodes):
+    tmp = NODES_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({str(k): v for k, v in sorted(nodes.items())}, f,
+                      indent=1)
+        os.replace(tmp, NODES_FILE)
+    except OSError as e:
+        print(f"[nodes] save failed: {e}", flush=True)
+
+
+# The pair cycles: "logo A for 30 s, mic for 10 s, logo B for 30 s, mic, round
+# again". Two groups, because a set runs its logos on one clock and its artist
+# names on another, and because the two switches on every node are exactly
+# these two groups.
+CYCLES_FILE = os.environ.get(
+    "HYPE_CYCLES", os.path.expanduser("~/hype_cycles.json"))
+CYCLE_GROUPS = ("logos", "artists")
+CYCLE_PAIRS_MAX = 6
+# Seeds for a board that has never had the file — the show as it stands. They
+# are not baked into the logic: every name is looked up in the preset list at
+# run time, and the page edits both slots of every pair.
+CYCLE_SEED = {
+    "logos": [["HYPERWAVES", "Flux Collective"]],
+    "artists": [["Anémi", "HyperLili"],
+                ["Eastern Distributor", "Gan D"],
+                ["Guild Navigator", "Liso"]],
+}
+CYCLE_DEFAULTS = {"enabled": False, "show_s": 30, "pause_s": 0, "idx": 0}
+
+
+def clean_cycle(c, group):
+    """Cycle config -> fully populated, range-checked copy.
+
+    Same optional-everything contract as clean_preset and clean_timer.
+    """
+    if not isinstance(c, dict):
+        c = {}
+    q = {"enabled": bool(c.get("enabled", CYCLE_DEFAULTS["enabled"]))}
+    for k, lo, hi in (("show_s", 3, 600), ("pause_s", 0, 600)):
+        try:
+            q[k] = int(float(c.get(k, CYCLE_DEFAULTS[k])))
+        except (TypeError, ValueError):
+            q[k] = CYCLE_DEFAULTS[k]
+        q[k] = min(hi, max(lo, q[k]))
+    pairs = c.get("pairs")
+    if not isinstance(pairs, (list, tuple)):
+        pairs = CYCLE_SEED.get(group, [])
+    out = []
+    for pr in pairs[:CYCLE_PAIRS_MAX]:
+        if not isinstance(pr, (list, tuple)):
+            continue
+        pair = [sanitize_name(pr[0] if len(pr) > 0 else ""),
+                sanitize_name(pr[1] if len(pr) > 1 else "")]
+        if any(pair):
+            out.append(pair)
+    q["pairs"] = out
+    try:
+        q["idx"] = int(c.get("idx", 0))
+    except (TypeError, ValueError):
+        q["idx"] = 0
+    q["idx"] = min(max(0, q["idx"]), max(0, len(out) - 1))
+    return q
+
+
+def load_cycles():
+    try:
+        with open(CYCLES_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    return {g: clean_cycle(data.get(g), g) for g in CYCLE_GROUPS}
+
+
+def save_cycles(cycles):
+    tmp = CYCLES_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(cycles, f, indent=1)
+        os.replace(tmp, CYCLES_FILE)
+    except OSError as e:
+        print(f"[cycle] save failed: {e}", flush=True)
+
+
+def pattern_group(kind):
+    """What is on air, in the two words the node switches use."""
+    return "logos" if kind == "figure" else "artists" if kind == "text" else ""
+
+
+def cycle_sequence(cycles, preset_names):
+    """Config + the set list -> the running order, as a flat list of steps.
+
+    A step is {"group", "preset", "secs", "of"}; group None is a pause (mic
+    only), and "of" is the cycle it belongs to — a pause has no group because
+    nothing is on the stream during one, but the page still has to draw it on
+    the right card.
+    A pair slot naming a preset that no longer exists is dropped rather than
+    drawn as a gap the operator cannot see the reason for -- the page renders
+    this same list, so what it shows is what will run.
+    """
+    seq = []
+    for g in CYCLE_GROUPS:
+        c = cycles.get(g) or {}
+        if not c.get("enabled") or not c.get("pairs"):
+            continue
+        pair = c["pairs"][min(c.get("idx", 0), len(c["pairs"]) - 1)]
+        for name in pair:
+            if not name or name not in preset_names:
+                continue
+            seq.append({"group": g, "preset": name, "secs": c["show_s"],
+                        "of": g})
+            if c["pause_s"]:
+                seq.append({"group": None, "preset": "",
+                            "secs": c["pause_s"], "of": g})
+    return seq
 
 
 def _jhf_glyphs(fname):
@@ -665,12 +846,9 @@ def apply_preset(state, p):
         state.dirty = True
 
 
-# A slave's draw mode is only known from its STATUS beacon, which arrives
-# once a second. Straight after a release the controller's copy still says
-# "network" for a slave it has just put back on local, so a hold starting
-# inside that window would snapshot the wrong mode and restore the slave to
-# network for good. Two seconds is past one beacon plus jitter; it also stops
-# two rules stacking stings back to back, which looks broken anyway.
+# Two stings back to back read as a fault on stage: the first ident has not
+# left the scopes before the next one lands, and nobody can tell whether the
+# show is running or the rig is looping. One release buys this much quiet.
 HOLD_COOLDOWN_US = 2_500_000
 
 # Why a fire was refused. The string is the reason the dashboard shows, so
@@ -678,18 +856,20 @@ HOLD_COOLDOWN_US = 2_500_000
 # possibilities. FIRE_RETRY marks the transient ones: timer_loop tries those
 # again in a moment rather than costing the rule its whole turn.
 FIRE_HOLDING = "another timer is already on air"
-FIRE_COOLDOWN = ("a hold just released — the slaves' modes are not "
-                 "trustworthy yet")
+FIRE_COOLDOWN = "a hold only just released"
 FIRE_MUTED = "STREAM is off — a hold would pull the slaves onto a dead stream"
 FIRE_NO_PRESET = "that preset no longer exists"
 FIRE_RETRY = (FIRE_HOLDING, FIRE_COOLDOWN)
 
 
 def fire_timer(state, cmds, t):
-    """Start a hold: install the rule's preset, put its targets on the stream.
+    """Start a hold: install the rule's preset for hold_s seconds.
 
     Returns None once the hold is running, else the FIRE_* reason it did not
-    start.
+    start. It sets no modes: policy_loop reads the hold (its targets and the
+    kind now on air) and moves the nodes, so a sting obeys the same three
+    switches as everything else -- an artist ident does not appear on a scope
+    whose artists switch is off.
     """
     before = state.live_snapshot()
     with state.lock:
@@ -707,37 +887,29 @@ def fire_timer(state, cmds, t):
                   if x["name"] == t["preset"]), None)
         if p is None:
             return FIRE_NO_PRESET
-        ips = [ip for ip, s in state.slaves.items()
-               if not t["targets"] or s["id"] in t["targets"]]
         state.timer_hold = {
-            "id": t["id"], "preset": t["preset"],
+            "id": t["id"], "preset": t["preset"], "targets": t["targets"],
             "until_us": mono_us() + t["hold_s"] * 1_000_000,
-            "pattern": before,
-            "modes": {ip: state.slaves[ip]["mode"] for ip in ips}}
+            "pattern": before}
     apply_preset(state, p)
-    for ip in ips:
-        cmds.send(ip, {"cmd": "set_mode", "mode": "network"})
     print(f"[timer] hold {t['preset']!r} on "
-          f"{','.join(ips) if ips else 'nobody (no slave matched)'} "
+          f"{','.join(str(i) for i in t['targets']) or 'every node'} "
           f"for {t['hold_s']}s", flush=True)
     return None
 
 
 def end_hold(state, cmds, restore_pattern=True):
-    """Finish a hold: targets back to the draw setting they had, and — unless
-    the operator took the panel over mid-hold — the pre-hold pattern back."""
+    """Finish a hold: the pre-hold pattern back, unless the operator took the
+    panel over mid-hold. Modes need no restoring — policy_loop puts every node
+    back where the restored pattern says it belongs."""
     with state.lock:
         h, state.timer_hold = state.timer_hold, None
         if h is None:
             return
         # Armed in the same acquisition that clears the hold. Split across
-        # two, timer_loop can land in between, see "not holding" with the
-        # cooldown still at its old value, and fire on mode data the STATUS
-        # beacons have not refreshed yet -- the very thing it guards.
+        # two, timer_loop can land in between and fire the next rule inside
+        # the quiet this is meant to buy.
         state.hold_cooldown_us = mono_us() + HOLD_COOLDOWN_US
-    for ip, mode in h["modes"].items():
-        cmds.send(ip, {"cmd": "set_mode",
-                       "mode": MODE_NAMES.get(mode, "local")})
     if restore_pattern:
         apply_preset(state, h["pattern"])
     print(f"[timer] release {h['preset']!r}"
@@ -792,6 +964,139 @@ def timer_loop(state, cmds, tick=0.25):
                 if any(x["id"] == due["id"] for x in state.timers) \
                         and state.timer_next.get(due["id"], 0) <= now:
                     state.timer_next[due["id"]] = now + delay
+
+
+# A commanded mode is only confirmed by the slave's next STATUS beacon, which
+# is 1 Hz. Re-sending inside that window would be three packets per node per
+# second, all saying the same thing, on the one radio the audio needs.
+MODE_RESEND_US = 3_000_000
+
+
+def node_flags(state, sid):
+    """Slave id -> its three switches (defaults for a node nobody has set).
+
+    Caller holds state.lock.
+    """
+    return state.node_flags.get(sid) or NODE_DEFAULTS
+
+
+def desired_modes(state):
+    """-> {ip: 0 local | 1 network}, the whole rig's draw modes from policy.
+
+    Caller holds state.lock. Reads only; sending is reconcile_modes' job.
+    """
+    step = state.cycle_step
+    paused = step is not None and step["group"] is None
+    group = pattern_group(state.kind)
+    hold = state.timer_hold
+    targets = hold["targets"] if hold else []
+    out = {}
+    for ip, s in state.slaves.items():
+        f = node_flags(state, s["id"])
+        if not f["stream"]:
+            out[ip] = 0            # out of the show entirely
+        elif paused:
+            out[ip] = 0            # the pause IS the mic
+        elif group and not f[group]:
+            out[ip] = 0            # this node does not take logos / names
+        elif targets and s["id"] not in targets:
+            out[ip] = 0            # a sting aimed at other nodes
+        else:
+            out[ip] = 1
+    return out
+
+
+def reconcile_modes(state, cmds):
+    """Send the set_mode commands policy calls for, and only those.
+
+    Level-triggered on purpose: it compares against the mode the slave last
+    reported, so a node that reboots, or whose own button was pressed, is
+    pulled back within a beacon or two without anything having to notice the
+    event. Returns the commands sent, for the tests.
+    """
+    now = mono_us()
+    send = []
+    with state.lock:
+        want = desired_modes(state)
+        for ip, w in want.items():
+            if state.slaves[ip]["mode"] == w:
+                state.mode_sent.pop(ip, None)   # settled where we want it
+                continue
+            last = state.mode_sent.get(ip)
+            if last and last[0] == w and now - last[1] < MODE_RESEND_US:
+                continue                        # already told, beacon pending
+            state.mode_sent[ip] = (w, now)
+            send.append((ip, w))
+        for ip in [ip for ip in state.mode_sent if ip not in want]:
+            state.mode_sent.pop(ip)             # slave went away
+    for ip, w in send:
+        cmds.send(ip, {"cmd": "set_mode",
+                       "mode": "network" if w else "local"})
+    return send
+
+
+def advance_cycle(state, tick_us):
+    """Step the pair cycles. Returns the step just started, or None.
+
+    Frozen while a timer hold is on air or the feed is silent: a cycle that
+    kept counting through a two-minute mute would come back mid-pair with the
+    clock in a place nobody could predict. Freezing pushes the deadline out by
+    the real time that passed, so the step resumes with what it had left.
+    """
+    now = mono_us()
+    with state.lock:
+        names = [p["name"] for p in state.presets]
+        seq = cycle_sequence(state.cycles, names)
+        sig = repr(seq)
+        if sig != state.cycle_sig:
+            # Config changed under us (a switch, a pair swap, a preset
+            # renamed): start the new order from its first step rather than
+            # landing on whatever index happened to be current.
+            state.cycle_sig = sig
+            state.cycle_pos = None
+            state.cycle_step = None
+        if not seq:
+            return None
+        if state.timer_hold is not None or not state.stream_on:
+            if state.cycle_pos is not None:
+                state.cycle_until_us += tick_us
+            return None
+        if state.cycle_pos is None:
+            pos = 0
+        elif now >= state.cycle_until_us:
+            pos = (state.cycle_pos + 1) % len(seq)
+        else:
+            return None
+        step = dict(seq[pos])
+        state.cycle_pos = pos
+        state.cycle_step = step
+        state.cycle_until_us = now + step["secs"] * 1_000_000
+        p = None if step["group"] is None else next(
+            (dict(x) for x in state.presets
+             if x["name"] == step["preset"]), None)
+    if p is not None:
+        apply_preset(state, p)
+    print("[cycle] " + (f"pause {step['secs']}s (mic)" if step["group"] is None
+                        else f"{step['group']} {step['preset']!r} "
+                             f"for {step['secs']}s"), flush=True)
+    return step
+
+
+def policy_loop(state, cmds, tick=0.25):
+    """The one authority for slave draw modes, and the pair-cycle clock.
+
+    Its own thread, like timer_loop: applying a preset parses a font or reads
+    a table off the eMMC, and neither belongs on the 5 ms stream thread.
+    """
+    tick_us = int(tick * 1_000_000)
+    while True:
+        time.sleep(tick)
+        try:
+            advance_cycle(state, tick_us)
+            reconcile_modes(state, cmds)
+        except Exception as e:   # a rig that stops obeying policy is a dark
+            # stage; one bad tick must not take the thread down with it.
+            print(f"[policy] tick failed: {e}", flush=True)
 
 
 class State:
@@ -867,11 +1172,26 @@ class State:
         # into a rig someone is still cabling up.
         self.timer_next = {}
         # None, or the rule currently interrupting the show:
-        # {"id", "preset", "until_us", "pattern": pre-hold live snapshot,
-        #  "modes": {ip: mode int before we forced it to network}}
+        # {"id", "preset", "targets", "until_us",
+        #  "pattern": pre-hold live snapshot}
         self.timer_hold = None
         # Set on release; see HOLD_COOLDOWN_US.
         self.hold_cooldown_us = 0
+        # Per-node switches, and the pair cycles that drive the set. Both are
+        # read every policy tick and written by the HTTP threads, so both are
+        # under self.lock.
+        self.node_flags = load_nodes()   # slave id -> stream/logos/artists
+        self.cycles = load_cycles()      # "logos"/"artists" -> config
+        # Runtime cycle position: index into the sequence, the step dict
+        # itself (what desired_modes reads), its deadline, and the signature
+        # of the sequence they belong to.
+        self.cycle_pos = None
+        self.cycle_step = None
+        self.cycle_until_us = 0
+        self.cycle_sig = None
+        # ip -> (mode, mono_us) of the last set_mode this box sent, so a
+        # command is not repeated every tick while the 1 Hz beacon catches up.
+        self.mode_sent = {}
 
     def pattern_params(self):
         with self.lock:
@@ -924,6 +1244,22 @@ class State:
                     "preset": self.timer_hold["preset"],
                     "left_s": max(0, (self.timer_hold["until_us"] - now)
                                   // 1000000)},
+                "nodes": {str(sid): dict(f)
+                          for sid, f in self.node_flags.items()},
+                "cycles": {g: dict(c, running=(
+                    self.cycle_step is not None
+                    and self.cycle_step["group"] == g))
+                    for g, c in self.cycles.items()},
+                "cycle": None if self.cycle_step is None else {
+                    "group": self.cycle_step["group"] or "",
+                    "preset": self.cycle_step["preset"],
+                    "pos": self.cycle_pos,
+                    "left_s": max(0, (self.cycle_until_us - now) // 1000000),
+                    "seq": [{"group": s["group"] or "", "preset": s["preset"],
+                             "secs": s["secs"], "of": s["of"]}
+                            for s in cycle_sequence(
+                                self.cycles, [p["name"] for p in self.presets])],
+                },
             }
 
 
@@ -1102,6 +1438,17 @@ body.disconnected { filter: saturate(0.3); }
 .battery-bar { display: flex; gap: 2px; margin-top: 2px; }
 .battery-bar span { width: 12px; height: 6px; background: var(--line); border-radius: 1px; }
 .battery-bar span.filled { background: var(--ph); }
+/* Three switches per node: stream / logos / artists. Lit = in the show. Big
+   enough for a thumb in the dark, and they swallow the tap so the tile's own
+   click does not open the slave sheet underneath. */
+.tile-sw { display: flex; gap: 3px; margin-top: 3px; }
+.tile-sw button {
+  width: 22px; height: 20px; padding: 0; font-size: 11px; font-weight: bold;
+  line-height: 18px; border: 1px solid var(--line); border-radius: 3px;
+  background: #0d130d; color: var(--dim); cursor: pointer;
+}
+.tile-sw button.on { border-color: var(--ph); color: var(--bg); background: var(--ph); }
+.tile-sw button.off { border-color: #4a2020; color: #6b3030; background: #150808; }
 
 /* === Stale indicator (red border, not opacity) === */
 .stale { border-left: 3px solid var(--bad); }
@@ -1153,13 +1500,19 @@ canvas#preview { max-width: 100%; height: auto; background: #020402; border: 1px
 .preset-row .name { flex: 1; }
 .preset-row .tag { font-size: 10px; color: var(--ph); text-transform: uppercase; margin-left: 8px; }
 
-/* === Panic row === */
+/* === Feed row === */
 .panic-row { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
-button.blackout {
-  background: #1a0a0a; border: 2px solid var(--bad); color: var(--bad);
-  padding: 16px; font-size: 18px; font-weight: bold; flex: 1; border-radius: 4px; cursor: pointer;
+/* Two doors off the show screen into the only settings a set needs: which
+   logos run, and which artists are on. */
+.settings-row { display: flex; gap: 8px; margin-top: 8px; }
+.settings-row button {
+  flex: 1; padding: 12px; font-size: 13px; letter-spacing: 0.05em;
 }
-button.blackout:active { background: var(--bad); color: var(--bg); }
+.cycle-line {
+  margin-top: 8px; font-size: 12px; color: var(--dim); text-align: center;
+  min-height: 16px;
+}
+.cycle-line b { color: var(--ph); font-weight: bold; }
 .feed-toggle { display: flex; gap: 0; flex: 1; }
 .feed-toggle button {
   flex: 1; padding: 12px; border: 1px solid var(--line); background: var(--panel);
@@ -1369,14 +1722,18 @@ body.show .both-modes, body.setup .both-modes { display: block; }
     </div>
   </div>
 
-  <!-- Panic row -->
+  <!-- Feed + the two settings doors -->
   <div class="panic-row">
-    <button class="blackout" id="btn-blackout" onclick="toggleBlackout()">BLACKOUT</button>
     <div class="feed-toggle" id="feed-toggle">
       <button id="feed-on" onclick="setStream(true)">SENDING</button>
       <button id="feed-off" onclick="setStream(false)">SILENT</button>
     </div>
   </div>
+  <div class="settings-row">
+    <button onclick="openCycleSheet('logos')">LOGO SETTINGS</button>
+    <button onclick="openCycleSheet('artists')">ARTIST SETTINGS</button>
+  </div>
+  <div class="cycle-line" id="cycle-line"></div>
 
 </div>
 
@@ -1480,38 +1837,20 @@ body.show .both-modes, body.setup .both-modes { display: block; }
     </div>
   </div>
 
-  <!-- Idents (timers) -->
-  <div class="collapsible-header" onclick="toggleCollapsible(this)">Idents</div>
+  <!-- Idents (timers) live in the logo settings sheet, reachable from the
+       show screen: the one place a phone can get at them mid-set. One copy
+       of that DOM, opened from either mode. -->
+  <div class="collapsible-header" onclick="toggleCollapsible(this)">Idents &amp; cycles</div>
   <div class="collapsible-content panel">
-    <div id="holdnote" style="color:var(--ph);margin-bottom:8px"></div>
-    <div id="timer-table-wrap">
-      <!-- Built dynamically -->
-    </div>
-    <div class="row" id="taddrow" style="margin-top:10px">
-      <label>add</label>
-      <select id="tpreset"></select>
-      <span style="color:var(--dim)">on</span>
-      <span class="seg" id="ttargets"></span>
-      <span>for</span>
-      <input type="number" id="thold" min="1" max="600" value="20" style="width:66px">
-      <span>s every</span>
-      <input type="number" id="tevery" min="0.1" max="1440" step="any" value="5" style="width:74px">
-      <span>min</span>
-      <button onclick="addTimer()">+ add</button>
-    </div>
-    <div id="timer-cannot-fire" style="color:var(--bad);font-size:12px;margin-top:6px;display:none">
-      Feed is SILENT — timers cannot fire until sending resumes.
+    <div class="settings-row">
+      <button onclick="openCycleSheet('logos')">LOGO SETTINGS</button>
+      <button onclick="openCycleSheet('artists')">ARTIST SETTINGS</button>
     </div>
   </div>
 
   <!-- Rig -->
   <div class="collapsible-header" onclick="toggleCollapsible(this)">Rig</div>
   <div class="collapsible-content panel">
-    <!-- Set all row -->
-    <div class="row" style="margin-bottom:12px">
-      <label style="width:auto">set all</label>
-      <span class="seg" id="allseg"></span>
-    </div>
     <div id="setup-rig">
       <!-- Per-slave cards built dynamically -->
     </div>
@@ -1530,20 +1869,23 @@ body.show .both-modes, body.setup .both-modes { display: block; }
   <div class="collapsible-content panel">
     <div class="help-content">
       <h3>How it works</h3>
-      <p>Two switches control what the scopes draw: the global <strong>feed</strong> toggle (SENDING/SILENT) and each slave's <strong>SOURCE</strong> setting.</p>
-      <p><strong>STREAM</strong>: slave plays the audio streamed from this page. Falls back to its local pattern if the stream stops.</p>
-      <p><strong>HYBRID</strong>: streamed pattern + slave's own mic mixed at 50%.</p>
-      <p><strong>ON ITS OWN</strong>: slave generates its own pattern (mic, circle, lissajous, ramp, square). The controller sends it no audio.</p>
+      <p>What a scope draws comes from two places: the global <strong>feed</strong> toggle (SENDING/SILENT), and the three switches on that node's tile.</p>
+      <p><strong>S — streaming</strong>: off takes the node out of the show entirely. It draws its own mic and the controller sends it no audio. Use it for a scope that is not in XY.</p>
+      <p><strong>L — logos</strong>: off and the node sits on its mic while a logo is on air.</p>
+      <p><strong>A — artists</strong>: same, for artist names.</p>
+      <p>There is nothing else to set per node: the controller drives every slave's draw mode from those switches and what is on air, and pulls a node back if its own button or a reboot puts it somewhere else.</p>
+      <h3>Cycles</h3>
+      <p>LOGO SETTINGS and ARTIST SETTINGS each run a pair: A for N seconds, an optional mic pause, B, pause, round again. Artists carry the b2b line-ups — pick which pair is playing tonight. With both cycles on, the logos pair runs, then the artists pair. A cycle freezes while the feed is SILENT or an ident is on air.</p>
       <h3>Fallback</h3>
-      <p>A STREAM slave that stops receiving audio for ~1 s automatically draws its local pattern instead — whichever was last set. "ON ITS OWN" pattern doubles as this safety net.</p>
+      <p>A streaming slave that stops receiving audio for ~1 s automatically draws its local pattern instead — whichever was last set.</p>
       <h3>buf / lead</h3>
       <p>Received audio queued ahead of playback. Healthy ≈ 450 ms: the stream runs ahead because the WiFi radio pauses for ~300 ms every ~1.4 s. Hitting 0 = buffer underrun (beam blinks).</p>
       <h3>drop/s, lost/s, under/s</h3>
       <p>Should all be 0. Drops = late/duplicate packets. Lost = packets that never arrived (WiFi loss). Underruns = buffer ran dry (visible blink).</p>
       <h3>tx-drop vs lost</h3>
       <p>High lost/s with tx-drop ≈ 0 means the WiFi air is bad. High tx-drop means packets died in this controller's send buffer — no antenna fix. This distinction cost a night of debugging.</p>
-      <h3>Blackout</h3>
-      <p>Forces amplitude to 0 and sets all slaves to network mode. Does NOT write to slave flash. Survives controller crash (slaves fall back to local pattern).</p>
+      <h3>Idents</h3>
+      <p>An ident interrupts the show with a preset on a period (e.g. the logo between acts). It obeys the same three switches: an ident does not appear on a node that has that group switched off.</p>
       <h3>Presets</h3>
       <p>Snapshots of pattern settings saved on the controller. Survive restarts with one generation of undo (.bak file). Max 20 presets. Do NOT update during a timer hold — it will save the ident, not the artist.</p>
       <h3>Interval timers</h3>
@@ -1561,6 +1903,69 @@ body.show .both-modes, body.setup .both-modes { display: block; }
   </div>
   <div class="slave-sheet-inner" id="sheet-body">
     <!-- Populated dynamically -->
+  </div>
+</div>
+
+<!-- === LOGO / ARTIST SETTINGS SHEET ===
+     One sheet, two groups. The pair cycle is the same machine for both --
+     A, optional mic pause, B, pause, round again -- so it is the same markup
+     with the group swapped, and there is one place to fix when it is wrong at
+     two in the morning. The idents (interval stings) hang off the logo side
+     because that is where an operator goes looking for "show the logo every
+     five minutes", but the picker lists every preset. -->
+<div id="cycle-sheet" class="slave-sheet">
+  <div class="slave-sheet-header">
+    <h2 id="cycle-title">LOGO SETTINGS</h2>
+    <button class="slave-sheet-close" onclick="closeCycleSheet()">✕</button>
+  </div>
+  <div class="slave-sheet-inner">
+    <div class="panel">
+      <div class="row">
+        <label>cycle</label>
+        <span class="seg" id="cyc-onoff">
+          <button onclick="setCycle({enabled:true})">ON</button>
+          <button onclick="setCycle({enabled:false})">OFF</button>
+        </span>
+        <span style="color:var(--dim);font-size:12px" id="cyc-state"></span>
+      </div>
+      <div class="row">
+        <label>show each</label>
+        <input type="number" id="cyc-show" min="3" max="600" style="width:72px">
+        <span style="color:var(--dim)">s</span>
+        <label style="width:auto">then mic for</label>
+        <input type="number" id="cyc-pause" min="0" max="600" style="width:72px">
+        <span style="color:var(--dim)">s (0 = no pause)</span>
+        <button onclick="applyCycleTimes()">Apply</button>
+      </div>
+      <div id="cyc-pairs"></div>
+      <div style="margin-top:6px">
+        <button id="cyc-addpair" onclick="addCyclePair()">+ pair</button>
+      </div>
+      <div class="cycle-line" id="cyc-order" style="text-align:left"></div>
+    </div>
+
+    <div class="panel" id="cyc-timers">
+      <div class="setlist-header" style="margin-bottom:8px">IDENTS — interrupt the show on a period</div>
+      <div id="holdnote" style="color:var(--ph);margin-bottom:8px"></div>
+      <div id="timer-table-wrap">
+        <!-- Built dynamically -->
+      </div>
+      <div class="row" id="taddrow" style="margin-top:10px">
+        <label>add</label>
+        <select id="tpreset"></select>
+        <span style="color:var(--dim)">on</span>
+        <span class="seg" id="ttargets"></span>
+        <span>for</span>
+        <input type="number" id="thold" min="1" max="600" value="20" style="width:66px">
+        <span>s every</span>
+        <input type="number" id="tevery" min="0.1" max="1440" step="any" value="5" style="width:74px">
+        <span>min</span>
+        <button onclick="addTimer()">+ add</button>
+      </div>
+      <div id="timer-cannot-fire" style="color:var(--bad);font-size:12px;margin-top:6px;display:none">
+        Feed is SILENT — timers cannot fire until sending resumes.
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1599,14 +2004,8 @@ var pollFailures = 0;
 var lastKnownState = null;
 var activeSlaveSheet = null;
 var curPresetIdx = 0;
-/* parseFloat(null) is NaN, not null — and NaN !== null, so an unset key used to
-   send the FIRST press down the undo branch and post {amp: NaN}. The panic
-   button has to work on a phone that has never loaded this page before. */
-var blackoutAmp = null;
-try {
-  var _ba = parseFloat(localStorage.getItem('blackoutAmp'));
-  if (isFinite(_ba)) blackoutAmp = _ba;
-} catch(e) {}
+/* The settings sheet's group, or null when it is closed. */
+var activeCycleGroup = null;
 var editModeOn = false;
 var renameTarget = null;
 var renameNewName = null;
@@ -1778,32 +2177,6 @@ function setCur(n) {
   else localStorage.removeItem('hypePreset');
 }
 
-/* === BLACKOUT (§5.6 — amp=0, not gain=0) === */
-function toggleBlackout() {
-  if (blackoutAmp === null) {
-    if (!S) return;
-    blackoutAmp = S.pattern.amp;
-    localStorage.setItem('blackoutAmp', blackoutAmp.toString());
-    /* Force all slaves to network mode first (N15) */
-    for (var i = 0; i < S.slaves.length; i++) {
-      cmd(S.slaves[i].ip, {cmd: 'set_mode', mode: 'network'});
-    }
-    setP({amp: 0});
-    showToast('BLACKOUT — amplitude zeroed', 2000, 'error');
-    document.getElementById('btn-blackout').textContent = 'UNDO BLACKOUT';
-    document.getElementById('btn-blackout').style.borderColor = 'var(--ph)';
-    document.getElementById('btn-blackout').style.color = 'var(--ph)';
-  } else {
-    setP({amp: blackoutAmp});
-    blackoutAmp = null;
-    try { localStorage.removeItem('blackoutAmp'); } catch(e) {}
-    showToast('Blackout cancelled', 2000, 'success');
-    document.getElementById('btn-blackout').textContent = 'BLACKOUT';
-    document.getElementById('btn-blackout').style.borderColor = '';
-    document.getElementById('btn-blackout').style.color = '';
-  }
-}
-
 /* === NAV (PREV/NEXT) === */
 function goPrev() {
   var presets = S ? (S.presets || []) : [];
@@ -1927,11 +2300,14 @@ function drawPreview() {
   g.shadowBlur = 0;
 }
 
-/* === SLAVE VERDICT (one sentence) === */
+/* === SLAVE VERDICT (one sentence) ===
+   Hybrid is not settable any more, but a slave's own button still cycles into
+   it, so it is still drawn — named as the odd state it now is, rather than
+   quietly reading as STREAM. policy_loop pulls it back within a beacon. */
 function slaveVerdict(s) {
   var p = S.pattern;
   if (s.source) {
-    var what = s.mode === 2 ? p.kind + ' + own mic (HYBRID)' : p.kind;
+    var what = s.mode === 2 ? p.kind + ' + own mic (HYBRID — not a setting, being corrected)' : p.kind;
     if (p.kind === 'text') what = 'text "' + esc(p.text) + '" (' + (p.font||'duplex') + ')' + (s.mode === 2 ? ' + mic' : '');
     if (p.kind === 'figure') what = 'artwork "' + esc(p.figure || '?') + '"' + (s.mode === 2 ? ' + mic' : '');
     return {cls: 'ok', txt: 'Playing network stream — ' + what + ' @ ' + p.freq + ' Hz'};
@@ -1947,12 +2323,12 @@ function slaveVerdict(s) {
 }
 
 function modeName(s) {
-  if (s.source) return s.mode === 2 ? 'HYBRID' : 'STREAM';
+  if (s.source) return s.mode === 2 ? 'HYBRID?' : 'STREAM';
   return 'OWN';
 }
 
 function modeGlyph(s) {
-  if (s.source) return s.mode === 2 ? '■HYB' : '■NET';
+  if (s.source) return s.mode === 2 ? '■HYB?' : '■NET';
   return '▲OWN';
 }
 
@@ -1994,7 +2370,24 @@ function ensureTileGrid() {
       tile.className = 'rig-tile';
       tile.setAttribute('data-id', id);
       tile.onclick = (function(tid) { return function() { openSlaveSheet(tid); }; })(id);
-      tile.innerHTML = '<div class="tile-id">?</div><div class="tile-mode">?</div><div class="tile-status">LOST</div><div class="battery-bar"><span></span><span></span><span></span><span></span><span></span></div><div class="tile-age"></div>';
+      /* The id is known the moment the tile exists, and the switches are set
+         while the rig is still in its flight case — a tile reading "?" is a
+         switch you cannot aim. Only the mode waits for a beacon. */
+      tile.innerHTML = '<div class="tile-id">' + id + '</div><div class="tile-mode">—</div><div class="tile-status">LOST</div><div class="tile-sw">' +
+        '<button data-sw="stream" title="streaming to this node">S</button>' +
+        '<button data-sw="logos" title="show logos on this node">L</button>' +
+        '<button data-sw="artists" title="show artist names on this node">A</button>' +
+        '</div><div class="battery-bar"><span></span><span></span><span></span><span></span><span></span></div><div class="tile-age"></div>';
+      var sws = tile.querySelectorAll('.tile-sw button');
+      for (var j = 0; j < sws.length; j++) {
+        sws[j].onclick = (function(tid, key) {
+          return function(ev) {
+            /* The tile itself opens the slave sheet; a switch must not. */
+            ev.stopPropagation();
+            toggleNodeSw(tid, key);
+          };
+        })(id, sws[j].getAttribute('data-sw'));
+      }
       strip.appendChild(tile);
       slaveTiles[id] = tile;
     }
@@ -2144,7 +2537,24 @@ function openSlaveSheet(id) {
   for (var i = 0; i < S.slaves.length; i++) {
     if (S.slaves[i].id === id) { slave = S.slaves[i]; break; }
   }
-  if (!slave) return;
+  if (!slave) {
+    /* The node is off or out of range, but its switches are still the show's
+       settings and still worth changing — that is what rigging is. */
+    var s0 = nodeSw(id);
+    activeSlaveSheet = id;
+    document.getElementById('sheet-title').textContent = 'SLAVE ' + id + '  (not on the air)';
+    document.getElementById('sheet-body').innerHTML =
+      '<div class="verdict warn">No STATUS beacon from this node — powered off, or off the AP.</div>' +
+      '<h3>IN THE SHOW</h3>' +
+      '<div class="source-3way">' +
+        '<button class="' + (s0.stream ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'stream\\')">STREAMING</button>' +
+        '<button class="' + (s0.logos ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'logos\\')">LOGOS</button>' +
+        '<button class="' + (s0.artists ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'artists\\')">ARTISTS</button>' +
+      '</div>' +
+      '<p style="color:var(--dim);font-size:12px;margin-top:8px">These are kept on the controller and applied the moment the node reports in.</p>';
+    document.getElementById('slave-sheet').classList.add('active');
+    return;
+  }
   activeSlaveSheet = id;
   document.getElementById('sheet-title').textContent = 'SLAVE ' + id + '  ' + slave.ip;
 
@@ -2156,8 +2566,7 @@ function openSlaveSheet(id) {
   var rssiLabel = slave.rssi > -60 ? 'good' : slave.rssi > -75 ? 'marginal' : 'poor';
   var buf = Math.round(slave.depth / 48) + ' ms';
 
-  /* Source: active mode */
-  var activeSource = slave.source ? (slave.mode === 2 ? 'hybrid' : 'stream') : 'local';
+  var sw = nodeSw(slave.id);
 
   /* TX-drop info */
   var net = S.net || {};
@@ -2185,12 +2594,13 @@ function openSlaveSheet(id) {
   body.innerHTML =
     '<div class="verdict ' + verdict.cls + '">' + verdict.txt + '</div>' +
 
-    '<h3>SOURCE</h3>' +
+    '<h3>IN THE SHOW</h3>' +
     '<div class="source-3way">' +
-      '<button class="' + (activeSource === 'stream' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + slave.ip + '\\',\\'network\\')">STREAM</button>' +
-      '<button class="' + (activeSource === 'hybrid' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + slave.ip + '\\',\\'hybrid\\')">HYBRID<br><span style="font-size:11px;color:var(--dim)">+ its mic</span></button>' +
-      '<button class="' + (activeSource === 'local' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + slave.ip + '\\',\\'local\\')">ON ITS<br>OWN</button>' +
+      '<button class="' + (sw.stream ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'stream\\')">STREAMING<br><span style="font-size:11px;color:var(--dim)">' + (sw.stream ? 'on' : 'off — own mic') + '</span></button>' +
+      '<button class="' + (sw.logos ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'logos\\')">LOGOS<br><span style="font-size:11px;color:var(--dim)">' + (sw.logos ? 'on' : 'off') + '</span></button>' +
+      '<button class="' + (sw.artists ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'artists\\')">ARTISTS<br><span style="font-size:11px;color:var(--dim)">' + (sw.artists ? 'on' : 'off') + '</span></button>' +
     '</div>' +
+    '<p style="color:var(--dim);font-size:12px;margin:6px 0">Draw mode follows these: the node is on the stream when what is on air is switched on for it, and on its own mic otherwise.</p>' +
 
     '<div class="expandable">' +
       '<div class="expandable-header" onclick="this.classList.toggle(\\'open\\');this.nextElementSibling.classList.toggle(\\'open\\')">why?</div>' +
@@ -2256,19 +2666,6 @@ function closeSlaveSheet() {
   activeSlaveSheet = null;
 }
 
-function setSlaveSource(ip, mode) {
-  var slaveId = null;
-  for (var i = 0; i < (S && S.slaves ? S.slaves.length : 0); i++) {
-    if (S.slaves[i].ip === ip) { slaveId = S.slaves[i].id; break; }
-  }
-  if (slaveId) noteSlaveChange(slaveId);
-  if (mode === 'network') cmd(ip, {cmd: 'set_mode', mode: 'network'});
-  else if (mode === 'hybrid') cmd(ip, {cmd: 'set_mode', mode: 'hybrid'});
-  else cmd(ip, {cmd: 'set_mode', mode: 'local'});
-  /* Reopen sheet to refresh */
-  setTimeout(function() { openSlaveSheet(parseInt(activeSlaveSheet)); }, 200);
-}
-
 /* === RATES (for diagnostics) === */
 var rateHistory = {};
 function rates(s) {
@@ -2302,7 +2699,14 @@ function render() {
     fetchPreview();
   }
   drawPreview();
+  renderCycleLine();
   if (document.body.className === 'setup') renderSetup();
+  /* The settings sheet opens over either mode, so its clock and the ident
+     table have to tick outside renderSetup. */
+  if (activeCycleGroup) {
+    renderCycleSheet(false);
+    if (activeCycleGroup === 'logos') { renderTimers(); renderTargetBtns(); }
+  }
 }
 
 function renderHeader() {
@@ -2334,6 +2738,53 @@ function renderRigStrip() {
       tile.querySelector('.tile-status').style.display = 'block';
       tile.querySelector('.tile-status').textContent = 'LOST';
     }
+    /* Switches are policy, not status: they read the same whether the node
+       is on air or in a flight case. */
+    patchTileSwitches(parseInt(id));
+  }
+}
+
+/* === PER-NODE SWITCHES ===
+   Keyed by slave id, not ip, and settable on a node that is powered off:
+   rigging happens before the scopes come on, and the tile is there from the
+   moment the id is known. */
+function nodeSw(id) {
+  var n = (S && S.nodes) ? S.nodes[String(id)] : null;
+  return {
+    stream: !n || n.stream !== false,
+    logos: !n || n.logos !== false,
+    artists: !n || n.artists !== false
+  };
+}
+
+function toggleNodeSw(id, key) {
+  var f = nodeSw(id);
+  var body = {id: id};
+  body[key] = !f[key];
+  /* Paint it now: the poll is 1 Hz and a switch that looks dead for a second
+     gets pressed twice. */
+  if (S) {
+    if (!S.nodes) S.nodes = {};
+    var cur = S.nodes[String(id)] || {stream: true, logos: true, artists: true};
+    cur[key] = body[key];
+    S.nodes[String(id)] = cur;
+    patchTileSwitches(id);
+    /* The sheet is built once on open, so the buttons behind the tap would
+       keep their old highlight until it was closed and reopened. */
+    if (activeSlaveSheet === id) openSlaveSheet(id);
+  }
+  post("/api/node", body);
+}
+
+function patchTileSwitches(id) {
+  var tile = slaveTiles[id];
+  if (!tile) return;
+  var f = nodeSw(id);
+  var sws = tile.querySelectorAll('.tile-sw button');
+  for (var i = 0; i < sws.length; i++) {
+    var on = f[sws[i].getAttribute('data-sw')];
+    sws[i].classList.toggle('on', !!on);
+    sws[i].classList.toggle('off', !on);
   }
 }
 
@@ -2404,15 +2855,6 @@ function renderSetup() {
 
   /* Point-table preview fetch */
   if (isTableKind(p.kind) && p.sver !== TP.ver) fetchPreview();
-
-  /* Allseg (set all) */
-  var allseg = document.getElementById('allseg');
-  if (allseg) {
-    allseg.innerHTML = ['stream','hybrid','mic','circle','lissajous','ramp','square'].map(function(w) {
-      return '<button class="chip" onclick="setAllSource(\\'' + w + '\\')">' +
-        (w === 'stream' || w === 'hybrid' ? w.toUpperCase() : w) + '</button>';
-    }).join('');
-  }
 
   /* "Update current" is the only save path with the hold guard on it, and it
      shipped display:none with nothing to un-hide it. It is meaningful only
@@ -2652,6 +3094,172 @@ function delTimer(id, preset) {
   });
 }
 
+/* === LOGO / ARTIST SETTINGS SHEET ===
+   A cycle is a pair: A for show_s, optional mic pause, B, pause, round again.
+   Which pair runs is a choice for artists (three b2b line-ups on the card)
+   and usually a formality for logos. The page never invents the order -- it
+   draws S.cycle.seq, the exact list the controller will walk. */
+function openCycleSheet(group) {
+  activeCycleGroup = group;
+  document.getElementById('cycle-title').textContent =
+    group === 'logos' ? 'LOGO SETTINGS' : 'ARTIST SETTINGS';
+  /* Idents interrupt whatever is on air, so they belong to the show as a
+     whole, not to one group. They live on the logo card because that is where
+     "show the logo every five minutes" gets looked for. */
+  document.getElementById('cyc-timers').style.display =
+    group === 'logos' ? '' : 'none';
+  document.getElementById('cycle-sheet').classList.add('active');
+  renderCycleSheet(true);
+}
+
+function closeCycleSheet() {
+  document.getElementById('cycle-sheet').classList.remove('active');
+  activeCycleGroup = null;
+}
+
+function cycleCfg() {
+  if (!S || !S.cycles || !activeCycleGroup) return null;
+  return S.cycles[activeCycleGroup];
+}
+
+function setCycle(patch) {
+  if (!activeCycleGroup) return;
+  patch.group = activeCycleGroup;
+  post("/api/cycle", patch).then(function() { return refresh(); })
+    .then(function() { renderCycleSheet(true); });
+}
+
+function applyCycleTimes() {
+  setCycle({show_s: +document.getElementById('cyc-show').value,
+            pause_s: +document.getElementById('cyc-pause').value});
+}
+
+function addCyclePair() {
+  var c = cycleCfg();
+  if (!c) return;
+  var pairs = (c.pairs || []).map(function(p) { return [p[0], p[1]]; });
+  pairs.push(['', '']);
+  setCycle({pairs: pairs});
+}
+
+function setCyclePair(i, slot, name) {
+  var c = cycleCfg();
+  if (!c) return;
+  var pairs = (c.pairs || []).map(function(p) { return [p[0], p[1]]; });
+  if (!pairs[i]) return;
+  pairs[i][slot] = name;
+  setCycle({pairs: pairs});
+}
+
+function delCyclePair(i) {
+  var c = cycleCfg();
+  if (!c) return;
+  var pairs = (c.pairs || []).map(function(p) { return [p[0], p[1]]; });
+  pairs.splice(i, 1);
+  setCycle({pairs: pairs});
+}
+
+function presetOptions(sel) {
+  var names = (S && S.presets) ? S.presets : [];
+  var html = '<option value=""' + (sel ? '' : ' selected') + '>— none —</option>';
+  for (var i = 0; i < names.length; i++) {
+    html += '<option' + (names[i] === sel ? ' selected' : '') + '>' + esc(names[i]) + '</option>';
+  }
+  /* A pair naming a preset that has since been deleted or renamed keeps its
+     slot visible instead of silently reading as "none". */
+  if (sel && names.indexOf(sel) < 0) {
+    html += '<option selected>' + esc(sel) + '</option>';
+  }
+  return html;
+}
+
+function renderCycleSheet(force) {
+  if (!activeCycleGroup) return;
+  var c = cycleCfg();
+  if (!c) return;
+  var typing = document.activeElement
+    && document.activeElement.closest('#cycle-sheet')
+    && document.activeElement.tagName === 'INPUT';
+  var seg = document.getElementById('cyc-onoff').querySelectorAll('button');
+  seg[0].classList.toggle('on', !!c.enabled);
+  seg[1].classList.toggle('on', !c.enabled);
+  if (force || !typing) {
+    document.getElementById('cyc-show').value = c.show_s;
+    document.getElementById('cyc-pause').value = c.pause_s;
+  }
+
+  var cyc = S.cycle;
+  var st = '';
+  if (!c.enabled) {
+    st = 'off';
+  } else if (!S.stream_on) {
+    st = 'frozen — feed is SILENT';
+  } else if (S.hold) {
+    st = 'frozen — an ident is on air';
+  } else if (cyc && cyc.group === activeCycleGroup) {
+    st = 'on air: "' + esc(cyc.preset) + '", ' + fmtLeft(cyc.left_s) + ' left';
+  } else if (cyc && cyc.group === '') {
+    st = 'mic pause, ' + fmtLeft(cyc.left_s) + ' left';
+  } else {
+    st = 'running';
+  }
+  document.getElementById('cyc-state').textContent = st;
+
+  var pairs = c.pairs || [];
+  var html = '';
+  for (var i = 0; i < pairs.length; i++) {
+    var playing = (c.idx === i);
+    html += '<div class="row" style="margin-top:6px">' +
+      '<button class="' + (playing ? 'on' : '') + '" style="width:88px" onclick="setCycle({idx:' + i + '})">' +
+        (playing ? 'PLAYING' : 'select') + '</button>' +
+      '<select onchange="setCyclePair(' + i + ',0,this.value)">' + presetOptions(pairs[i][0]) + '</select>' +
+      '<span style="color:var(--dim)">then</span>' +
+      '<select onchange="setCyclePair(' + i + ',1,this.value)">' + presetOptions(pairs[i][1]) + '</select>' +
+      '<button class="danger" onclick="delCyclePair(' + i + ')">✕</button>' +
+      '</div>';
+  }
+  if (!pairs.length) {
+    html = '<div style="color:var(--dim);padding:8px">No pairs — add one</div>';
+  }
+  document.getElementById('cyc-pairs').innerHTML = html;
+  document.getElementById('cyc-addpair').style.display =
+    pairs.length >= 6 ? 'none' : '';
+
+  /* "of" and not "group": a pause has no group (nothing is on the stream),
+     but it belongs to the cycle whose card is open — the artists card was
+     drawing the logo cycle's pauses as its own. */
+  var order = (cyc && cyc.seq) ? cyc.seq.filter(function(s) {
+    return s.of === activeCycleGroup;
+  }) : [];
+  var mine = order.some(function(s) { return s.group === activeCycleGroup; });
+  document.getElementById('cyc-order').innerHTML = (c.enabled && mine)
+    ? 'running order: ' + order.map(function(s) {
+        return s.group === '' ? '<b>mic ' + s.secs + 's</b>' : esc(s.preset) + ' ' + s.secs + 's';
+      }).join(' → ')
+    : (c.enabled ? '<span style="color:var(--bad)">nothing to run — the selected pair names no preset in the set list</span>' : '');
+}
+
+/* One line on the show screen: what the cycle is doing, without opening
+   anything. A rotating rig with no visible clock is how a preset gets loaded
+   by hand ten seconds before the cycle replaces it. */
+function renderCycleLine() {
+  var el = document.getElementById('cycle-line');
+  if (!el) return;
+  var cyc = S.cycle;
+  var on = S.cycles && (S.cycles.logos.enabled || S.cycles.artists.enabled);
+  if (!on) { el.innerHTML = ''; return; }
+  if (!S.stream_on) { el.innerHTML = 'cycle frozen — feed is SILENT'; return; }
+  if (S.hold) { el.innerHTML = 'cycle frozen — ident on air'; return; }
+  if (!cyc) { el.innerHTML = 'cycle starting…'; return; }
+  var seq = cyc.seq || [];
+  var nxt = seq.length ? seq[(cyc.pos + 1) % seq.length] : null;
+  el.innerHTML = (cyc.group === ''
+      ? '<b>mic pause</b>'
+      : cyc.group + ': <b>' + esc(cyc.preset) + '</b>')
+    + ' · ' + fmtLeft(cyc.left_s) + ' left'
+    + (nxt ? ' · next ' + (nxt.group === '' ? 'mic pause' : esc(nxt.preset)) : '');
+}
+
 /* === SETUP RIG (per-slave cards) === */
 function renderSetupRig() {
   if (document.activeElement && document.activeElement.closest('#setup-rig')) return;
@@ -2663,7 +3271,7 @@ function renderSetupRig() {
   for (var i = 0; i < S.slaves.length; i++) {
     var s = S.slaves[i];
     var verdict = slaveVerdict(s);
-    var activeMode = s.source ? (s.mode === 2 ? 'hybrid' : 'stream') : 'local';
+    var sw = nodeSw(s.id);
 
     var card = document.createElement('div');
     card.className = 'panel';
@@ -2674,11 +3282,11 @@ function renderSetupRig() {
       '</div>' +
       '<div class="verdict ' + verdict.cls + '" style="margin-bottom:8px">' + verdict.txt + '</div>' +
       '<div class="row">' +
-        '<label>source</label>' +
+        '<label>in the show</label>' +
         '<div class="source-3way">' +
-          '<button class="' + (activeMode === 'stream' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + s.ip + '\\',\\'network\\')">STREAM</button>' +
-          '<button class="' + (activeMode === 'hybrid' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + s.ip + '\\',\\'hybrid\\')">HYBRID</button>' +
-          '<button class="' + (activeMode === 'local' ? 'active' : '') + '" onclick="setSlaveSource(\\'' + s.ip + '\\',\\'local\\')">OWN</button>' +
+          '<button class="' + (sw.stream ? 'active' : '') + '" onclick="toggleNodeSw(' + s.id + ',\\'stream\\')">STREAMING</button>' +
+          '<button class="' + (sw.logos ? 'active' : '') + '" onclick="toggleNodeSw(' + s.id + ',\\'logos\\')">LOGOS</button>' +
+          '<button class="' + (sw.artists ? 'active' : '') + '" onclick="toggleNodeSw(' + s.id + ',\\'artists\\')">ARTISTS</button>' +
         '</div>' +
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
@@ -2714,19 +3322,6 @@ function renderSetupRig() {
         });
       };
     })(i);
-  }
-}
-
-function setAllSource(mode) {
-  if (!S || !S.slaves) return;
-  noteSlaveChange('all');
-  for (var i = 0; i < S.slaves.length; i++) {
-    let ip = S.slaves[i].ip;
-    if (mode === 'stream') cmd(ip, {cmd: 'set_mode', mode: 'network'});
-    else if (mode === 'hybrid') cmd(ip, {cmd: 'set_mode', mode: 'hybrid'});
-    else cmd(ip, {cmd: 'set_pattern', pattern: mode}).then(function() {
-      return cmd(ip, {cmd: 'set_mode', mode: 'local'});
-    });
   }
 }
 
@@ -2943,6 +3538,10 @@ def make_http_handler(state, cmds):
                 return self._preset(state, body)
             elif self.path == "/api/timer":
                 return self._timer(state, body)
+            elif self.path == "/api/node":
+                return self._node(state, cmds, body)
+            elif self.path == "/api/cycle":
+                return self._cycle(state, cmds, body)
             elif self.path == "/api/cmd":
                 ip, cmd_obj = body.get("ip"), body.get("cmd")
                 if not ip or not isinstance(cmd_obj, dict):
@@ -3142,6 +3741,55 @@ def make_http_handler(state, cmds):
             would miss a hold that starts between the test and the call and
             then revert the operator's pattern a hold later."""
             end_hold(state, cmds, restore_pattern=False)
+
+        def _node(self, state, cmds, body):
+            """Flip one node's switches. {"id": 100, "logos": false}
+
+            Only the keys present move, so the page can send one switch
+            without echoing a stale copy of the other two back over a change
+            someone else just made from a second phone.
+            """
+            try:
+                sid = int(body.get("id"))
+            except (TypeError, ValueError):
+                return self._json({"err": "need a slave id"}, 400)
+            if not 0 <= sid <= 255:
+                return self._json({"err": "id out of range"}, 400)
+            with state.lock:
+                f = dict(state.node_flags.get(sid) or NODE_DEFAULTS)
+                for k in NODE_DEFAULTS:
+                    if k in body:
+                        f[k] = bool(body[k])
+                state.node_flags[sid] = f
+                nodes = {k: dict(v) for k, v in state.node_flags.items()}
+            save_nodes(nodes)
+            # Do not wait up to a tick to obey the tap: the operator is
+            # looking at the scope while they press it.
+            reconcile_modes(state, cmds)
+            return self._json({"ok": True, "id": sid, "flags": f})
+
+        def _cycle(self, state, cmds, body):
+            """Edit one pair cycle. {"group": "artists", "enabled": true,
+            "show_s": 30, "pause_s": 10, "idx": 1, "pairs": [[a, b], ...]}"""
+            group = body.get("group")
+            if group not in CYCLE_GROUPS:
+                return self._json({"err": "need group logos|artists"}, 400)
+            with state.lock:
+                cur = dict(state.cycles[group])
+                cur.update({k: body[k] for k in
+                            ("enabled", "show_s", "pause_s", "idx", "pairs")
+                            if k in body})
+                c = clean_cycle(cur, group)
+                state.cycles[group] = c
+                # Let advance_cycle notice the change on its own terms: it
+                # compares the sequence signature and restarts the order, so
+                # switching artists on mid-set starts at that pair's A side
+                # instead of halfway through it.
+                cycles = {g: dict(v) for g, v in state.cycles.items()}
+            save_cycles(cycles)
+            advance_cycle(state, 0)
+            reconcile_modes(state, cmds)
+            return self._json({"ok": True, "group": group, "cycle": c})
 
         def _timer(self, state, body):
             op = body.get("op")
@@ -3507,6 +4155,8 @@ def main():
     threading.Thread(target=persist_loop, args=(state,), daemon=True).start()
     threading.Thread(target=timer_loop, args=(state, cmds),
                      daemon=True).start()
+    threading.Thread(target=policy_loop, args=(state, cmds),
+                     daemon=True).start()
 
     print(f"[controller] web on :{args.http_port}, iface={args.iface_ip}, "
           f"lead={LEAD_US/1000:.0f}ms", flush=True)
@@ -3523,6 +4173,21 @@ def main():
     print(f"[controller] pattern {shown} {state.freq:g} Hz amp {state.amp:.2f}"
           + ("" if load_live() else "  (defaults — no saved state yet)"),
           flush=True)
+    # Both of these decide what a scope draws, and both survive a reboot. A
+    # rig that came back with a cycle running or a node switched out of the
+    # show, and said neither, is twenty minutes of cable-checking.
+    for g, c in state.cycles.items():
+        if c["enabled"] and c["pairs"]:
+            pair = c["pairs"][min(c["idx"], len(c["pairs"]) - 1)]
+            print(f"[controller] {g} cycle on: {' / '.join(pair)}, "
+                  f"{c['show_s']}s each"
+                  + (f", {c['pause_s']}s mic between" if c["pause_s"] else ""),
+                  flush=True)
+    off = [f"{sid}({','.join(k for k, v in f.items() if not v)})"
+           for sid, f in sorted(state.node_flags.items())
+           if not all(f.values())]
+    if off:
+        print("[controller] node switches off: " + " ".join(off), flush=True)
     stream_loop(state, args.iface_ip)
 
 

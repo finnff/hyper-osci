@@ -736,3 +736,52 @@ two logos, matched brightness, no per-preset amp fiddling at the desk. The
 preset keeps its old `text: "Flux\nCollective"` value even though `kind` is
 now `figure`: if the `.tbl` ever goes missing, one field flip puts the words
 back rather than a circle.
+
+## Node switches + pair cycles; hybrid and blackout removed (2026-08-21)
+
+**One authority for slave draw modes.** Before this the mode came from four
+places — the slave sheet, "set all", a timer hold, the slave's own button —
+and the only way to know what a scope would draw was to walk the rig.
+`policy_loop` (0.25 s tick, own thread) now derives every mode from three
+per-node switches and what is on air:
+
+| | on air | node switch | mode |
+|---|---|---|---|
+| out of the show | anything | `stream` off | local (own mic) |
+| a logo (`kind=figure`) | HYPERWAVES / Flux | `logos` off | local |
+| a name (`kind=text`) | any artist preset | `artists` off | local |
+| a cycle pause | — | — | local, every node |
+| otherwise | — | — | network |
+
+It is level-triggered against the 1 Hz STATUS beacon and re-sends no sooner
+than `MODE_RESEND_US` (3 s), so a node that reboots, or whose own button was
+pressed, is corrected without anything having to observe the event. Switches
+live in `~/hype_nodes.json` keyed by **slave id**, settable while the rig is
+powered off — which is when rigging actually happens.
+
+Consequences, all deliberate:
+
+- **`fire_timer` no longer touches modes.** It installs the preset; policy
+  reads the hold's targets and spreads the rig. An ident therefore obeys the
+  switches — an artist ident does not appear on a scope with `artists` off —
+  and a release no longer restores a remembered mode, it re-derives one. The
+  post-release cooldown stays, but for the honest reason (two stings back to
+  back read as a fault), not the old mode-snapshot one.
+- **HYBRID is gone from the UI.** A node found in hybrid (its own button still
+  cycles into it) is drawn as `■HYB?` and pulled back.
+- **BLACKOUT is gone.** It forced every slave to network and zeroed amp; with
+  policy owning modes, the mode half fought the switches, and the amp half is
+  the SIZE dial.
+
+**Pair cycles.** Two of them, logos and artists, in `~/hype_cycles.json`:
+A for `show_s`, an optional `pause_s` of mic, B, pause, round again. Artists
+carries the three b2b line-ups and an index for tonight's. Both on = the logo
+pair runs, then the artist pair; the page draws the exact step list the
+controller will walk, so the order is never a guess. A cycle freezes (deadline
+pushed out, not drifting) while the feed is SILENT or an ident is on air, and
+restarts at its A side when the config changes. Both survive a reboot, and the
+boot banner names the running cycle and every switched-off node.
+
+Measured on the board: `test_policy.py` (46 checks) plus the existing four
+suites all pass; a 5 s/3 s logo cycle stepped 4.9 s / 3.3 s on the wall clock
+over five transitions.

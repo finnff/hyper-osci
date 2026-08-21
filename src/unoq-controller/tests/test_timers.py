@@ -27,6 +27,8 @@ _TD = tempfile.mkdtemp(prefix="hctimers-")
 os.environ["HYPE_STATE"] = os.path.join(_TD, "state.json")
 os.environ["HYPE_PRESETS"] = os.path.join(_TD, "presets.json")
 os.environ["HYPE_TIMERS"] = os.path.join(_TD, "timers.json")
+os.environ["HYPE_NODES"] = os.path.join(_TD, "nodes.json")
+os.environ["HYPE_CYCLES"] = os.path.join(_TD, "cycles.json")
 import hype_controller as hc  # noqa: E402
 
 FAIL = []
@@ -54,7 +56,11 @@ class StubCmds:
 
 
 def fresh(pattern="circle"):
-    """A State with three slaves: 1 on network, 2 on local, 3 on hybrid."""
+    """A State with three slaves: 1 on network, 2 on local, 3 in hybrid.
+
+    Hybrid is not settable any more; 3 is left there because a slave's own
+    button can still produce it and policy has to pull it out.
+    """
     st = hc.State(pattern)
     st.slaves = {
         "10.0.0.1": {"ip": "10.0.0.1", "id": 1, "mode": 1, "last_us": 0},
@@ -94,18 +100,24 @@ ok(hc.clean_timer({"preset": "a/b<c>"})["preset"] == "abc",
    "preset name goes through the same charset filter as a preset")
 
 # -------------------------------------------------------------------- fire
-print("\n[timers] fire: the right slaves, the right restore data")
+# A hold no longer touches modes. It installs the preset and records what to
+# put back; policy_loop reads the hold and moves the nodes, which is what
+# makes a sting obey the per-node switches instead of overriding them.
+print("\n[timers] fire: the preset on air, the restore data recorded")
 st, cmds = fresh(), StubCmds()
 before = st.live_snapshot()
 ok(hc.fire_timer(st, cmds, rule()) is None, "fires")
 ok(st.kind == "rose" and st.ratio_a == 6, "the preset is on air",
    f"{st.kind} a={st.ratio_a}")
-ok(cmds.modes() == {"10.0.0.1": "network", "10.0.0.2": "network"},
-   "only the targets were switched, and to network", str(cmds.sent))
-ok(st.timer_hold["modes"] == {"10.0.0.1": 1, "10.0.0.2": 0},
-   "each target's previous draw setting was recorded",
-   str(st.timer_hold["modes"]))
+ok(cmds.sent == [], "the fire itself commands nobody", str(cmds.sent))
+ok(st.timer_hold["targets"] == [1, 2], "the rule's targets are on the hold",
+   str(st.timer_hold["targets"]))
 ok(st.timer_hold["pattern"] == before, "the pre-hold pattern was recorded")
+
+hc.reconcile_modes(st, cmds)
+ok(cmds.modes() == {"10.0.0.2": "network", "10.0.0.3": "local"},
+   "policy puts the targets on the stream and everyone else on mic "
+   "(slave 1 is already on network)", str(cmds.sent))
 
 print("\n[timers] one hold at a time")
 ok(hc.fire_timer(st, cmds, rule(id=2)) == hc.FIRE_HOLDING,
@@ -113,14 +125,23 @@ ok(hc.fire_timer(st, cmds, rule(id=2)) == hc.FIRE_HOLDING,
 ok(st.timer_hold["id"] == 1, "and the first one's restore data survives")
 
 # ------------------------------------------------------------------ release
-print("\n[timers] release: modes and pattern both go back")
+print("\n[timers] release: the pattern goes back, policy re-spreads the rig")
 cmds.sent.clear()
 hc.end_hold(st, cmds)
 ok(st.timer_hold is None, "the hold is cleared")
-ok(cmds.modes() == {"10.0.0.1": "network", "10.0.0.2": "local"},
-   "every target back to the setting it had — including the local one",
-   str(cmds.sent))
 ok(st.live_snapshot() == before, "the pre-hold pattern is back")
+# Deliberately NOT "the mode each slave had before". A restored mode was a
+# memory of a state the operator may since have changed; policy is a rule
+# anyone can read off the tiles. With the hold gone and a circle on air, every
+# node whose stream switch is on belongs on the stream.
+for s in st.slaves.values():
+    s["mode"] = 0 if s["id"] != 1 else 1
+cmds.sent.clear()
+st.mode_sent.clear()
+hc.reconcile_modes(st, cmds)
+ok(cmds.modes() == {"10.0.0.2": "network", "10.0.0.3": "network"},
+   "the targets are released back onto the show, not onto a stale mode",
+   str(cmds.sent))
 
 print("\n[timers] the operator taking over keeps their pattern")
 st, cmds = fresh(), StubCmds()
@@ -130,14 +151,10 @@ cmds.sent.clear()
 hc.end_hold(st, cmds, restore_pattern=False)
 ok(st.kind == "lissajous" and st.freq == 333.0,
    "their pattern is NOT reverted out from under them", st.kind)
-ok(cmds.modes() == {"10.0.0.1": "network", "10.0.0.2": "local"},
-   "but the slaves are still put back", str(cmds.sent))
 
 # ----------------------------------------------------------------- cooldown
-# A slave's mode is only known from its 1 Hz STATUS beacon, so just after a
-# release the controller still believes a slave it has just put back on local
-# is on network. Firing inside that window would record the forced mode as
-# the "previous" one and strand the slave on network for good.
+# Two stings back to back read as a fault: the first has not left the scopes
+# before the next lands.
 print("\n[timers] the post-release cooldown")
 ok(hc.fire_timer(st, cmds, rule(id=3)) == hc.FIRE_COOLDOWN,
    "a fire straight after a release is refused")
@@ -148,13 +165,16 @@ ok(hc.fire_timer(st, cmds, rule(id=3)) is None, "and allowed once it passes")
 print("\n[timers] targeting")
 st, cmds = fresh(), StubCmds()
 hc.fire_timer(st, cmds, rule(targets=[]))
-ok(sorted(cmds.modes()) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
-   "no targets means every slave", str(sorted(cmds.modes())))
+hc.reconcile_modes(st, cmds)
+ok(hc.desired_modes(st) == {"10.0.0.1": 1, "10.0.0.2": 1, "10.0.0.3": 1},
+   "no targets means every slave", str(hc.desired_modes(st)))
 st, cmds = fresh(), StubCmds()
 hc.fire_timer(st, cmds, rule(targets=[7]))
-ok(cmds.sent == [] and st.timer_hold is not None,
-   "a rule for a slave that is not here still holds, but commands nobody",
-   str(cmds.sent))
+hc.reconcile_modes(st, cmds)
+ok(st.timer_hold is not None
+   and set(hc.desired_modes(st).values()) == {0},
+   "a rule for a slave that is not here still holds, and shows on nobody",
+   str(hc.desired_modes(st)))
 st, cmds = fresh(), StubCmds()
 ok(hc.fire_timer(st, cmds, rule(preset="GONE")) == hc.FIRE_NO_PRESET,
    "a rule whose preset was deleted does not fire")
