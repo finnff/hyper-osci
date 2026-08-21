@@ -22,7 +22,7 @@ sys.path.insert(0, os.environ.get("HC_DIR", HERE))
 _TD = tempfile.mkdtemp(prefix="hcpolicy-")
 os.environ["HYPE_STATE"] = os.path.join(_TD, "state.json")
 os.environ["HYPE_PRESETS"] = os.path.join(_TD, "presets.json")
-os.environ["HYPE_TIMERS"] = os.path.join(_TD, "timers.json")
+
 os.environ["HYPE_NODES"] = os.path.join(_TD, "nodes.json")
 os.environ["HYPE_CYCLES"] = os.path.join(_TD, "cycles.json")
 os.environ["HYPE_FIGURES"] = os.path.join(_TD, "figures")
@@ -150,12 +150,16 @@ set_live(st, "text")
 ok(hc.desired_modes(st)["10.0.0.3"] == 0,
    "artists off: the name does not appear on that scope")
 
-print("\n[policy] a pause is the mic, for everyone")
+print("\n[policy] the mic is the normal state, not a gap")
 st = fresh()
 set_live(st, "figure")
-st.cycle_step = {"group": None, "preset": "", "secs": 10}
+st.cycle_mic = True
 ok(set(hc.desired_modes(st).values()) == {0},
-   "every node is on its own mic during a cycle pause",
+   "between bursts, and during a pause, every node is on its own mic",
+   str(hc.desired_modes(st)))
+st.cycle_mic = False
+ok(set(hc.desired_modes(st).values()) == {1},
+   "with no cycle running at all the panel's pattern streams as before",
    str(hc.desired_modes(st)))
 
 # --------------------------------------------------------------- reconcile
@@ -217,53 +221,105 @@ ok(hc.clean_cycle({"show_s": 9999}, "logos")["show_s"] == 600,
    "show clamps to 600 s")
 ok(hc.clean_cycle({"show_s": 0}, "logos")["show_s"] == 3,
    "and up to 3 s — a one-second logo is a flicker, not a logo")
+ok(hc.clean_cycle({}, "logos")["every_s"] == 300,
+   "the period defaults to five minutes")
+ok(hc.clean_cycle({"every_s": 20, "show_s": 30, "pause_s": 5},
+                  "logos")["every_s"] == 75,
+   "a period inside the burst is pushed past it — the mic must get the "
+   "stream back", str(hc.clean_cycle({"every_s": 20, "show_s": 30,
+                                      "pause_s": 5}, "logos")))
 ok(hc.clean_cycle({"idx": 9, "pairs": [["A", "B"]]}, "logos")["idx"] == 0,
    "an index past the end of the pair list is clamped")
 ok(hc.clean_cycle({"pairs": [["A", ""], ["", ""], "junk"]}, "logos")["pairs"]
    == [["A", ""]],
    "an empty pair and a junk entry are dropped, a half pair is kept")
 
-print("\n[cycle] the running order")
+print("\n[cycle] what one burst plays")
 cyc = hc.load_cycles()
-cyc["logos"].update(enabled=True, show_s=20, pause_s=5,
+cyc["logos"].update(enabled=True, show_s=20, pause_s=5, every_s=120,
                     pairs=[["HYPERWAVES", "Flux Collective"]], idx=0)
 names = ["HYPERWAVES", "Flux Collective", "Anemi", "HyperLili"]
-seq = hc.cycle_sequence(cyc, names)
+seq = hc.burst_steps(cyc["logos"], "logos", names)
 ok([(s["group"], s["preset"], s["secs"]) for s in seq]
    == [("logos", "HYPERWAVES", 20), (None, "", 5),
-       ("logos", "Flux Collective", 20), (None, "", 5)],
-   "A, pause, B, pause", str(seq))
+       ("logos", "Flux Collective", 20)],
+   "A, mic pause, B — and no trailing pause: the mic follows anyway",
+   str(seq))
+ok(hc.cycle_burst_s(cyc["logos"]) == 45,
+   "the burst holds the stream for 20 + 5 + 20")
 cyc["logos"]["pause_s"] = 0
-ok(len(hc.cycle_sequence(cyc, names)) == 2,
-   "no pause seconds means no pause steps")
-cyc["artists"].update(enabled=True, show_s=40, pause_s=0,
-                      pairs=[["Anemi", "HyperLili"], ["Gone", "Missing"]],
-                      idx=0)
-seq = hc.cycle_sequence(cyc, names)
-ok([s["preset"] for s in seq]
-   == ["HYPERWAVES", "Flux Collective", "Anemi", "HyperLili"],
-   "both cycles on: the logo pair runs, then the artist pair", str(seq))
-cyc["artists"]["idx"] = 1
-ok([s["preset"] for s in hc.cycle_sequence(cyc, names)]
-   == ["HYPERWAVES", "Flux Collective"],
-   "a pair naming presets that are not in the set list is skipped, not stuck")
+ok(len(hc.burst_steps(cyc["logos"], "logos", names)) == 2,
+   "no pause seconds means no pause step")
+cyc["logos"]["idx"] = 0
+cyc["logos"]["pairs"] = [["Gone", "Missing"]]
+ok(hc.burst_steps(cyc["logos"], "logos", names) == [],
+   "a pair naming presets that are not in the set list plays nothing")
+cyc["logos"]["pairs"] = [["HYPERWAVES", "Flux Collective"]]
 cyc["logos"]["enabled"] = False
-ok([s["group"] for s in hc.cycle_sequence(cyc, names)] == [],
-   "switching a group off takes its steps out of the order")
+ok(hc.burst_steps(cyc["logos"], "logos", names) == [],
+   "and a group that is switched off plays nothing")
+
+print("\n[cycle] the two grids are offset so their bursts miss")
+cyc = hc.load_cycles()
+cyc["logos"].update(enabled=True, show_s=5, pause_s=0, every_s=120,
+                    pairs=[["HYPERWAVES", "Flux Collective"]])
+cyc["artists"].update(enabled=True, show_s=7, pause_s=1, every_s=60)
+ph = hc.cycle_phases(cyc)
+
+
+def _collide(cyc, ph):
+    """(closest approach, overlapping bursts) between the two grids."""
+    return hc._placement_score(
+        hc._fire_windows(ph["logos"], cyc["logos"]["every_s"],
+                         hc.cycle_burst_s(cyc["logos"])),
+        hc._fire_windows(ph["artists"], cyc["artists"]["every_s"],
+                         hc.cycle_burst_s(cyc["artists"])))
+
+
+gap, hits, _ = _collide(cyc, ph)
+ok(hits == 0 and gap > 0,
+   "unphased both would land on 0, 120, 240 — phased they never touch",
+   f"phases={ph}, closest approach {gap}s")
+ok(ph["artists"] == 0 and 0 < ph["logos"] < 120,
+   "the shorter period holds phase 0 and the longer one moves around it",
+   str(ph))
+cyc["logos"]["enabled"] = False
+ok(hc.cycle_phases(cyc)["artists"] == 0,
+   "one cycle on its own needs no offset")
+# 97 s against 60 s share no useful multiple: some collision is unavoidable,
+# but the placement must still beat both starting together.
+cyc["logos"].update(enabled=True, every_s=97, show_s=8, pause_s=0)
+_, hits_phased, _ = _collide(cyc, hc.cycle_phases(cyc))
+_, hits_zero, _ = _collide(cyc, {"logos": 0, "artists": 0})
+# _placement_score reports -collisions, so bigger is better.
+ok(hits_phased > hits_zero,
+   "periods that cannot always miss still miss far more often",
+   f"{-hits_phased} collisions phased vs {-hits_zero} at phase 0")
 
 # ------------------------------------------------------------ cycle clock
-print("\n[cycle] stepping, freezing, restarting")
+print("\n[cycle] a burst, then the mic until the next one")
 st = fresh()
-st.cycles["logos"].update(enabled=True, show_s=3, pause_s=2,
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=2, every_s=60,
                           pairs=[["HYPERWAVES", "Flux Collective"]], idx=0)
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_mic,
+   "nothing fires on the first tick: the grid starts a full period out, so "
+   "a restart does not fire into a rig someone is still cabling up")
+ok(st.cycle_next["logos"] > hc.mono_us(), "and the burst is armed",
+   str(st.cycle_next))
+
+st.cycle_next["logos"] = hc.mono_us() - 1     # as if the period had elapsed
 step = hc.advance_cycle(st, 250_000)
 ok(step and step["preset"] == "HYPERWAVES" and st.kind == "figure"
    and st.figure == "hyperwaves",
-   "the first step goes on air immediately", f"{st.kind} {st.figure}")
+   "when it comes due the A side takes the stream", f"{st.kind} {st.figure}")
+ok(not st.cycle_mic and set(hc.desired_modes(st).values()) == {1},
+   "and the rig comes off the mic for it")
 ok(hc.advance_cycle(st, 250_000) is None,
-   "and the next tick does nothing while its seconds are unspent")
+   "the next tick does nothing while its seconds are unspent")
+ok(st.cycle_next["logos"] > hc.mono_us(),
+   "the grid has already stepped to the next slot", str(st.cycle_next))
 
-st.cycle_until_us = hc.mono_us() - 1          # as if the 3 s had passed
+st.cycle_run["until_us"] = hc.mono_us() - 1
 step = hc.advance_cycle(st, 250_000)
 ok(step and step["group"] is None, "then the mic pause", str(step))
 ok(st.figure == "hyperwaves",
@@ -271,43 +327,97 @@ ok(st.figure == "hyperwaves",
 ok(set(hc.desired_modes(st).values()) == {0},
    "and every node is on its mic for it")
 
-st.cycle_until_us = hc.mono_us() - 1
+st.cycle_run["until_us"] = hc.mono_us() - 1
 step = hc.advance_cycle(st, 250_000)
 ok(step and step["preset"] == "Flux Collective"
    and st.figure == "flux-collective", "then the B side", str(step))
-st.cycle_until_us = hc.mono_us() - 1
-hc.advance_cycle(st, 250_000)                 # pause
-st.cycle_until_us = hc.mono_us() - 1
-step = hc.advance_cycle(st, 250_000)
-ok(step and step["preset"] == "HYPERWAVES", "and round again", str(step))
+st.cycle_run["until_us"] = hc.mono_us() - 1
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_run is None,
+   "and the burst ends there")
+ok(st.cycle_mic and set(hc.desired_modes(st).values()) == {0},
+   "the rig is back on the microphone until the next period", str(st.kind))
+ok(st.kind == "circle",
+   "with the panel's own pattern handed back underneath", st.kind)
 
-print("\n[cycle] frozen by a mute and by an ident")
-st.stream_on = False
-st.cycle_until_us = hc.mono_us() - 1
-ok(hc.advance_cycle(st, 250_000) is None,
-   "a silent feed does not advance the cycle")
-ok(st.cycle_until_us > hc.mono_us() - 1,
-   "and the deadline is pushed out instead of falling behind",
-   f"+{st.cycle_until_us - (hc.mono_us() - 1)} us of credit")
-st.stream_on = True
-st.timer_hold = {"id": 1, "preset": "IDENT", "targets": [],
-                 "until_us": hc.mono_us() + 10_000_000, "pattern": {}}
-st.cycle_until_us = hc.mono_us() - 1
-ok(hc.advance_cycle(st, 250_000) is None,
-   "nor does a cycle step land on top of an ident")
-st.timer_hold = None
-
-print("\n[cycle] a config change restarts the order")
-st.cycle_until_us = hc.mono_us() + 60_000_000
-st.cycles["logos"]["pairs"] = [["Flux Collective", "HYPERWAVES"]]
+print("\n[cycle] one stream: a burst due inside another one is skipped")
+st = fresh()
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=60,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+st.cycles["artists"].update(enabled=True, show_s=3, pause_s=0, every_s=90,
+                            pairs=[["Anemi", "HyperLili"]])
+hc.advance_cycle(st, 250_000)                 # arm both
+st.cycle_next["logos"] = st.cycle_next["artists"] = hc.mono_us() - 1
 step = hc.advance_cycle(st, 250_000)
-ok(step and step["preset"] == "Flux Collective" and st.cycle_pos == 0,
-   "swapping the pair starts from its A side rather than mid-rotation",
+ok(step and step["group"] == "artists",
+   "due together, the longer period wins — it is the one seen least often",
    str(step))
+ok(st.cycle_next["logos"] > hc.mono_us(),
+   "and the loser's grid still steps, so it waits for its own next slot, "
+   "rather than queueing a second burst back to back", str(st.cycle_next))
+
+st = fresh()
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=60,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+st.cycles["artists"].update(enabled=True, show_s=3, pause_s=0, every_s=90,
+                            pairs=[["Anemi", "HyperLili"]])
+hc.advance_cycle(st, 250_000)
+st.cycle_next["artists"] = hc.mono_us() - 1
+hc.advance_cycle(st, 250_000)                 # artists takes the stream
+st.cycle_next["logos"] = hc.mono_us() - 1     # logos comes due mid-burst
+ok(hc.advance_cycle(st, 250_000) is None
+   and st.cycle_run["group"] == "artists",
+   "a slot that falls inside another group's burst does not interrupt it")
+ok(st.cycle_next["logos"] > hc.mono_us(),
+   "and it is skipped, not queued — the release must not be followed "
+   "straight away by a second burst", str(st.cycle_next))
+hc.end_burst(st)
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_mic,
+   "the mic gets the stream back instead", str(st.cycle_run))
+
+print("\n[cycle] frozen by a mute")
+st = fresh()
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=60,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+hc.advance_cycle(st, 250_000)
+st.stream_on = False
+st.cycle_next["logos"] = hc.mono_us() - 1
+ok(hc.advance_cycle(st, 250_000) is None,
+   "a silent feed does not start a burst")
+ok(st.cycle_next["logos"] > hc.mono_us() - 1,
+   "and the grid is pushed out instead of falling behind",
+   f"+{st.cycle_next['logos'] - (hc.mono_us() - 1)} us of credit")
+st.stream_on = True
+
+print("\n[cycle] a config change restages both grids")
+st.cycle_next["logos"] = hc.mono_us() - 1
+hc.advance_cycle(st, 250_000)                 # burst on air
+ok(st.cycle_run is not None, "a burst is running")
+st.cycles["logos"]["every_s"] = 120
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_run is None,
+   "editing the period ends the burst on air rather than half-playing it")
+ok(st.cycle_next["logos"] > hc.mono_us() + 100_000_000,
+   "and re-arms a full period out, so tweaking a slider at 4m59s does not "
+   "fire as you let go", str(st.cycle_next))
 st.cycles["logos"]["enabled"] = False
-ok(hc.advance_cycle(st, 250_000) is None and st.cycle_step is None,
-   "switching the cycle off clears the step, so the pause rule stops "
-   "holding the rig on mic", str(st.cycle_step))
+ok(hc.advance_cycle(st, 250_000) is None and not st.cycle_mic,
+   "switching the cycle off hands the stream back to the panel",
+   str(st.cycle_mic))
+
+print("\n[cycle] a hand on the panel cuts a burst short")
+st = fresh()
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=60,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+hc.advance_cycle(st, 250_000)
+st.cycle_next["logos"] = hc.mono_us() - 1
+hc.advance_cycle(st, 250_000)
+armed = st.cycle_next["logos"]
+hc.end_burst(st, restore_pattern=False)
+ok(st.cycle_run is None and st.cycle_step is None and st.cycle_mic,
+   "the burst is off the air")
+ok(st.figure == "hyperwaves",
+   "what the operator just set stays up — no silent revert", st.figure)
+ok(st.cycle_next["logos"] == armed,
+   "and the grid is untouched: cutting one burst does not shift the evening")
 
 # --------------------------------------------------------------------- HTTP
 print("\n[policy] over HTTP: the switches and the cycle persist")
@@ -350,24 +460,30 @@ code, _ = post("/api/node", {"id": 300})
 ok(code == 400, "an id outside the protocol's range is refused")
 
 code, body = post("/api/cycle", {"group": "logos", "enabled": True,
-                                 "show_s": 45, "pause_s": 9,
+                                 "show_s": 45, "pause_s": 9, "every_s": 600,
                                  "pairs": [["HYPERWAVES", "Flux Collective"]]})
 ok(code == 200 and body["cycle"]["show_s"] == 45
-   and body["cycle"]["pause_s"] == 9,
+   and body["cycle"]["pause_s"] == 9 and body["cycle"]["every_s"] == 600,
    "the cycle is saved and echoed back clamped", json.dumps(body["cycle"]))
 ok(hc.load_cycles()["logos"]["enabled"] is True, "and persisted")
-ok(st.kind == "figure" and st.figure == "hyperwaves",
-   "switching it on puts its A side on air without waiting for a tick",
-   f"{st.kind} {st.figure}")
+ok(st.cycle_run is None and st.cycle_mic,
+   "switching it on does not barge onto the stream — the rig goes to the "
+   "mic and the first burst lands a period later", str(st.cycle_run))
+ok(st.cycle_next["logos"] > hc.mono_us(), "with the grid armed",
+   str(st.cycle_next))
 code, _ = post("/api/cycle", {"group": "nope"})
 ok(code == 400, "an unknown group is refused")
 
 snap = st.snapshot()
 ok(snap["nodes"]["121"]["logos"] is False,
    "the state feed carries the switches for the page", json.dumps(snap["nodes"]))
-ok(snap["cycle"] and snap["cycle"]["preset"] == "HYPERWAVES"
-   and len(snap["cycle"]["seq"]) == 4,
-   "and the running order it draws", json.dumps(snap["cycle"]))
+ok(snap["mic"] is True and snap["cycle"] is None,
+   "the feed says the rig is on the mic between bursts", json.dumps(snap["mic"]))
+ok(len(snap["cycles"]["logos"]["seq"]) == 3
+   and snap["cycles"]["logos"]["next_in"] is not None
+   and snap["cycles"]["logos"]["burst_s"] == 99,
+   "and each group carries its own burst plan and countdown",
+   json.dumps(snap["cycles"]["logos"]))
 _srv.shutdown()
 
 print("\n" + ("ALL PASS" if not FAIL else f"{len(FAIL)} FAILED: {FAIL}"))

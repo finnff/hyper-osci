@@ -236,100 +236,22 @@ def save_live(d):
     return None
 
 
-# Interval timers: "show preset P on slaves 1+2 for 20 s every 5 minutes".
-# Small cap on purpose -- these interrupt the show, and a screenful of rules
-# nobody can reason about is worse than none.
-TIMERS_FILE = os.environ.get(
-    "HYPE_TIMERS", os.path.expanduser("~/hype_timers.json"))
-TIMERS_MAX = 8
-# targets = slave IDs, NOT ips: a slave keeps its id across a DHCP lease and
-# across a reflash, and the id is what the dashboard prints on the card.
-# Empty = every slave currently discovered.
-TIMER_DEFAULTS = {"enabled": True, "preset": "", "targets": [],
-                  "hold_s": 20, "every_s": 300}
-
-
-def clean_timer(t):
-    """Timer dict -> fully populated, range-checked copy (id filled by caller).
-
-    Same contract as clean_preset: every field optional on load and filled
-    from the defaults, so a rule written by an older build still loads.
-    """
-    q = {"id": max(0, int(t.get("id", 0)) if str(t.get("id", 0)).lstrip("-")
-                   .isdigit() else 0)}
-    q["preset"] = sanitize_name(t.get("preset", ""))
-    q["enabled"] = bool(t.get("enabled", TIMER_DEFAULTS["enabled"]))
-    ids = t.get("targets", [])
-    if not isinstance(ids, (list, tuple)):
-        ids = []
-    seen = []
-    for v in ids:
-        try:
-            n = int(v)
-        except (TypeError, ValueError):
-            continue
-        if 0 <= n <= 255 and n not in seen:
-            seen.append(n)
-    q["targets"] = sorted(seen)[:16]
-    for k in ("hold_s", "every_s"):
-        try:
-            q[k] = int(float(t.get(k, TIMER_DEFAULTS[k])))
-        except (TypeError, ValueError):
-            q[k] = TIMER_DEFAULTS[k]
-    q["hold_s"] = min(600, max(1, q["hold_s"]))
-    q["every_s"] = min(86400, max(5, q["every_s"]))
-    # A period inside the hold would re-fire before the restore ever ran and
-    # the show would never come back.
-    q["every_s"] = max(q["every_s"], q["hold_s"] + 1)
-    return q
-
-
-def load_timers():
-    try:
-        with open(TIMERS_FILE) as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return []
-    return [q for q in (clean_timer(t) for t in data if isinstance(t, dict))
-            if q["preset"]][:TIMERS_MAX]
-
-
-def save_timers(timers):
-    """Atomically persist the timer rules. No .bak generation, unlike
-    save_presets: a lost rule is fifteen seconds of retyping, a lost artist
-    name is the show."""
-    tmp = TIMERS_FILE + ".tmp"
-    try:
-        with open(tmp, "w") as f:
-            json.dump(timers, f, indent=1)
-        os.replace(tmp, TIMERS_FILE)
-    except OSError as e:
-        print(f"[timers] save failed: {e}", flush=True)
-
-
-# Spreading the rules out in time.
+# Spreading the two cycles out in time.
 #
-# Two idents can never be on air together -- there is one hold -- so an
-# overlap is not a double exposure, it is a queue: the second rule fires the
-# moment the first releases and the audience gets two stings back to back,
-# which reads as a fault. Rather than dropping one of the two rules (the
-# operator configured both, and the one that would go is the one they see
-# most), each rule gets a phase: "logos every 2 min for 10 s" and "artists
-# every 1 min for 15 s" become 0, 120, 240 and 37, 97, 157 instead of both
-# landing on 0, 120, 240. Only the gaps between rules matter, never the
-# absolute moment, so a phase is free to be anything.
+# Both cycles interrupt the same single stream, so a burst that comes due
+# while the other group is on air cannot also play: it would either queue
+# (two bursts back to back, which reads as a fault) or cut the first one off
+# mid-name. Neither is acceptable, so instead the two grids are offset from
+# each other: "logos every 2 min" and "artists every 1 min" become 0, 120,
+# 240 against 32, 92, 152 rather than both landing on the minute. Only the
+# gaps matter, never the absolute moment, so a phase is free to be anything.
 #
 # Best effort by construction: periods that share no useful common multiple
-# (97 s against 60 s) cannot all be made to miss forever. The placement takes
-# the best of what it can see, and timer_loop's queue is still underneath as
-# the thing that guarantees correctness.
-# Kept deliberately small. This is a search, and it runs on an HTTP thread on
-# a board whose stream loop wants state.lock every 5 ms -- so it is costed to
-# stay in the tens of milliseconds at the 8-rule cap, and it runs off a copy
-# with no lock held. Twelve fires each is far enough ahead to see any pattern
-# that repeats; anything beyond it is a schedule nobody will still be running.
-SCHED_WINDOWS = 12      # fire windows per rule considered when placing
-SCHED_CANDIDATES = 60   # phases tried per rule
+# (97 s against 60 s) cannot be made to miss forever. The placement takes the
+# best of what it can see and advance_cycle skips a burst it cannot fit,
+# which is the guarantee underneath.
+SCHED_WINDOWS = 12      # bursts per group considered when placing
+SCHED_CANDIDATES = 60   # phases tried
 
 
 def _fire_windows(phase, period, dur, n=SCHED_WINDOWS):
@@ -337,13 +259,13 @@ def _fire_windows(phase, period, dur, n=SCHED_WINDOWS):
 
 
 def _placement_score(cands, placed):
-    """How well a candidate phase sits against the rules already placed.
+    """How well a candidate phase sits against what is already placed.
 
     -> (smallest gap, -collisions, when the first collision happens), ordered
     so that bigger is better. Three parts because the first one alone ties
     badly: periods that share no useful common multiple (97 s against 60 s)
     collide somewhere in every phase, and with only the gap to go on the
-    search then picks phase 0 -- the two rules firing together on the very
+    search then picks phase 0 -- both groups firing together on the very
     first pass, which is the one collision the operator is guaranteed to see.
     """
     worst = None
@@ -364,62 +286,6 @@ def _placement_score(cands, placed):
                 worst = gap
     return (worst if worst is not None else 0, -hits,
             first if first is not None else float("inf"))
-
-
-def timer_phases(timers):
-    """Enabled rules -> {id: phase seconds} that keeps their holds apart.
-
-    Shortest period first (it has the most windows and the least room), then
-    each next rule takes the phase that scores best against everything already
-    placed -- the middle of the biggest gap, not merely the first spot that
-    fits, so a slider nudge later does not immediately collide.
-    """
-    rules = sorted((t for t in timers if t["enabled"] and t["preset"]),
-                   key=lambda t: (t["every_s"], t["id"]))
-    phases = {}
-    placed = []
-    for t in rules:
-        if not placed:
-            phases[t["id"]] = 0
-            placed = _fire_windows(0, t["every_s"], t["hold_s"])
-            continue
-        step = max(1, t["every_s"] // SCHED_CANDIDATES)
-        best_phase, best = 0, None
-        for phase in range(0, t["every_s"], step):
-            score = _placement_score(
-                _fire_windows(phase, t["every_s"], t["hold_s"]), placed)
-            if best is None or score > best:
-                best_phase, best = phase, score
-        phases[t["id"]] = best_phase
-        placed += _fire_windows(best_phase, t["every_s"], t["hold_s"])
-    return phases
-
-
-def restage_timers(state):
-    """Re-phase every enabled rule against a common epoch.
-
-    Called whenever the rule set changes, never per tick: the phases are only
-    meaningful relative to each other, so they all have to be laid out in one
-    pass off the same `now`. First fire is a full period out, as before -- a
-    restart must not fire into a rig someone is still cabling up.
-
-    Caller must NOT hold state.lock: the placement is a search, and the stream
-    loop wants that lock every 5 ms. It runs off a copy, and only the write
-    back is locked.
-    """
-    with state.lock:
-        rules = [dict(t) for t in state.timers]
-    phases = timer_phases(rules)
-    now = mono_us()
-    with state.lock:
-        state.timer_phase = phases
-        live = {t["id"] for t in state.timers}
-        for t in state.timers:
-            if t["id"] in phases:
-                state.timer_next[t["id"]] = now + (
-                    t["every_s"] + phases[t["id"]]) * 1_000_000
-        for tid in [i for i in state.timer_next if i not in live]:
-            state.timer_next.pop(tid)
 
 
 # ---------------------------------------------------------------------------
@@ -494,10 +360,17 @@ def save_nodes(nodes):
         print(f"[nodes] save failed: {e}", flush=True)
 
 
-# The pair cycles: "logo A for 30 s, mic for 10 s, logo B for 30 s, mic, round
-# again". Two groups, because a set runs its logos on one clock and its artist
-# names on another, and because the two switches on every node are exactly
-# these two groups.
+# The pair cycles: "every 5 minutes, logo A for 30 s, an optional mic pause,
+# logo B for 30 s -- then mic until the next five minutes is up".
+#
+# A cycle is a periodic interruption, not a loop that owns the stream. The
+# rig's normal state is the microphone: every node on its own audio, which is
+# what the room is there for. A burst takes the stream for as long as the
+# pair needs and hands it straight back.
+#
+# Two groups, because a set runs its logos on one clock and its artist names
+# on another, and because the two switches on every node are exactly these
+# two groups.
 CYCLES_FILE = os.environ.get(
     "HYPE_CYCLES", os.path.expanduser("~/hype_cycles.json"))
 CYCLE_GROUPS = ("logos", "artists")
@@ -511,23 +384,35 @@ CYCLE_SEED = {
                 ["Eastern Distributor", "Gan D"],
                 ["Guild Navigator", "Liso"]],
 }
-CYCLE_DEFAULTS = {"enabled": False, "show_s": 5, "pause_s": 0, "idx": 0}
+CYCLE_DEFAULTS = {"enabled": False, "show_s": 5, "pause_s": 0, "idx": 0,
+                  "every_s": 300}
+
+
+def cycle_burst_s(c):
+    """How long one burst holds the stream: A + optional mic pause + B."""
+    return 2 * c["show_s"] + c["pause_s"]
 
 
 def clean_cycle(c, group):
     """Cycle config -> fully populated, range-checked copy.
 
-    Same optional-everything contract as clean_preset and clean_timer.
+    Same optional-everything contract as clean_preset, so a file written by
+    the build before periods loads and gets the default five minutes.
     """
     if not isinstance(c, dict):
         c = {}
     q = {"enabled": bool(c.get("enabled", CYCLE_DEFAULTS["enabled"]))}
-    for k, lo, hi in (("show_s", 3, 600), ("pause_s", 0, 600)):
+    for k, lo, hi in (("show_s", 3, 600), ("pause_s", 0, 600),
+                      ("every_s", 10, 86400)):
         try:
             q[k] = int(float(c.get(k, CYCLE_DEFAULTS[k])))
         except (TypeError, ValueError):
             q[k] = CYCLE_DEFAULTS[k]
         q[k] = min(hi, max(lo, q[k]))
+    # A period inside the burst would come due again before the pair had
+    # finished, and the mic would never get the stream back. Ten seconds of
+    # microphone is the least that makes the interruption read as one.
+    q["every_s"] = max(q["every_s"], cycle_burst_s(q) + 10)
     pairs = c.get("pairs")
     if not isinstance(pairs, (list, tuple)):
         pairs = CYCLE_SEED.get(group, [])
@@ -574,32 +459,55 @@ def pattern_group(kind):
     return "logos" if kind == "figure" else "artists" if kind == "text" else ""
 
 
-def cycle_sequence(cycles, preset_names):
-    """Config + the set list -> the running order, as a flat list of steps.
+def burst_steps(c, group, preset_names):
+    """One burst of a cycle, as the list of steps it will actually play.
 
-    A step is {"group", "preset", "secs", "of"}; group None is a pause (mic
-    only), and "of" is the cycle it belongs to — a pause has no group because
-    nothing is on the stream during one, but the page still has to draw it on
-    the right card.
-    A pair slot naming a preset that no longer exists is dropped rather than
-    drawn as a gap the operator cannot see the reason for -- the page renders
-    this same list, so what it shows is what will run.
+    A step is {"group", "preset", "secs"}; group None is the mic pause
+    between the two names. A pair slot naming a preset that no longer exists
+    is dropped rather than played as a gap nobody can explain -- the page
+    renders this same list, so what it shows is what will run.
     """
-    seq = []
-    for g in CYCLE_GROUPS:
-        c = cycles.get(g) or {}
-        if not c.get("enabled") or not c.get("pairs"):
+    if not c.get("enabled") or not c.get("pairs"):
+        return []
+    pair = c["pairs"][min(c.get("idx", 0), len(c["pairs"]) - 1)]
+    names = [n for n in pair if n and n in preset_names]
+    steps = []
+    for i, name in enumerate(names):
+        if i and c["pause_s"]:
+            steps.append({"group": None, "preset": "", "secs": c["pause_s"]})
+        steps.append({"group": group, "preset": name, "secs": c["show_s"]})
+    return steps
+
+
+def cycle_phases(cycles):
+    """-> {group: phase seconds}, offsets that keep the two bursts apart.
+
+    The shorter period goes down first at phase 0 (it has the most bursts and
+    the least room to move), then the other takes the offset that scores best
+    against it -- the middle of the biggest gap, not merely the first spot
+    that fits, so nudging a slider later does not immediately re-collide.
+    A group that is off, or has nothing playable, is not scheduled around.
+    """
+    live = sorted(((g, c) for g, c in cycles.items()
+                   if c.get("enabled") and c.get("pairs")),
+                  key=lambda gc: (gc[1]["every_s"], gc[0]))
+    phases = {g: 0 for g in cycles}
+    placed = []
+    for g, c in live:
+        burst = cycle_burst_s(c)
+        if not placed:
+            placed = _fire_windows(0, c["every_s"], burst)
             continue
-        pair = c["pairs"][min(c.get("idx", 0), len(c["pairs"]) - 1)]
-        for name in pair:
-            if not name or name not in preset_names:
-                continue
-            seq.append({"group": g, "preset": name, "secs": c["show_s"],
-                        "of": g})
-            if c["pause_s"]:
-                seq.append({"group": None, "preset": "",
-                            "secs": c["pause_s"], "of": g})
-    return seq
+        step = max(1, c["every_s"] // SCHED_CANDIDATES)
+        best_phase, best = 0, None
+        for phase in range(0, c["every_s"], step):
+            score = _placement_score(
+                _fire_windows(phase, c["every_s"], burst), placed)
+            if best is None or score > best:
+                best_phase, best = phase, score
+        phases[g] = best_phase
+        placed += _fire_windows(best_phase, c["every_s"], burst)
+    return phases
 
 
 def _jhf_glyphs(fname):
@@ -916,11 +824,11 @@ def persist_loop(state, period=3.0):
     last, warned = None, False
     while True:
         time.sleep(period)
-        # An interval timer's hold is a 20 s interruption, not "what was on
-        # the scopes": persisting it would bring the rig back drawing the
-        # ident after a power blip, the exact failure this file prevents.
-        # dirty stays set, so the restore lands on the very next tick.
-        if state.timer_hold is not None:
+        # A burst is a 30 s interruption, not "what was on the scopes":
+        # persisting it would bring the rig back drawing a logo after a power
+        # blip, the exact failure this file prevents. dirty stays set, so the
+        # restore lands on the very next tick.
+        if state.cycle_run is not None:
             continue
         if not state.dirty:
             continue
@@ -940,7 +848,7 @@ def apply_preset(state, p):
     """Install a preset-shaped dict as the live streamed pattern.
 
     The one place that does the rebuild dance, shared by the dashboard's
-    preset tap and the interval timers. Lock order is the documented one:
+    preset tap and the pair cycles. Lock order is the documented one:
     rebuild_lock, then state.lock, and the font parse happens between them so
     it never stalls the 5 ms stream pacing.
     """
@@ -960,136 +868,6 @@ def apply_preset(state, p):
             state.shape_ver += 1
         state.dirty = True
 
-
-# Two stings back to back read as a fault on stage: the first ident has not
-# left the scopes before the next one lands, and nobody can tell whether the
-# show is running or the rig is looping. One release buys this much quiet.
-HOLD_COOLDOWN_US = 2_500_000
-
-# Why a fire was refused. The string is the reason the dashboard shows, so
-# there is one wording to keep true instead of the handler guessing at three
-# possibilities. FIRE_RETRY marks the transient ones: timer_loop tries those
-# again in a moment rather than costing the rule its whole turn.
-FIRE_HOLDING = "another timer is already on air"
-FIRE_COOLDOWN = "a hold only just released"
-FIRE_MUTED = "STREAM is off — a hold would pull the slaves onto a dead stream"
-FIRE_NO_PRESET = "that preset no longer exists"
-FIRE_RETRY = (FIRE_HOLDING, FIRE_COOLDOWN)
-
-
-def fire_timer(state, cmds, t):
-    """Start a hold: install the rule's preset for hold_s seconds.
-
-    Returns None once the hold is running, else the FIRE_* reason it did not
-    start. It sets no modes: policy_loop reads the hold (its targets and the
-    kind now on air) and moves the nodes, so a sting obeys the same three
-    switches as everything else -- an artist ident does not appear on a scope
-    whose artists switch is off.
-    """
-    before = state.live_snapshot()
-    with state.lock:
-        if state.timer_hold is not None:
-            return FIRE_HOLDING
-        if mono_us() < state.hold_cooldown_us:
-            return FIRE_COOLDOWN
-        # A hold drags its targets onto the stream, so with the stream muted
-        # it is not an interruption but a dark scope for the whole hold --
-        # and the slaves it took were drawing their own mic input a moment
-        # earlier. Muting for a changeover is exactly when a rule comes due.
-        if not state.stream_on:
-            return FIRE_MUTED
-        p = next((dict(x) for x in state.presets
-                  if x["name"] == t["preset"]), None)
-        if p is None:
-            return FIRE_NO_PRESET
-        state.timer_hold = {
-            "id": t["id"], "preset": t["preset"], "targets": t["targets"],
-            "until_us": mono_us() + t["hold_s"] * 1_000_000,
-            "pattern": before}
-    apply_preset(state, p)
-    print(f"[timer] hold {t['preset']!r} on "
-          f"{','.join(str(i) for i in t['targets']) or 'every node'} "
-          f"for {t['hold_s']}s", flush=True)
-    return None
-
-
-def end_hold(state, cmds, restore_pattern=True):
-    """Finish a hold: the pre-hold pattern back, unless the operator took the
-    panel over mid-hold. Modes need no restoring — policy_loop puts every node
-    back where the restored pattern says it belongs."""
-    with state.lock:
-        h, state.timer_hold = state.timer_hold, None
-        if h is None:
-            return
-        # Armed in the same acquisition that clears the hold. Split across
-        # two, timer_loop can land in between and fire the next rule inside
-        # the quiet this is meant to buy.
-        state.hold_cooldown_us = mono_us() + HOLD_COOLDOWN_US
-    if restore_pattern:
-        apply_preset(state, h["pattern"])
-    print(f"[timer] release {h['preset']!r}"
-          + ("" if restore_pattern else " (panel taken over)"), flush=True)
-
-
-def timer_loop(state, cmds, tick=0.25):
-    """Fire and release the interval rules.
-
-    Its own thread for the same reason as persist_loop: a font rebuild on the
-    stream thread is an audible gap on every scope at once.
-
-    One hold at a time — there is a single streamed pattern, so two rules
-    interrupting together would only fight over it. A rule that comes due
-    during someone else's hold keeps its due time and fires just after that
-    one releases, once the cooldown has passed.
-    """
-    while True:
-        time.sleep(tick)
-        now = mono_us()
-        due = None
-        with state.lock:
-            holding = state.timer_hold is not None
-            expired = holding and now >= state.timer_hold["until_us"]
-            if not holding:
-                for t in state.timers:
-                    if not t["enabled"]:
-                        continue
-                    # First sight of a rule schedules it a full period out
-                    # (plus its phase): a restart must not fire into a rig
-                    # someone is still cabling up.
-                    nxt = state.timer_next.setdefault(
-                        t["id"], now + (t["every_s"]
-                                        + state.timer_phase.get(t["id"], 0))
-                        * 1_000_000)
-                    if nxt <= now:
-                        due = dict(t)
-                        break
-        if expired:
-            end_hold(state, cmds)
-        elif due is not None:
-            # Only a fire that actually happened costs the rule its turn.
-            # Rearming before the call meant a rule queued behind another
-            # rule's hold came due 250 ms after the release, hit the
-            # post-release cooldown, and then waited a whole period -- the
-            # one case this loop's docstring promises to handle.
-            reason = fire_timer(state, cmds, due)
-            delay = (HOLD_COOLDOWN_US if reason in FIRE_RETRY
-                     else due["every_s"] * 1_000_000)
-            with state.lock:
-                # Skip a rule deleted during the fire (its timer_next is
-                # already gone, and re-adding it would orphan the entry), and
-                # never stomp a due time an HTTP save/toggle just set.
-                if any(x["id"] == due["id"] for x in state.timers) \
-                        and state.timer_next.get(due["id"], 0) <= now:
-                    # Step the grid, not the clock: counting the next period
-                    # from "when the fire actually happened" lets a rule that
-                    # waited behind a hold walk forward a little every cycle,
-                    # and the phases that keep two rules apart are gone within
-                    # an evening. Fall back to now only if the grid is behind
-                    # (a long mute, a clock the rule slept through).
-                    prev = state.timer_next.get(due["id"], now)
-                    nxt = prev + delay
-                    state.timer_next[due["id"]] = (nxt if nxt > now
-                                                   else now + delay)
 
 
 # A commanded mode is only confirmed by the slave's next STATUS beacon, which
@@ -1111,22 +889,17 @@ def desired_modes(state):
 
     Caller holds state.lock. Reads only; sending is reconcile_modes' job.
     """
-    step = state.cycle_step
-    paused = step is not None and step["group"] is None
+    mic = state.cycle_mic
     group = pattern_group(state.kind)
-    hold = state.timer_hold
-    targets = hold["targets"] if hold else []
     out = {}
     for ip, s in state.slaves.items():
         f = node_flags(state, s["id"])
         if not f["stream"]:
             out[ip] = 0            # out of the show entirely
-        elif paused:
-            out[ip] = 0            # the pause IS the mic
+        elif mic:
+            out[ip] = 0            # between bursts, and the pause: the mic
         elif group and not f[group]:
             out[ip] = 0            # this node does not take logos / names
-        elif targets and s["id"] not in targets:
-            out[ip] = 0            # a sting aimed at other nodes
         else:
             out[ip] = 1
     return out
@@ -1161,50 +934,137 @@ def reconcile_modes(state, cmds):
     return send
 
 
-def advance_cycle(state, tick_us):
-    """Step the pair cycles. Returns the step just started, or None.
+def _cycle_arm(state, group, now):
+    """Put a group's next burst on the grid: one period out, plus its phase.
 
-    Frozen while a timer hold is on air or the feed is silent: a cycle that
-    kept counting through a two-minute mute would come back mid-pair with the
-    clock in a place nobody could predict. Freezing pushes the deadline out by
-    the real time that passed, so the step resumes with what it had left.
+    A full period rather than "now" because a restart must not fire into a
+    rig someone is still cabling up.
+    """
+    c = state.cycles[group]
+    state.cycle_next[group] = now + (
+        c["every_s"] + state.cycle_phase.get(group, 0)) * 1_000_000
+
+
+def end_burst(state, restore_pattern=True):
+    """Cut the burst on air short and put the rig back on the mic.
+
+    The grid is deliberately untouched: the next burst lands exactly where it
+    always would, so cutting one short does not shift the whole evening.
+    """
+    with state.lock:
+        run, state.cycle_run = state.cycle_run, None
+        if run is None:
+            return
+        state.cycle_step = None
+        state.cycle_mic = any(c["enabled"] and c["pairs"]
+                              for c in state.cycles.values())
+    if restore_pattern:
+        apply_preset(state, run["pattern"])
+    print(f"[cycle] {run['group']} cut short"
+          + ("" if restore_pattern else " (panel taken over)"), flush=True)
+
+
+def advance_cycle(state, tick_us):
+    """Run the two pair cycles. Returns the step just started, or None.
+
+    Each enabled group is a grid of burst times, phase-shifted apart. When a
+    burst comes due the pair takes the stream; when it ends the rig goes back
+    to the microphone until the next one. A burst that comes due while the
+    other group is on air is skipped, not queued -- there is one stream, and
+    two bursts back to back read as a fault.
+
+    Frozen while the feed is silent: a cycle that kept counting through a
+    two-minute mute would come back mid-pair with the clock in a place nobody
+    could predict. Freezing pushes the grid out by the real time that passed.
     """
     now = mono_us()
+    apply_p = None
+    ended = None
+    # Before the lock: live_snapshot takes it, and this lock is not reentrant.
+    # A burst records what the panel had so it can hand it straight back.
+    before = state.live_snapshot()
     with state.lock:
         names = [p["name"] for p in state.presets]
-        seq = cycle_sequence(state.cycles, names)
-        sig = repr(seq)
+        plans = {g: burst_steps(state.cycles[g], g, names)
+                 for g in CYCLE_GROUPS}
+        sig = repr([(g, state.cycles[g]["every_s"], plans[g])
+                    for g in CYCLE_GROUPS])
         if sig != state.cycle_sig:
-            # Config changed under us (a switch, a pair swap, a preset
-            # renamed): start the new order from its first step rather than
-            # landing on whatever index happened to be current.
+            # Config changed under us (a switch, a period, a pair swap, a
+            # preset renamed). The phases are only meaningful relative to
+            # each other, so both grids are laid out again off this moment.
             state.cycle_sig = sig
-            state.cycle_pos = None
-            state.cycle_step = None
-        if not seq:
+            state.cycle_phase = cycle_phases(state.cycles)
+            state.cycle_next = {}
+            if state.cycle_run is not None:
+                ended, state.cycle_run = state.cycle_run, None
+                state.cycle_step = None
+        live = [g for g in CYCLE_GROUPS if plans[g]]
+        if live and not state.stream_on:
+            for g in live:                    # hold the grid where it is
+                if g in state.cycle_next:
+                    state.cycle_next[g] += tick_us
+            if state.cycle_run is not None:
+                state.cycle_run["until_us"] += tick_us
             return None
-        if state.timer_hold is not None or not state.stream_on:
-            if state.cycle_pos is not None:
-                state.cycle_until_us += tick_us
-            return None
-        if state.cycle_pos is None:
-            pos = 0
-        elif now >= state.cycle_until_us:
-            pos = (state.cycle_pos + 1) % len(seq)
-        else:
-            return None
-        step = dict(seq[pos])
-        state.cycle_pos = pos
+        for g in list(state.cycle_next):
+            if g not in live:
+                state.cycle_next.pop(g)
+        for g in live:
+            if g not in state.cycle_next:
+                _cycle_arm(state, g, now)
+        # Every group whose slot has passed loses that slot, whether or not
+        # anything is on air. Computed before the burst on air is stepped:
+        # left until the burst ended, a slot missed at second 30 of a 40 s
+        # burst fired the moment it released -- the queue, two bursts back to
+        # back, which is what the phases exist to prevent.
+        due = [g for g in live if state.cycle_next[g] <= now]
+        run = state.cycle_run
+        step = None
+        if run is None and due:
+            # Due together (phases cannot always separate incommensurate
+            # periods): the longer period wins, because it is the one the
+            # room sees least often. The loser waits for its own next slot.
+            pick = max(due, key=lambda g: (state.cycles[g]["every_s"], g))
+            step = dict(plans[pick][0])
+            state.cycle_run = {"group": pick, "steps": plans[pick], "pos": 0,
+                               "until_us": now + step["secs"] * 1_000_000,
+                               "pattern": before}
+        for g in due:
+            # Step the grid, never the clock: a burst that was skipped or ran
+            # long must not walk its phase away over an evening.
+            every = state.cycles[g]["every_s"] * 1_000_000
+            while state.cycle_next[g] <= now:
+                state.cycle_next[g] += every
+        if run is not None:
+            if now < run["until_us"]:
+                return None
+            pos = run["pos"] + 1
+            if pos < len(run["steps"]):
+                step = dict(run["steps"][pos])
+                run["pos"] = pos
+                run["until_us"] = now + step["secs"] * 1_000_000
+            else:
+                ended, state.cycle_run = run, None
         state.cycle_step = step
-        state.cycle_until_us = now + step["secs"] * 1_000_000
-        p = None if step["group"] is None else next(
-            (dict(x) for x in state.presets
-             if x["name"] == step["preset"]), None)
-    if p is not None:
-        apply_preset(state, p)
-    print("[cycle] " + (f"pause {step['secs']}s (mic)" if step["group"] is None
-                        else f"{step['group']} {step['preset']!r} "
-                             f"for {step['secs']}s"), flush=True)
+        state.cycle_mic = bool(live) and (step is None
+                                          or step["group"] is None)
+        if step is not None and step["group"] is not None:
+            apply_p = next((dict(x) for x in state.presets
+                            if x["name"] == step["preset"]), None)
+    if ended is not None and apply_p is None:
+        # Hand the panel's own pattern back. Invisible while the rig is on the
+        # mic, but it is what streams the moment the cycles are switched off,
+        # and what persist_loop is allowed to write again.
+        apply_preset(state, ended["pattern"])
+        print(f"[cycle] {ended['group']} done — mic", flush=True)
+    if apply_p is not None:
+        apply_preset(state, apply_p)
+    if step is not None:
+        print("[cycle] " + (f"mic pause {step['secs']}s"
+                            if step["group"] is None else
+                            f"{step['group']} {step['preset']!r} "
+                            f"for {step['secs']}s"), flush=True)
     return step
 
 
@@ -1289,35 +1149,22 @@ class State:
         # snapshot() can read it without taking a lock the audio path would
         # then have to contend for.
         self.net_tx = {}
-        # Interval timers. All three are touched by both timer_loop and the
-        # HTTP threads, so all three live under self.lock.
-        self.timers = load_timers()
-        self.next_timer_id = 1 + max([t["id"] for t in self.timers], default=0)
-        # id -> mono_us of the next fire. Runtime only: a rule that survived a
-        # restart starts its period from boot rather than firing immediately
-        # into a rig someone is still cabling up.
-        self.timer_next = {}
-        # id -> seconds of offset from the common epoch, so two rules whose
-        # periods would land together are pulled apart (see timer_phases).
-        # Staged at boot so a restart comes back on the spread it had.
-        self.timer_phase = timer_phases(self.timers)
-        # None, or the rule currently interrupting the show:
-        # {"id", "preset", "targets", "until_us",
-        #  "pattern": pre-hold live snapshot}
-        self.timer_hold = None
-        # Set on release; see HOLD_COOLDOWN_US.
-        self.hold_cooldown_us = 0
         # Per-node switches, and the pair cycles that drive the set. Both are
         # read every policy tick and written by the HTTP threads, so both are
         # under self.lock.
         self.node_flags = load_nodes()   # slave id -> stream/logos/artists
         self.cycles = load_cycles()      # "logos"/"artists" -> config
-        # Runtime cycle position: index into the sequence, the step dict
-        # itself (what desired_modes reads), its deadline, and the signature
-        # of the sequence they belong to.
-        self.cycle_pos = None
+        # Cycle runtime. cycle_next is the grid: group -> mono_us of its next
+        # burst. cycle_phase is the offset that keeps the two grids apart,
+        # restaged whenever the config changes. cycle_run is the burst on air
+        # (with the pre-burst pattern to hand back), cycle_step the step
+        # inside it, and cycle_mic says the rig is on the microphone -- which
+        # is what desired_modes reads, and is the normal state of the room.
+        self.cycle_next = {}
+        self.cycle_phase = cycle_phases(self.cycles)
+        self.cycle_run = None
         self.cycle_step = None
-        self.cycle_until_us = 0
+        self.cycle_mic = False
         self.cycle_sig = None
         # ip -> (mode, mono_us) of the last set_mode this box sent, so a
         # command is not repeated every tick while the 1 Hz beacon catches up.
@@ -1365,33 +1212,30 @@ class State:
                            for s in self.slaves.values()],
                 "net": {"iface": self.net_iface, "egress": self.net_egress,
                         "tx": self.net_tx},
-                "timers": [dict(
-                    t,
-                    next_in=(None if not t["enabled"] else
-                             max(0, (self.timer_next.get(t["id"], now) - now)
-                                 // 1000000)),
-                    phase=self.timer_phase.get(t["id"], 0),
-                ) for t in self.timers],
-                "hold": None if not self.timer_hold else {
-                    "id": self.timer_hold["id"],
-                    "preset": self.timer_hold["preset"],
-                    "left_s": max(0, (self.timer_hold["until_us"] - now)
-                                  // 1000000)},
                 "nodes": {str(sid): dict(f)
                           for sid, f in self.node_flags.items()},
-                "cycles": {g: dict(c, running=(
-                    self.cycle_step is not None
-                    and self.cycle_step["group"] == g))
-                    for g, c in self.cycles.items()},
+                # Each group carries its own burst plan and its own countdown
+                # -- the two cycles run on separate grids now, so there is no
+                # single running order to show.
+                "cycles": {g: dict(
+                    c,
+                    running=(self.cycle_run is not None
+                             and self.cycle_run["group"] == g),
+                    next_in=(None if g not in self.cycle_next else
+                             max(0, (self.cycle_next[g] - now) // 1000000)),
+                    phase=self.cycle_phase.get(g, 0),
+                    burst_s=cycle_burst_s(c),
+                    seq=[{"group": s["group"] or "", "preset": s["preset"],
+                          "secs": s["secs"]}
+                         for s in burst_steps(
+                             c, g, [p["name"] for p in self.presets])],
+                ) for g, c in self.cycles.items()},
+                "mic": self.cycle_mic,
                 "cycle": None if self.cycle_step is None else {
                     "group": self.cycle_step["group"] or "",
                     "preset": self.cycle_step["preset"],
-                    "pos": self.cycle_pos,
-                    "left_s": max(0, (self.cycle_until_us - now) // 1000000),
-                    "seq": [{"group": s["group"] or "", "preset": s["preset"],
-                             "secs": s["secs"], "of": s["of"]}
-                            for s in cycle_sequence(
-                                self.cycles, [p["name"] for p in self.presets])],
+                    "left_s": max(0, (self.cycle_run["until_us"] - now)
+                                  // 1000000) if self.cycle_run else 0,
                 },
             }
 
@@ -1770,12 +1614,6 @@ button:hover { border-color: var(--ph); }
 button.on { background: var(--ph); color: #031003; border-color: var(--ph); }
 button.off { background: #1a0a0a; color: var(--dim); }
 
-/* === Timer table === */
-.timer-table { width: 100%; border-collapse: collapse; }
-.timer-table th { text-align: left; color: var(--dim); font-weight: normal; font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
-.timer-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
-.timer-table .status-cannot-fire { color: var(--bad); font-size: 12px; }
-
 /* === Help section === */
 .help-content { line-height: 1.6; }
 .help-content h3 { color: var(--ph); margin: 12px 0 6px; font-size: 14px; }
@@ -1970,10 +1808,10 @@ body.show .both-modes, body.setup .both-modes { display: block; }
     </div>
   </div>
 
-  <!-- Idents (timers) live in the logo settings sheet, reachable from the
-       show screen: the one place a phone can get at them mid-set. One copy
-       of that DOM, opened from either mode. -->
-  <div class="collapsible-header" onclick="toggleCollapsible(this)">Idents &amp; cycles</div>
+  <!-- One copy of the settings DOM, opened from either mode: the sheet is
+       also reachable from the show screen, which is the only place a phone
+       can get at it mid-set. -->
+  <div class="collapsible-header" onclick="toggleCollapsible(this)">Cycles</div>
   <div class="collapsible-content panel">
     <div class="settings-row">
       <button onclick="openCycleSheet('logos')">LOGO SETTINGS</button>
@@ -2008,7 +1846,9 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <p><strong>A — artists</strong>: same, for artist names.</p>
       <p>There is nothing else to set per node: the controller drives every slave's draw mode from those switches and what is on air, and pulls a node back if its own button or a reboot puts it somewhere else.</p>
       <h3>Cycles</h3>
-      <p>LOGO SETTINGS and ARTIST SETTINGS each run a pair: A for N seconds, an optional mic pause, B, pause, round again. Artists carry the b2b line-ups — pick which pair is playing tonight. With both cycles on, the logos pair runs, then the artists pair. A cycle freezes while the feed is SILENT or an ident is on air.</p>
+      <p>The rig's normal state is the <strong>microphone</strong>: every node on its own audio. A cycle interrupts it on a period — every N minutes, name A for a few seconds, an optional mic pause, name B, then straight back to the mic until the next one.</p>
+      <p>LOGO SETTINGS and ARTIST SETTINGS are the same machine with a different period. Artists carry the b2b line-ups — pick which pair is playing tonight. A burst obeys the three switches: it does not appear on a node with that group switched off.</p>
+      <p>With both cycles on, the controller offsets the two grids so their bursts do not collide — the card says by how much. Periods that share no useful multiple cannot always miss; when two do come due together the longer period wins and the other waits for its next slot, because the rig has one stream. Both freeze while the feed is SILENT.</p>
       <h3>Fallback</h3>
       <p>A streaming slave that stops receiving audio for ~1 s automatically draws its local pattern instead — whichever was last set.</p>
       <h3>buf / lead</h3>
@@ -2017,12 +1857,8 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <p>Should all be 0. Drops = late/duplicate packets. Lost = packets that never arrived (WiFi loss). Underruns = buffer ran dry (visible blink).</p>
       <h3>tx-drop vs lost</h3>
       <p>High lost/s with tx-drop ≈ 0 means the WiFi air is bad. High tx-drop means packets died in this controller's send buffer — no antenna fix. This distinction cost a night of debugging.</p>
-      <h3>Idents</h3>
-      <p>An ident interrupts the show with a preset on a period (e.g. the logo between acts). It obeys the same three switches: an ident does not appear on a node that has that group switched off.</p>
       <h3>Presets</h3>
-      <p>Snapshots of pattern settings saved on the controller. Survive restarts with one generation of undo (.bak file). Max 20 presets. Do NOT update during a timer hold — it will save the ident, not the artist.</p>
-      <h3>Interval timers</h3>
-      <p>Periodically interrupt the show with a preset (e.g., station ident between acts). Only one hold can run at a time. A timer that cannot fire (feed is SILENT) will say so instead of counting down.</p>
+      <p>Snapshots of pattern settings saved on the controller. Survive restarts with one generation of undo (.bak file). Max 20 presets. Do NOT update while a burst is on air — it would save the logo, not the artist. The controller refuses that one.</p>
     </div>
   </div>
 
@@ -2041,11 +1877,9 @@ body.show .both-modes, body.setup .both-modes { display: block; }
 
 <!-- === LOGO / ARTIST SETTINGS SHEET ===
      One sheet, two groups. The pair cycle is the same machine for both --
-     A, optional mic pause, B, pause, round again -- so it is the same markup
-     with the group swapped, and there is one place to fix when it is wrong at
-     two in the morning. The idents (interval stings) hang off the logo side
-     because that is where an operator goes looking for "show the logo every
-     five minutes", but the picker lists every preset. -->
+     every N minutes, A, an optional mic pause, B, then the microphone until
+     the next one -- so it is the same markup with the group swapped, and
+     there is one place to fix when it is wrong at two in the morning. -->
 <div id="cycle-sheet" class="slave-sheet">
   <div class="slave-sheet-header">
     <h2 id="cycle-title">LOGO SETTINGS</h2>
@@ -2062,12 +1896,18 @@ body.show .both-modes, body.setup .both-modes { display: block; }
         <span style="color:var(--dim);font-size:12px" id="cyc-state"></span>
       </div>
       <div class="row">
-        <label>show each</label>
+        <label>show every</label>
+        <input type="number" id="cyc-every" min="0.2" max="1440" step="any"
+               style="width:80px">
+        <span style="color:var(--dim)">min — mic in between</span>
+      </div>
+      <div class="row">
+        <label>each name for</label>
         <input type="number" id="cyc-show" min="3" max="600" style="width:72px">
         <span style="color:var(--dim)">s</span>
-        <label style="width:auto">then mic for</label>
+        <label style="width:auto">mic between them</label>
         <input type="number" id="cyc-pause" min="0" max="600" style="width:72px">
-        <span style="color:var(--dim)">s (0 = no pause)</span>
+        <span style="color:var(--dim)">s (0 = none)</span>
         <button onclick="applyCycleTimes()">Apply</button>
       </div>
       <div id="cyc-pairs"></div>
@@ -2075,29 +1915,6 @@ body.show .both-modes, body.setup .both-modes { display: block; }
         <button id="cyc-addpair" onclick="addCyclePair()">+ pair</button>
       </div>
       <div class="cycle-line" id="cyc-order" style="text-align:left"></div>
-    </div>
-
-    <div class="panel" id="cyc-timers">
-      <div class="setlist-header" style="margin-bottom:8px">IDENTS — interrupt the show on a period</div>
-      <div id="holdnote" style="color:var(--ph);margin-bottom:8px"></div>
-      <div id="timer-table-wrap">
-        <!-- Built dynamically -->
-      </div>
-      <div class="row" id="taddrow" style="margin-top:10px">
-        <label>add</label>
-        <select id="tpreset"></select>
-        <span style="color:var(--dim)">on</span>
-        <span class="seg" id="ttargets"></span>
-        <span>for</span>
-        <input type="number" id="thold" min="1" max="600" value="20" style="width:66px">
-        <span>s every</span>
-        <input type="number" id="tevery" min="0.1" max="1440" step="any" value="5" style="width:74px">
-        <span>min</span>
-        <button onclick="addTimer()">+ add</button>
-      </div>
-      <div id="timer-cannot-fire" style="color:var(--bad);font-size:12px;margin-top:6px;display:none">
-        Feed is SILENT — timers cannot fire until sending resumes.
-      </div>
     </div>
   </div>
 </div>
@@ -2580,8 +2397,7 @@ function renderSetList() {
   if (!container) return;
   var cfg = (S.cycles && S.cycles.artists) ? S.cycles.artists : null;
   var pairs = cfg ? (cfg.pairs || []) : [];
-  var live = (S.hold && S.hold.preset)
-    || (S.cycle && S.cycle.preset) || curPreset;
+  var live = (S.cycle && S.cycle.preset) || curPreset;
 
   container.innerHTML = '';
   if (!pairs.length) {
@@ -2619,9 +2435,11 @@ function pickArtistPair(i, firstName) {
 function renderOnAir() {
   var curName = curPreset;
   var holdIndicator = '';
-  if (S.hold && S.hold.preset) {
-    curName = S.hold.preset;
-    holdIndicator = '▶ HOLD ';
+  if (S.cycle && S.cycle.preset) {
+    curName = S.cycle.preset;
+    holdIndicator = '▶ ' + S.cycle.group.toUpperCase() + ' ';
+  } else if (S.mic) {
+    holdIndicator = '● MIC ';
   }
   var presets = S.presets || [];
   /* Index off the preset name, before the text decoration below -- decorated,
@@ -2831,12 +2649,9 @@ function render() {
   drawPreview();
   renderCycleLine();
   if (document.body.className === 'setup') renderSetup();
-  /* The settings sheet opens over either mode, so its clock and the ident
-     table have to tick outside renderSetup. */
-  if (activeCycleGroup) {
-    renderCycleSheet(false);
-    if (activeCycleGroup === 'logos') { renderTimers(); renderTargetBtns(); }
-  }
+  /* The settings sheet opens over either mode, so its countdown has to tick
+     outside renderSetup. */
+  if (activeCycleGroup) renderCycleSheet(false);
 }
 
 function renderHeader() {
@@ -2986,7 +2801,7 @@ function renderSetup() {
   /* Point-table preview fetch */
   if (isTableKind(p.kind) && p.sver !== TP.ver) fetchPreview();
 
-  /* "Update current" is the only save path with the hold guard on it, and it
+  /* "Update current" is the only save path with the burst guard on it, and it
      shipped display:none with nothing to un-hide it. It is meaningful only
      once a preset has been loaded this session, so key it on that and say
      which one it will overwrite. */
@@ -2998,15 +2813,8 @@ function renderSetup() {
 
   /* Setup set list */
   renderSetupSetList();
-  renderTimers();
   renderSetupRig();
   renderDiagnostics();
-
-  /* Timer cannot-fire indicator */
-  var noFire = document.getElementById('timer-cannot-fire');
-  if (noFire) noFire.style.display = (!S.stream_on) ? 'block' : 'none';
-
-  renderTargetBtns();
 }
 
 /* === SETUP SET LIST === */
@@ -3103,8 +2911,8 @@ function submitRename() {
 
 function setupUpdatePreset() {
   if (!curPreset) return showToast('No preset loaded yet — use Save preset', 3000, 'error');
-  if (S.hold) {
-    showToast('Cannot update: timer hold is on air. Update would save the ident, not the artist.', 5000, 'error');
+  if (S.cycle) {
+    showToast('Cannot update: a cycle burst is on air. Update would save the logo, not the artist.', 5000, 'error');
     return;
   }
   askConfirm('Overwrite preset "' + curPreset + '" with current settings?', function() {
@@ -3119,128 +2927,16 @@ function delPreset(n) {
   });
 }
 
-/* === TIMERS === */
-var tTargets = new Set();
-
-function tgTarget(i) {
-  if (tTargets.has(i)) tTargets.delete(i);
-  else tTargets.add(i);
-  renderTargetBtns();
-}
-
-function renderTargetBtns() {
-  var ids = [];
-  if (S && S.slaves) {
-    var seen = {};
-    for (var i = 0; i < S.slaves.length; i++) {
-      var sid = S.slaves[i].id;
-      if (!seen[sid]) { ids.push(sid); seen[sid] = true; }
-    }
-  }
-  ids.sort(function(a,b) { return a - b; });
-  var container = document.getElementById('ttargets');
-  if (!container) return;
-  var html = '<button class="' + (tTargets.size ? '' : 'on') + '" onclick="tTargets.clear();renderTargetBtns();">all</button>';
-  for (var i = 0; i < ids.length; i++) {
-    html += '<button class="' + (tTargets.has(ids[i]) ? 'on' : '') + '" onclick="tgTarget(' + ids[i] + ')">' + ids[i] + '</button>';
-  }
-  container.innerHTML = html;
-}
-
-function addTimer() {
-  var preset = document.getElementById('tpreset').value;
-  if (!preset) return showToast('Save a preset first — a timer shows a preset', 3000, 'error');
-  post("/api/timer", {
-    op: 'save',
-    preset: preset,
-    targets: [...tTargets],
-    hold_s: +document.getElementById('thold').value,
-    every_s: Math.round(+document.getElementById('tevery').value * 60)
-  });
-}
-
-function renderTimers() {
-  if (document.activeElement && document.activeElement.closest('#timer-table-wrap')) return;
-  var ts = S.timers || [];
-  var hold = S.hold;
-  var container = document.getElementById('timer-table-wrap');
-  if (!container) return;
-
-  /* Fill preset select before early return (N12) */
-  var sel = document.getElementById('tpreset');
-  if (sel) {
-    var cur = sel.value;
-    var names = S.presets || [];
-    sel.innerHTML = names.map(function(n) { return '<option>' + esc(n) + '</option>'; }).join('');
-    if (names.indexOf(cur) >= 0) sel.value = cur;
-  }
-
-  document.getElementById('holdnote').textContent = hold
-    ? '— on air: "' + (hold.preset || '?') + '", ' + fmtLeft(hold.left_s) + ' left' : '';
-
-  if (!ts.length) {
-    container.innerHTML = '<div style="color:var(--dim);padding:8px">No timers configured</div>';
-    return;
-  }
-
-  var html = '<table class="timer-table"><tr><th>rule</th><th>schedule</th><th>status</th><th>actions</th></tr>';
-  for (var i = 0; i < ts.length; i++) {
-    var t = ts[i];
-    var who = t.targets.length ? 'slave ' + t.targets.join('+') : 'every slave';
-    var when = '';
-    if (hold && hold.id === t.id) {
-      when = '<span style="color:var(--ph);font-weight:bold">on air, ' + fmtLeft(hold.left_s) + ' left</span>';
-    } else if (!t.enabled) {
-      when = 'paused';
-    } else if (t.next_in != null) {
-      when = 'next in ' + fmtLeft(t.next_in);
-    }
-
-    /* Cannot fire indicator */
-    if (t.enabled && !S.stream_on) {
-      when += ' <span class="status-cannot-fire">⚠ cannot fire (feed SILENT)</span>';
-    }
-
-    html += '<tr>' +
-      '<td>"' + esc(t.preset) + '" on ' + esc(who) + '</td>' +
-      '<td>' + t.hold_s + 's every ' + (t.every_s >= 60 ? (t.every_s/60).toFixed(1) + ' min' : t.every_s + 's') +
-        /* Say the shift out loud. A rule quietly running 37 s off the one
-           above it looks like a bug the first time someone times it. */
-        (t.phase ? '<br><span style="color:var(--dim);font-size:11px">offset +' + t.phase + 's to clear the others</span>' : '') + '</td>' +
-      '<td>' + when + '</td>' +
-      '<td>' +
-        '<button class="' + (t.enabled ? 'on' : 'off') + '" onclick="timerOp(\\'toggle\\',' + t.id + ')">' + (t.enabled ? 'ON' : 'OFF') + '</button> ' +
-        '<button onclick="timerOp(\\'fire\\',' + t.id + ')">run now</button> ' +
-        '<button class="danger" onclick="delTimer(' + t.id + ',\\'' + esc(t.preset) + '\\')">✕</button>' +
-      '</td></tr>';
-  }
-  html += '</table>';
-  container.innerHTML = html;
-
-}
-
-function timerOp(op, id) { post("/api/timer", {op: op, id: id}); }
-
-function delTimer(id, preset) {
-  askConfirm('Delete timer for "' + preset + '"?', function() {
-    post("/api/timer", {op: 'delete', id: id});
-  });
-}
-
 /* === LOGO / ARTIST SETTINGS SHEET ===
-   A cycle is a pair: A for show_s, optional mic pause, B, pause, round again.
-   Which pair runs is a choice for artists (three b2b line-ups on the card)
-   and usually a formality for logos. The page never invents the order -- it
-   draws S.cycle.seq, the exact list the controller will walk. */
+   A cycle is a periodic burst: every N minutes, A for show_s, an optional
+   mic pause, B -- then the microphone until the next one. Which pair runs is
+   a choice for artists (three b2b line-ups on the card) and usually a
+   formality for logos. The page never invents the order -- it draws the
+   group's own seq, the exact list the controller will play. */
 function openCycleSheet(group) {
   activeCycleGroup = group;
   document.getElementById('cycle-title').textContent =
     group === 'logos' ? 'LOGO SETTINGS' : 'ARTIST SETTINGS';
-  /* Idents interrupt whatever is on air, so they belong to the show as a
-     whole, not to one group. They live on the logo card because that is where
-     "show the logo every five minutes" gets looked for. */
-  document.getElementById('cyc-timers').style.display =
-    group === 'logos' ? '' : 'none';
   document.getElementById('cycle-sheet').classList.add('active');
   renderCycleSheet(true);
 }
@@ -3264,7 +2960,8 @@ function setCycle(patch) {
 
 function applyCycleTimes() {
   setCycle({show_s: +document.getElementById('cyc-show').value,
-            pause_s: +document.getElementById('cyc-pause').value});
+            pause_s: +document.getElementById('cyc-pause').value,
+            every_s: Math.round(+document.getElementById('cyc-every').value * 60)});
 }
 
 function addCyclePair() {
@@ -3319,22 +3016,26 @@ function renderCycleSheet(force) {
   if (force || !typing) {
     document.getElementById('cyc-show').value = c.show_s;
     document.getElementById('cyc-pause').value = c.pause_s;
+    document.getElementById('cyc-every').value = +(c.every_s / 60).toFixed(2);
   }
 
   var cyc = S.cycle;
   var st = '';
   if (!c.enabled) {
     st = 'off';
+  } else if (!c.seq.length) {
+    st = '';
   } else if (!S.stream_on) {
     st = 'frozen — feed is SILENT';
-  } else if (S.hold) {
-    st = 'frozen — an ident is on air';
   } else if (cyc && cyc.group === activeCycleGroup) {
-    st = 'on air: "' + esc(cyc.preset) + '", ' + fmtLeft(cyc.left_s) + ' left';
-  } else if (cyc && cyc.group === '') {
-    st = 'mic pause, ' + fmtLeft(cyc.left_s) + ' left';
-  } else {
-    st = 'running';
+    st = 'ON AIR: "' + esc(cyc.preset) + '", ' + fmtLeft(cyc.left_s) + ' left';
+  } else if (c.running) {
+    st = 'on air: mic pause, ' + fmtLeft(cyc ? cyc.left_s : 0) + ' left';
+  } else if (c.next_in != null) {
+    /* The countdown is the whole point of a period: without it the operator
+       cannot tell a cycle that is waiting from one that is broken. */
+    st = 'next burst in ' + fmtLeft(c.next_in)
+       + (cyc ? ' (' + cyc.group + ' on air now)' : ' — mic');
   }
   document.getElementById('cyc-state').textContent = st;
 
@@ -3358,17 +3059,18 @@ function renderCycleSheet(force) {
   document.getElementById('cyc-addpair').style.display =
     pairs.length >= 6 ? 'none' : '';
 
-  /* "of" and not "group": a pause has no group (nothing is on the stream),
-     but it belongs to the cycle whose card is open — the artists card was
-     drawing the logo cycle's pauses as its own. */
-  var order = (cyc && cyc.seq) ? cyc.seq.filter(function(s) {
-    return s.of === activeCycleGroup;
-  }) : [];
-  var mine = order.some(function(s) { return s.group === activeCycleGroup; });
-  document.getElementById('cyc-order').innerHTML = (c.enabled && mine)
-    ? 'running order: ' + order.map(function(s) {
-        return s.group === '' ? '<b>mic ' + s.secs + 's</b>' : esc(s.preset) + ' ' + s.secs + 's';
-      }).join(' → ')
+  var order = c.seq || [];
+  var every = c.every_s >= 60 ? +(c.every_s / 60).toFixed(2) + ' min'
+                              : c.every_s + 's';
+  document.getElementById('cyc-order').innerHTML = (c.enabled && order.length)
+    ? 'every ' + every + ': ' + order.map(function(s) {
+        return s.group === '' ? '<b>mic ' + s.secs + 's</b>'
+                              : esc(s.preset) + ' ' + s.secs + 's';
+      }).join(' → ') + ' → <b>mic</b> until the next one'
+      /* Say the offset out loud. A cycle quietly running 32 s off the grid
+         looks like a bug the first time someone times it with a phone. */
+      + (c.phase ? '<br><span style="color:var(--dim);font-size:11px">offset +'
+                   + c.phase + 's, so the two cycles never collide</span>' : '')
     : (c.enabled ? '<span style="color:var(--bad)">nothing to run — the selected pair names no preset in the set list</span>' : '');
 }
 
@@ -3379,18 +3081,28 @@ function renderCycleLine() {
   var el = document.getElementById('cycle-line');
   if (!el) return;
   var cyc = S.cycle;
-  var on = S.cycles && (S.cycles.logos.enabled || S.cycles.artists.enabled);
+  var cs = S.cycles || {};
+  var on = cs.logos && (cs.logos.enabled || cs.artists.enabled);
   if (!on) { el.innerHTML = ''; return; }
-  if (!S.stream_on) { el.innerHTML = 'cycle frozen — feed is SILENT'; return; }
-  if (S.hold) { el.innerHTML = 'cycle frozen — ident on air'; return; }
-  if (!cyc) { el.innerHTML = 'cycle starting…'; return; }
-  var seq = cyc.seq || [];
-  var nxt = seq.length ? seq[(cyc.pos + 1) % seq.length] : null;
-  el.innerHTML = (cyc.group === ''
-      ? '<b>mic pause</b>'
-      : cyc.group + ': <b>' + esc(cyc.preset) + '</b>')
-    + ' · ' + fmtLeft(cyc.left_s) + ' left'
-    + (nxt ? ' · next ' + (nxt.group === '' ? 'mic pause' : esc(nxt.preset)) : '');
+  if (!S.stream_on) { el.innerHTML = 'cycles frozen — feed is SILENT'; return; }
+  if (cyc) {
+    el.innerHTML = (cyc.group === ''
+        ? '<b>mic pause</b>'
+        : cyc.group + ': <b>' + esc(cyc.preset) + '</b>')
+      + ' · ' + fmtLeft(cyc.left_s) + ' left';
+    return;
+  }
+  /* Between bursts. Name the group that lands next, not just a number: with
+     two cycles running the operator wants to know which one is coming. */
+  var next = null;
+  ['logos', 'artists'].forEach(function(g) {
+    var c = cs[g];
+    if (!c || !c.enabled || !c.seq.length || c.next_in == null) return;
+    if (!next || c.next_in < next.left) next = {g: g, left: c.next_in};
+  });
+  el.innerHTML = next
+    ? '<b>mic</b> · ' + next.g + ' in ' + fmtLeft(next.left)
+    : '<b>mic</b>';
 }
 
 /* === SETUP RIG (per-slave cards) === */
@@ -3669,8 +3381,6 @@ def make_http_handler(state, cmds):
                 self._json({"ok": True})
             elif self.path == "/api/preset":
                 return self._preset(state, body)
-            elif self.path == "/api/timer":
-                return self._timer(state, body)
             elif self.path == "/api/node":
                 return self._node(state, cmds, body)
             elif self.path == "/api/cycle":
@@ -3680,7 +3390,7 @@ def make_http_handler(state, cmds):
                 if not ip or not isinstance(cmd_obj, dict):
                     return self._json({"err": "need ip + cmd"}, 400)
                 cmds.send(ip, cmd_obj)
-                self._takeover(state)  # end any hold so draw change persists (F11)
+                self._takeover(state)  # cut any burst so the change persists
                 self._json({"ok": True})
             else:
                 self._json({"err": "not found"}, 404)
@@ -3739,8 +3449,8 @@ def make_http_handler(state, cmds):
                 held = full = False
                 plist = None
                 with state.lock:
-                    # F0: no saving the ident over an artist's preset mid-hold
-                    if state.timer_hold is not None:
+                    # F0: no saving a logo over an artist's preset mid-burst
+                    if state.cycle_run is not None:
                         held = True
                     else:
                         snap = {"name": name,
@@ -3767,7 +3477,7 @@ def make_http_handler(state, cmds):
                             plist = list(state.presets)
                 if held:
                     return self._json(
-                        {"err": "cannot save — timer hold active"}, 409)
+                        {"err": "cannot save — a cycle burst is on air"}, 409)
                 if full:
                     return self._json(
                         {"err": f"max {PRESETS_MAX} presets"}, 400)
@@ -3800,7 +3510,7 @@ def make_http_handler(state, cmds):
                 new_name = sanitize_name(body.get("new_name", ""))
                 if not new_name:
                     return self._json({"err": "need new_name"}, 400)
-                plist = tlist = None
+                plist = clist = None
                 clash = False
                 with state.lock:
                     # The page keys its set-list rows by name; two presets
@@ -3811,49 +3521,50 @@ def make_http_handler(state, cmds):
                         for p in state.presets:
                             if p["name"] == name:
                                 p["name"] = new_name
-                                touched = [t for t in state.timers
-                                           if t["preset"] == name]
-                                for t in touched:
-                                    t["preset"] = new_name
                                 plist = list(state.presets)
                                 # Rewritten in memory but never written out,
-                                # the rule came back after a restart pointing
-                                # at a name that no longer exists -- enabled,
-                                # counting down, unable to ever fire.
-                                tlist = list(state.timers) if touched else None
+                                # a pair came back after a restart naming a
+                                # preset that no longer exists: the burst
+                                # would quietly play one name instead of two.
+                                touched = False
+                                for c in state.cycles.values():
+                                    for pair in c["pairs"]:
+                                        for i, n in enumerate(pair):
+                                            if n == name:
+                                                pair[i] = new_name
+                                                touched = True
+                                clist = dict(state.cycles) if touched else None
                                 break
                 if clash:
                     return self._json({"err": "name already used"}, 409)
                 if plist is None:
                     return self._json({"err": "no such preset"}, 404)
                 save_presets(plist)
-                if tlist is not None:
-                    save_timers(tlist)
+                if clist is not None:
+                    save_cycles(clist)
                 return self._json({"ok": True})
             if op == "delete":
+                gone = []
                 with state.lock:
                     state.presets = [p for p in state.presets
                                      if p["name"] != name]
                     plist = list(state.presets)
-                    # A rule pointing at a preset that is gone can never fire,
-                    # but it kept rendering ON with a live countdown -- the
-                    # dashboard promising an ident that was never coming.
-                    # Pause those rules and tell the operator instead.
-                    paused = [t for t in state.timers
-                              if t["preset"] == name and t["enabled"]]
-                    for t in paused:
-                        t["enabled"] = False
-                    tlist = list(state.timers) if paused else None
-                    stuck = (state.timer_hold is not None
-                             and state.timer_hold["preset"] == name)
+                    # A pair naming a preset that is gone plays half a burst.
+                    # Clear the slot and say so, rather than leaving the card
+                    # promising a name that is never coming.
+                    for g, c in state.cycles.items():
+                        for pair in c["pairs"]:
+                            for i, n in enumerate(pair):
+                                if n == name:
+                                    pair[i] = ""
+                                    gone.append(g)
+                    clist = dict(state.cycles) if gone else None
                 save_presets(plist)
-                if tlist is not None:
-                    save_timers(tlist)
-                if stuck:   # don't leave the show on a preset just deleted
-                    end_hold(state, cmds)
-                return self._json({"ok": True, "note": None if not paused else
-                                   f"{len(paused)} timer(s) paused — they "
-                                   f"showed \"{name}\""})
+                if clist is not None:
+                    save_cycles(clist)
+                return self._json({"ok": True, "note": None if not gone else
+                                   f"cleared from {len(gone)} "
+                                   f"{'pair' if len(gone) == 1 else 'pairs'}"})
             with state.lock:  # load
                 p = next((dict(p) for p in state.presets
                           if p["name"] == name), None)
@@ -3864,16 +3575,15 @@ def make_http_handler(state, cmds):
             return self._json({"ok": True})
 
         def _takeover(self, state):
-            """A hand on the panel ends any interval hold: the targets go back
-            to the draw setting they had, but the pattern stays as just set.
-            Silently reverting the operator fifteen seconds later is worse
-            than a timer missing one cycle.
+            """A hand on the panel cuts any cycle burst short: what the
+            operator just set stays up. Silently reverting them ten seconds
+            later is worse than a cycle missing one burst.
 
-            Called unconditionally. end_hold's read-and-clear is atomic and
-            already a no-op when nothing holds, whereas an unlocked `if` here
-            would miss a hold that starts between the test and the call and
-            then revert the operator's pattern a hold later."""
-            end_hold(state, cmds, restore_pattern=False)
+            Called unconditionally. end_burst's read-and-clear is atomic and
+            already a no-op when nothing is on air, whereas an unlocked `if`
+            here would miss a burst that starts between the test and the call
+            and then revert the operator's pattern a step later."""
+            end_burst(state, restore_pattern=False)
 
         def _node(self, state, cmds, body):
             """Flip one node's switches. {"id": 100, "logos": false}
@@ -3903,119 +3613,27 @@ def make_http_handler(state, cmds):
 
         def _cycle(self, state, cmds, body):
             """Edit one pair cycle. {"group": "artists", "enabled": true,
-            "show_s": 30, "pause_s": 10, "idx": 1, "pairs": [[a, b], ...]}"""
+            "every_s": 300, "show_s": 30, "pause_s": 10, "idx": 1,
+            "pairs": [[a, b], ...]}"""
             group = body.get("group")
             if group not in CYCLE_GROUPS:
                 return self._json({"err": "need group logos|artists"}, 400)
             with state.lock:
                 cur = dict(state.cycles[group])
                 cur.update({k: body[k] for k in
-                            ("enabled", "show_s", "pause_s", "idx", "pairs")
-                            if k in body})
+                            ("enabled", "show_s", "pause_s", "every_s",
+                             "idx", "pairs") if k in body})
                 c = clean_cycle(cur, group)
                 state.cycles[group] = c
                 # Let advance_cycle notice the change on its own terms: it
-                # compares the sequence signature and restarts the order, so
-                # switching artists on mid-set starts at that pair's A side
-                # instead of halfway through it.
+                # compares the burst plans, restages both phases and re-arms,
+                # so a period edited at 4m59s does not fire as you let go.
                 cycles = {g: dict(v) for g, v in state.cycles.items()}
             save_cycles(cycles)
             advance_cycle(state, 0)
             reconcile_modes(state, cmds)
             return self._json({"ok": True, "group": group, "cycle": c})
 
-        def _timer(self, state, body):
-            op = body.get("op")
-            if op not in ("save", "delete", "toggle", "fire"):
-                return self._json({"err": "bad op"}, 400)
-            if op == "save":
-                t = clean_timer(body)
-                if not t["preset"]:
-                    return self._json({"err": "need a preset"}, 400)
-                missing = full = False
-                tlist = None
-                with state.lock:
-                    if not any(p["name"] == t["preset"]
-                               for p in state.presets):
-                        missing = True
-                    else:
-                        for i, old in enumerate(state.timers):
-                            if old["id"] == t["id"] and t["id"]:
-                                state.timers[i] = t
-                                break
-                        else:
-                            if len(state.timers) >= TIMERS_MAX:
-                                full = True
-                            else:
-                                t["id"] = state.next_timer_id
-                                state.next_timer_id += 1
-                                state.timers.append(t)
-                        if not full:
-                            tlist = list(state.timers)
-                if missing:
-                    return self._json({"err": "no such preset"}, 404)
-                if full:
-                    return self._json({"err": f"max {TIMERS_MAX} timers"}, 400)
-                # Re-phase the whole set, not just this rule: the offsets that
-                # keep two idents from queueing are relative, so changing one
-                # period re-opens the question for all of them. Off the lock —
-                # it is a search. It also re-arms a full period out, so
-                # tweaking "every" at 4m59s does not fire as you let go.
-                restage_timers(state)
-                save_timers(tlist)
-                # W8: echo the clamped period back, so a page that asked for
-                # 2 s and got the 10 s minimum shows 10 s instead of quietly
-                # drawing a schedule the controller is not running.
-                return self._json({"ok": True, "id": t["id"],
-                                   "every_s": t["every_s"],
-                                   "hold_s": t["hold_s"],
-                                   "phase": state.timer_phase.get(t["id"], 0)})
-            try:
-                tid = int(body.get("id", 0))
-            except (TypeError, ValueError):
-                return self._json({"err": "need id"}, 400)
-            if op == "fire":
-                with state.lock:
-                    t = next((dict(x) for x in state.timers
-                              if x["id"] == tid), None)
-                if t is None:
-                    return self._json({"err": "no such timer"}, 404)
-                reason = fire_timer(state, cmds, t)
-                if reason:
-                    return self._json({"err": "not now — " + reason}, 409)
-                # F12: a hand-fired hold costs the rule its turn. Without this
-                # the schedule is untouched, so "run now" plays the ident and
-                # then the rule plays it again seconds later -- twice, mid-set.
-                with state.lock:
-                    state.timer_next[tid] = (mono_us()
-                                             + t["every_s"] * 1_000_000)
-                return self._json({"ok": True})
-            with state.lock:
-                if op == "delete":
-                    state.timers = [x for x in state.timers
-                                    if x["id"] != tid]
-                else:
-                    for x in state.timers:
-                        if x["id"] == tid:
-                            x["enabled"] = not x["enabled"]
-                tlist = list(state.timers)
-                # Read under the same lock that took tlist. Tested and
-                # subscripted as two separate unlocked reads, a hold expiring
-                # in between made this a None subscript -- a 500 on the
-                # operator's tap, mid-show.
-                stuck = (state.timer_hold is not None
-                         and state.timer_hold["id"] == tid)
-            # Both ops change which rules are in the running, so both re-open
-            # the phasing. Off the lock, like the save path. Un-pausing
-            # therefore waits a full period rather than firing off whatever
-            # due time went stale.
-            restage_timers(state)
-            # A rule deleted or switched off mid-hold must not leave the show
-            # stuck on its preset.
-            if stuck:
-                end_hold(state, cmds)
-            save_timers(tlist)
-            return self._json({"ok": True})
 
     return Handler
 
@@ -4287,8 +3905,6 @@ def main():
                                 make_http_handler(state, cmds))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     threading.Thread(target=persist_loop, args=(state,), daemon=True).start()
-    threading.Thread(target=timer_loop, args=(state, cmds),
-                     daemon=True).start()
     threading.Thread(target=policy_loop, args=(state, cmds),
                      daemon=True).start()
 
@@ -4314,9 +3930,11 @@ def main():
         if c["enabled"] and c["pairs"]:
             pair = c["pairs"][min(c["idx"], len(c["pairs"]) - 1)]
             print(f"[controller] {g} cycle on: {' / '.join(pair)}, "
-                  f"{c['show_s']}s each"
-                  + (f", {c['pause_s']}s mic between" if c["pause_s"] else ""),
-                  flush=True)
+                  f"{c['show_s']}s each every {c['every_s']}s"
+                  + (f" (+{state.cycle_phase[g]}s offset)"
+                     if state.cycle_phase.get(g) else "")
+                  + (f", {c['pause_s']}s mic between" if c["pause_s"] else "")
+                  + " — mic in between", flush=True)
     off = [f"{sid}({','.join(k for k, v in f.items() if not v)})"
            for sid, f in sorted(state.node_flags.items())
            if not all(f.values())]

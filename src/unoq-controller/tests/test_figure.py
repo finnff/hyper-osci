@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """kind="figure": the baked-table loader, and the show's own artwork.
 
-Run ON THE BOARD (tests/README.md). Points HYPE_STATE/HYPE_PRESETS/HYPE_TIMERS
+Run ON THE BOARD (tests/README.md). Points HYPE_STATE/HYPE_PRESETS/HYPE_CYCLES
 at a temp dir before importing the controller, like the other suites, so it
 can never touch the show's real files. HYPE_FIGURES is pointed at a temp dir
 too, then the real FIGURE_DIR is checked separately at the end.
@@ -17,7 +17,7 @@ REAL_FIGURES = os.environ.get("HYPE_FIGURES",
                               os.path.expanduser("~/hype_figures"))
 os.environ["HYPE_STATE"] = os.path.join(TMP, "state.json")
 os.environ["HYPE_PRESETS"] = os.path.join(TMP, "presets.json")
-os.environ["HYPE_TIMERS"] = os.path.join(TMP, "timers.json")
+
 os.environ["HYPE_FIGURES"] = os.path.join(TMP, "figures")
 os.mkdir(os.environ["HYPE_FIGURES"])
 

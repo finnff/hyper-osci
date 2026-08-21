@@ -17,12 +17,12 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.environ.get("HC_DIR", HERE))
-# Isolate before import, same reason as test_timers.py: State() restores the
+# Isolate before import, same reason as test_policy.py: State() restores the
 # live pattern and must never write the show's own files.
 _TD = tempfile.mkdtemp(prefix="hctx-")
 os.environ["HYPE_STATE"] = os.path.join(_TD, "state.json")
 os.environ["HYPE_PRESETS"] = os.path.join(_TD, "presets.json")
-os.environ["HYPE_TIMERS"] = os.path.join(_TD, "timers.json")
+
 import hype_controller as hc  # noqa: E402
 
 FAIL, RAN = [], []

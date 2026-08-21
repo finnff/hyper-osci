@@ -73,35 +73,38 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    **`+ save as…`** (a new name). Which preset is "current" is a client-side
    notion kept in `localStorage`; the controller has no session, and a phone
    that locked its screen still comes back able to update the right one.
-6. **Interval timers (idents)** — up to 8 rules of the form *"show preset
-   **IDENT** on slaves 1+2 for 20 s every 5 minutes"*, persisted at
-   `~/hype_timers.json`. A rule fires on its own thread (`timer_loop`, same
-   reasoning as `persist_loop`: a font rebuild on the stream thread is an
-   audible gap on every scope): the preset goes on air and the hold records
-   its targets. It sends no `set_mode` itself — `policy_loop` reads the hold,
-   brings the targeted nodes onto the stream and leaves the rest on their own
-   mic. When the hold expires the pattern is restored and every node's mode is
-   re-derived from its switches, not from a remembered draw setting. Targets
-   are slave **ids**, not ips, so a rule survives a DHCP lease.
+6. **Pair cycles** — two periodic interruptions, `logos` and `artists`,
+   persisted at `~/hype_cycles.json`. A cycle is *"every 5 minutes: name A
+   for 5 s, an optional mic pause, name B — then the microphone until the
+   next one"*. The rig's resting state is the mic (every node on its own
+   audio); a burst borrows the stream and hands it straight back. Both run on
+   `policy_loop`'s thread (a font rebuild on the stream thread is an audible
+   gap on every scope).
 
-   Three things worth knowing:
-   - **There is one streamed pattern for the whole rig**, so a targeted hold
-     is enforced at the nodes: targeting 1+2 puts those on the stream and the
-     others on mic for the duration. Untargeted (the default) means every node
-     whose switches allow it. An ident is subject to those switches like
-     anything else — an artist ident does not appear on a scope with
-     `artists` off.
-   - **Touching the pattern panel ends a hold early**, keeping what the
-     operator just set. Reverting them fifteen seconds later is worse than
-     the rule missing a cycle.
-   - **A hold is never persisted** as the live pattern, and a fire is refused
-     for `HOLD_COOLDOWN_US` after a release — two stings back to back read as
-     a fault on stage, not as a show.
+   Four things worth knowing:
+   - **There is one streamed pattern for the whole rig**, so the two cycles
+     cannot both be on air. Their grids are phase-shifted apart
+     (`cycle_phases`): logos every 2 min against artists every 1 min becomes
+     34/154/274 against 0/60/120/180 instead of both landing on the minute.
+     Periods that share no useful common multiple cannot always miss; when
+     two do come due together the longer period wins, and a slot that falls
+     inside another group's burst is **skipped, not queued** — two bursts
+     back to back read as a fault on stage, not as a show.
+   - **A burst obeys the per-node switches** like anything else: an artist
+     name does not appear on a scope with `artists` off, and that node sits
+     on its mic instead.
+   - **Touching the pattern panel cuts a burst short**, keeping what the
+     operator just set. Reverting them ten seconds later is worse than a
+     cycle missing one burst. The grid is untouched, so the evening does not
+     shift.
+   - **A burst is never persisted** as the live pattern, and `op=save` is
+     refused while one is on air — it would save the logo, not the artist.
 
 HTTP API: `GET /api/state`, `GET /api/shapepreview` (the live point table,
 decimated — text and figure both); `POST /api/pattern`,
 `POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete),
-`POST /api/timer` (op=save|delete|toggle|fire).
+`POST /api/node {"id":121,"logos":false}`,
+`POST /api/cycle {"group":"artists","every_s":300,"idx":1,...}`.
 
 Per-node switches and the pair cycles (2026-08-21): every node carries
 `stream` / `logos` / `artists` in `~/hype_nodes.json` (keyed by slave id, so
@@ -109,11 +112,10 @@ they can be set with the rig powered off), and `policy_loop` is the **only**
 writer of slave draw modes — it turns those switches plus what is on air into
 `network` or `local`, level-triggered against the STATUS beacon, so a node
 that reboots or has its own button pressed is pulled back within a beacon.
-HYBRID is no longer reachable and the blackout button is gone. Each of the two
-cycles (`~/hype_cycles.json`) runs a pair — A for N s, an optional mic pause,
-B, pause, round again — and freezes while the feed is SILENT or an ident is on
-air. `POST /api/node {"id":121,"logos":false}`,
-`POST /api/cycle {"group":"artists","idx":1,...}`.
+HYBRID is no longer reachable, and the blackout button and the interval
+idents are gone: "show this every N minutes" is now what a cycle *is*, so a
+second scheduler for the same job was one machine too many. Both cycles
+freeze while the feed is SILENT.
 
 `deploy/hyperosci-netwatch` (+ `.service`/`.timer`) is a separate root-owned
 watchdog that every 30 s re-activates `hyperosci-ap` if nothing holds

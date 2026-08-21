@@ -786,19 +786,39 @@ Measured on the board: `test_policy.py` (46 checks) plus the existing four
 suites all pass; a 5 s/3 s logo cycle stepped 4.9 s / 3.3 s on the wall clock
 over five transitions.
 
-**Phased idents (same day).** Two idents can never be on air together — there
-is one hold — so an overlap was never a double exposure, it was a queue: the
-second rule fired the instant the first released, two stings back to back.
-Each enabled rule now gets a phase (`timer_phases`), placed shortest period
-first, each next rule taking the offset whose closest approach to everything
-already placed is largest. "Logos 10 s every 2 min" + "artists 15 s every
-1 min" stops being 0/120/240 for both and becomes 32/152/272 against
-0/60/120/180 — 17 s of clearance, zero collisions. Periods that share no
-useful common multiple (97 s against 60 s) cannot all miss forever; the
-placement takes the best of what it can see (2 collisions per 12 fires
-instead of 13) and `timer_loop`'s queue is still underneath as the thing that
-guarantees correctness. The offset is printed in the ident table rather than
-left as a mystery. The search is 40 ms at the 8-rule cap and runs off a copy
-with no lock held — the stream loop wants `state.lock` every 5 ms.
+**Cycles became periodic bursts; the idents are gone (same day).** The pair
+cycles used to own the stream: A, pause, B, pause, round again, forever. What
+the show actually wants is the **microphone** as the resting state — every
+node on its own audio, which is what the room is there for — interrupted on a
+period. A cycle is now *"every N minutes: A for a few seconds, an optional
+mic pause, B, then straight back to the mic"*. `every_s` joins the config
+(default 300 s, clamped past the burst + 10 s so the mic always gets the
+stream back), `burst_steps` replaces `cycle_sequence`, and `state.cycle_mic`
+is the single flag `desired_modes` reads.
 
-Cycle default is now **5 s a side**, not 30.
+That made the interval idents redundant — "show this every N minutes" is
+exactly what a cycle now is — so the whole subsystem went: `~/hype_timers.json`,
+`timer_loop`, `fire_timer`/`end_hold`, the hold cooldown, `POST /api/timer`,
+the ident table and its slave-target picker, `test_timers.py`. A second
+scheduler for the same job was one machine too many, and the picker let you
+build a schedule out of any preset with no relation to the set list.
+`end_burst` replaces `end_hold` and is what a hand on the panel calls.
+
+The two cycles cannot both be on air (one stream), so their grids are
+phase-shifted apart: `cycle_phases` puts the shorter period at 0 and gives
+the other the offset whose closest approach is largest, scored on (smallest
+gap, fewest collisions, latest first collision). Logos 10 s every 2 min with
+artists 15 s every 1 min lands 34/154/274 against 0/60/120/180 — no
+collisions, measured on the board. Periods that share no useful common
+multiple cannot always miss; when two come due on the same tick the longer
+period wins, and **a slot falling inside another group's burst is skipped,
+not queued**. That last part was a real bug caught only by watching the live
+daemon for 80 s: the skip logic sat inside the `run is None` branch, so a
+logos slot missed at second 30 of an artists burst fired 300 ms after it
+released — the queue the phases exist to prevent, reintroduced one branch
+deeper. The grid steps regardless of what is on air now, and there is a test
+for the mid-burst case, not just the same-tick one.
+
+Cycle default is **5 s a side**, not 30. The offset is printed on the
+settings card: a cycle quietly running 34 s off the grid looks like a bug the
+first time someone times it with a phone.
