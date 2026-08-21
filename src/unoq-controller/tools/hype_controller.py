@@ -2015,7 +2015,6 @@ var slaveLastChange = {};
 
 /* Incremental DOM elements (F4 fix) */
 var slaveTiles = {};
-var presetRowEls = {};
 var setupRigEls = {};
 
 /* Expected slave roster — remembered across polls (F8 fix) */
@@ -2177,26 +2176,20 @@ function setCur(n) {
   else localStorage.removeItem('hypePreset');
 }
 
-/* === NAV (PREV/NEXT) === */
-function goPrev() {
-  var presets = S ? (S.presets || []) : [];
-  if (!presets.length) return;
-  var curName = (S.hold && S.hold.preset) || curPreset;
-  curPresetIdx = presets.indexOf(curName);
-  if (curPresetIdx < 0) curPresetIdx = presets.length - 1;
-  curPresetIdx = (curPresetIdx - 1 + presets.length) % presets.length;
-  applyPreset(presets[curPresetIdx]);
+/* === NAV (PREV/NEXT) ===
+   Steps the artist pairs, because that is what the set list under it now is.
+   Stepping single presets would disagree with the list on the same screen. */
+function stepPair(delta) {
+  var cfg = (S && S.cycles) ? S.cycles.artists : null;
+  var pairs = cfg ? (cfg.pairs || []) : [];
+  if (pairs.length < 2) return;
+  var i = ((cfg.idx + delta) % pairs.length + pairs.length) % pairs.length;
+  pickArtistPair(i, pairs[i][0]);
 }
 
-function goNext() {
-  var presets = S ? (S.presets || []) : [];
-  if (!presets.length) return;
-  var curName = (S.hold && S.hold.preset) || curPreset;
-  curPresetIdx = presets.indexOf(curName);
-  if (curPresetIdx < 0) curPresetIdx = 0;
-  curPresetIdx = (curPresetIdx + 1) % presets.length;
-  applyPreset(presets[curPresetIdx]);
-}
+function goPrev() { stepPair(-1); }
+
+function goNext() { stepPair(1); }
 
 function applyPreset(name) {
   if (!S) return;
@@ -2442,49 +2435,52 @@ function patchTile(s) {
   }
 }
 
-/* === SET LIST (SHOW mode — no delete) === */
+/* === SET LIST (SHOW mode) ===
+   Tonight's choice is which b2b is on, not which of eight names to tap: the
+   pair cycle plays both halves on its own once a pair is picked. So the show
+   screen lists the artist pairs and nothing else. The full preset list is
+   still in SETUP, and both slots of every pair are edited in ARTIST SETTINGS.
+   Picking a pair puts its A side up immediately — a tap that only changed a
+   setting, with the scopes still on the last act's name, is how the wrong
+   name stays on stage. */
 function renderSetList() {
   var container = document.getElementById('setlist');
   if (!container) return;
-  var presets = S.presets || [];
-  var curName = (S.hold && S.hold.preset) || curPreset;
+  var cfg = (S.cycles && S.cycles.artists) ? S.cycles.artists : null;
+  var pairs = cfg ? (cfg.pairs || []) : [];
+  var live = (S.hold && S.hold.preset)
+    || (S.cycle && S.cycle.preset) || curPreset;
 
-  /* Build rows incrementally (F4) */
-  var existingNames = Object.keys(presetRowEls);
-  var newNames = presets.map(function(p) { return p.name || p; });
-
-  /* Remove rows for deleted presets */
-  for (var i = 0; i < existingNames.length; i++) {
-    var nm = existingNames[i];
-    if (newNames.indexOf(nm) < 0) {
-      presetRowEls[nm].remove();
-      delete presetRowEls[nm];
-    }
-  }
-
-  /* Create/update rows */
   container.innerHTML = '';
-  for (var i = 0; i < newNames.length; i++) {
-    var nm = typeof presets[i] === 'string' ? presets[i] : presets[i].name;
-    if (!presetRowEls[nm]) {
-      var row = document.createElement('div');
-      row.className = 'preset-row';
-      row.onclick = (function(name) { return function() { applyPreset(name); }; })(nm);
-      row.innerHTML = '<span class="idx"></span><span class="name"></span><span class="tag"></span>';
-      presetRowEls[nm] = row;
-    }
-    var row = presetRowEls[nm];
-    row.querySelector('.idx').textContent = (i + 1);
-    row.querySelector('.name').textContent = nm;
-    row.classList.toggle('on-air', nm === curName);
-    if (nm === curName) row.querySelector('.tag').textContent = 'ON AIR';
-    else row.querySelector('.tag').textContent = '';
+  if (!pairs.length) {
+    container.innerHTML = '<div style="color:var(--dim);text-align:center;padding:12px">'
+      + 'No artist pairs — set them in ARTIST SETTINGS</div>';
+    return;
+  }
+  for (var i = 0; i < pairs.length; i++) {
+    var a = pairs[i][0] || '—', b = pairs[i][1] || '—';
+    var onAir = (pairs[i][0] === live || pairs[i][1] === live);
+    var row = document.createElement('div');
+    row.className = 'preset-row' + (onAir ? ' on-air' : '');
+    row.onclick = (function(idx, first) {
+      return function() { pickArtistPair(idx, first); };
+    })(i, pairs[i][0]);
+    row.innerHTML = '<span class="idx">' + (i + 1) + '</span>'
+      + '<span class="name">' + esc(a) + '  b2b  ' + esc(b) + '</span>'
+      + '<span class="tag">'
+      + (onAir ? 'ON AIR' : (cfg.idx === i ? 'SELECTED' : ''))
+      + '</span>';
     container.appendChild(row);
   }
+}
 
-  if (!presets.length) {
-    container.innerHTML = '<div style="color:var(--dim);text-align:center;padding:12px">No presets saved</div>';
-  }
+function pickArtistPair(i, firstName) {
+  post("/api/cycle", {group: 'artists', idx: i});
+  /* With the cycle off, nothing would move on its own — put the A side up so
+     the tap does what the tap looks like. With it on, advance_cycle restarts
+     the order at the same A side a moment later, which lands in the same
+     place. */
+  if (firstName) applyPreset(firstName);
 }
 
 /* === ON AIR === */
@@ -2514,14 +2510,16 @@ function renderOnAir() {
   document.getElementById('on-air-detail').textContent = (S.pattern.kind || '?')
     + (idx >= 0 ? ' · ' + (idx + 1) + ' of ' + presets.length : '');
 
-  /* NAV next hint */
-  document.getElementById('nav-next-hint').textContent =
-    (idx >= 0 && presets.length > 1)
-      ? 'next → ' + presets[(idx + 1) % presets.length] : '';
-
-  /* Enable/disable nav */
-  document.getElementById('btn-prev').disabled = presets.length < 2;
-  document.getElementById('btn-next').disabled = presets.length < 2;
+  /* NAV hint and nav buttons follow the pairs, like the list below them. */
+  var acfg = (S.cycles && S.cycles.artists) ? S.cycles.artists : null;
+  var apairs = acfg ? (acfg.pairs || []) : [];
+  var nextPair = apairs.length > 1
+    ? apairs[(acfg.idx + 1) % apairs.length] : null;
+  document.getElementById('nav-next-hint').textContent = nextPair
+    ? 'next pair → ' + (nextPair[0] || '—') + ' b2b ' + (nextPair[1] || '—')
+    : '';
+  document.getElementById('btn-prev').disabled = apairs.length < 2;
+  document.getElementById('btn-next').disabled = apairs.length < 2;
 
   /* Feed toggle */
   var on = S.stream_on;
