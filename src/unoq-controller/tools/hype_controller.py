@@ -1426,9 +1426,6 @@ html { color-scheme: dark; }
 * { box-sizing: border-box; margin: 0; padding: 0; touch-action: manipulation; }
 body { background: var(--bg); color: var(--fg); font: 14px/1.45 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; padding: 16px; }
 h1 { font-size: 18px; letter-spacing: .35em; color: var(--ph); text-shadow: 0 0 12px rgba(57,255,20,.55); }
-/* One row: title, link dot, mode toggle pushed right. Without the flex the
-   toggle's margin-left:auto did nothing and it wrapped under the title. */
-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 
 /* === Connection banner === */
 .disconnection-banner {
@@ -1482,19 +1479,13 @@ body.disconnected { filter: saturate(0.3); }
 .battery-bar { display: flex; gap: 2px; margin-top: 2px; }
 .battery-bar span { width: 12px; height: 6px; background: var(--line); border-radius: 1px; }
 .battery-bar span.filled { background: var(--ph); }
-.battery-bar.low span.filled { background: var(--bad); }
-/* No usable reading (a floating sense pin reads tens of mV): not a flat cell. */
-.battery-bar.unknown span { background: transparent; border: 1px dashed var(--line); }
-.rig-empty { grid-column: 1 / -1; color: var(--dim); text-align: center; padding: 10px; font-size: 12px; }
-.rig-empty.bad { color: var(--bad); }
-/* Three switches per node: stream / logos / artists. Lit = in the show. They
-   swallow the tap so the tile's own click does not open the slave sheet
-   underneath. Four tiles across a 390 px phone leave each switch ~24 px of
-   width, so they take the full tile width and get their size from height. */
-.tile-sw { display: flex; gap: 2px; margin-top: 4px; width: 100%; }
+/* Three switches per node: stream / logos / artists. Lit = in the show. Big
+   enough for a thumb in the dark, and they swallow the tap so the tile's own
+   click does not open the slave sheet underneath. */
+.tile-sw { display: flex; gap: 3px; margin-top: 3px; }
 .tile-sw button {
-  flex: 1; min-width: 0; height: 32px; padding: 0; font-size: 13px; font-weight: bold;
-  line-height: 30px; border: 1px solid var(--line); border-radius: 3px;
+  width: 22px; height: 20px; padding: 0; font-size: 11px; font-weight: bold;
+  line-height: 18px; border: 1px solid var(--line); border-radius: 3px;
   background: #0d130d; color: var(--dim); cursor: pointer;
 }
 .tile-sw button.on { border-color: var(--ph); color: var(--bg); background: var(--ph); }
@@ -1652,7 +1643,6 @@ canvas#preview { max-width: 100%; height: auto; background: #020402; border: 1px
 .verdict { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 12px; margin-bottom: 12px; }
 .verdict.bad { border-color: var(--bad); color: var(--bad); }
 .verdict.ok { border-color: var(--ph); }
-.verdict.warn { border-color: var(--warn); color: var(--warn); }
 
 /* Source 3-way */
 .source-3way { display: flex; gap: 4px; }
@@ -1702,7 +1692,7 @@ button.off { background: #1a0a0a; color: var(--dim); }
 @media (max-width: 640px), (max-height: 500px) {
   body { padding: 8px; }
   .rig-strip { grid-template-columns: repeat(4, 1fr); }
-  .rig-tile { min-height: 60px; padding: 6px 4px; }
+  .rig-tile { min-height: 60px; padding: 6px; }
   .tile-id { font-size: 14px; }
   .dial-row { flex-direction: column; align-items: stretch; gap: 2px; }
   .dial-row label { width: auto; }
@@ -1711,6 +1701,8 @@ button.off { background: #1a0a0a; color: var(--dim); }
 /* === Mode class toggles === */
 body.show .setup-only { display: none !important; }
 body.setup .show-only { display: none !important; }
+/* Both modes show header */
+body.show .both-modes, body.setup .both-modes { display: block; }
 </style>
 </head>
 <body>
@@ -1730,7 +1722,6 @@ body.setup .show-only { display: none !important; }
 
   <!-- Rig strip (sticky) -->
   <div id="rig-strip" class="rig-strip panel">
-    <div id="rig-empty" class="rig-empty"></div>
     <!-- Tiles are built dynamically by JS -->
   </div>
 
@@ -2367,67 +2358,19 @@ function modeGlyph(s) {
   return '▲OWN';
 }
 
-/* === BATTERY ===
-   Thresholds mirror src/esp32-slave/include/config.h; change both together.
-   Below VBAT_NO_SENSOR_MV the reading is a floating sense pin, not a cell --
-   ui.cpp's battery_policy ignores it for the same reason, and a slave once
-   reported 54 mV here, which drew as a dead battery. */
-var VBAT_NO_SENSOR_MV = 2000;
-var VBAT_WARN_MV = 3450;       /* the slave starts its low-battery blink */
-var VBAT_WIFI_OFF_MV = 3300;   /* the slave drops its radio: off the rig */
-/* Single-cell LiPo, mV -> fraction of the charge left before the radio cuts
-   out. A generic discharge curve, not measured on this cell: good to a tile,
-   not to a decimal. The old linear map read 3.84 V (half a cell) as
-   two-thirds, and 3.70 V (about an eighth) as half. */
-var VBAT_CURVE = [[VBAT_WIFI_OFF_MV, 0], [3610, .05], [3690, .10], [3750, .25],
-                  [3800, .40], [3840, .50], [3870, .60], [3950, .70],
-                  [4020, .80], [4110, .90], [4200, 1]];
-/* docs/hardware/power-budget.md §3: the 2000 mAh cell, derated, runs 11.9 h
-   with the radio on. Any slave the controller can hear has its radio on, so
-   that is the figure even for a node drawing its own mic. */
-var VBAT_FULL_HOURS = 11.9;
-
-/* -> 0..1, or null when there is no usable reading. */
-function batteryFrac(vbat_mv) {
-  if (vbat_mv == null || vbat_mv < VBAT_NO_SENSOR_MV) return null;
-  if (vbat_mv <= VBAT_CURVE[0][0]) return 0;
-  for (var i = 1; i < VBAT_CURVE.length; i++) {
-    var lo = VBAT_CURVE[i - 1], hi = VBAT_CURVE[i];
-    if (vbat_mv <= hi[0]) {
-      return lo[1] + (hi[1] - lo[1]) * (vbat_mv - lo[0]) / (hi[0] - lo[0]);
-    }
-  }
-  return 1;
-}
-
-/* Filled cells out of five, or null for no reading. A cell with any charge
-   left shows one cell: zero filled is "the radio is about to cut out". */
+/* === BATTERY BAR === */
 function batteryLevel(vbat_mv) {
-  var f = batteryFrac(vbat_mv);
-  if (f === null) return null;
-  return f > 0 ? Math.max(1, Math.round(f * 5)) : 0;
+  /* Approximate LiPo: 4200 = 100%, 3200 = 0% */
+  if (vbat_mv == null || vbat_mv === 0) return 0;
+  return Math.min(5, Math.max(0, Math.round((vbat_mv - 3200) / 200)));
 }
 
 function batteryEstimate(vbat_mv) {
-  var f = batteryFrac(vbat_mv);
-  if (f === null) return 'no reading';
-  var h = f * VBAT_FULL_HOURS;
-  if (vbat_mv < VBAT_WARN_MV) return 'LOW — charge now';
-  return h < 1 ? '<1 h left' : '~' + Math.round(h) + ' h left';
-}
-
-/* Paint a five-cell .battery-bar: filled cells, red when low, dashed when
-   there is no reading at all. */
-function paintBattery(bar, vbat_mv) {
-  var level = batteryLevel(vbat_mv);
-  var cells = bar.querySelectorAll('span');
-  for (var i = 0; i < cells.length; i++) {
-    cells[i].classList.toggle('filled', level !== null && i < level);
-  }
-  bar.classList.toggle('unknown', level === null);
-  bar.classList.toggle('low', level !== null && vbat_mv < VBAT_WARN_MV);
-  bar.title = level === null ? 'no battery reading'
-                             : (vbat_mv / 1000).toFixed(2) + ' V';
+  if (vbat_mv == null || vbat_mv === 0) return '? h';
+  /* rough: ~3.8V = ~2h typical for a small LiPo driving an oscilloscope */
+  var frac = (vbat_mv - 3200) / 1000;
+  if (frac <= 0) return '<1h';
+  return '~' + Math.round(frac * 2) + ' h';
 }
 
 /* === RIG TILE BUILDING (F4 fix — incremental DOM) === */
@@ -2487,8 +2430,21 @@ function ensureTileGrid() {
 function patchTile(s) {
   var tile = slaveTiles[s.id];
   if (!tile) return;
+  var verdict = slaveVerdict(s);
   var age = s.age_ms / 1000;
-  paintBattery(tile.querySelector('.battery-bar'), s.vbat_mv);
+  var vbat = batteryLevel(s.vbat_mv || 0);
+  var tiles = tile.querySelectorAll('.battery-bar span');
+  /* Reset battery bar */
+  for (var i = 0; i < tiles.length; i++) tiles[i].classList.remove('filled');
+  for (var i = 0; i < vbat; i++) {
+    if (!tiles[i]) {
+      var span = document.createElement('span');
+      tile.querySelector('.battery-bar').appendChild(span);
+    }
+    tiles[i].classList.add('filled');
+  }
+  /* Remove extra cells */
+  for (var i = vbat; i < tiles.length; i++) tiles[i].classList.remove('filled');
 
   tile.querySelector('.tile-id').textContent = s.id;
   tile.querySelector('.tile-mode').textContent = modeGlyph(s);
@@ -2588,13 +2544,12 @@ function onAirPreset() {
 }
 
 /* The installed pattern by name: the preset it came from, plus the words or
-   artwork it draws (N17) -- once, when an artist's preset is named after the
-   very words it draws. */
+   artwork it draws (N17). */
 function patternLabel(name) {
   var p = S.pattern;
-  var what = p.kind === 'text' ? p.text : p.kind === 'figure' ? p.figure : '';
-  if (!what) return name || '—';
-  return name && name !== what ? what + ' (' + name + ')' : what;
+  if (p.kind === 'text' && p.text) return name ? p.text + ' (' + name + ')' : p.text;
+  if (p.kind === 'figure' && p.figure) return name ? p.figure + ' (' + name + ')' : p.figure;
+  return name || '—';
 }
 
 function renderOnAir() {
@@ -2654,180 +2609,148 @@ function renderOnAir() {
     : '';
   document.getElementById('btn-prev').disabled = apairs.length < 2;
   document.getElementById('btn-next').disabled = apairs.length < 2;
+
+  /* Feed toggle */
+  var on = S.stream_on;
+  document.getElementById('feed-on').classList.toggle('active', on);
+  document.getElementById('feed-off').classList.toggle('active', !on);
+  document.getElementById('feed-off').classList.toggle('silent', !on);
 }
 
-/* === SLAVE SHEET ===
-   Built once per open -- and again only if the node drops off the air or
-   comes back -- then patched in place on every poll. It used to be one
-   innerHTML string built on open and never again, so the numbers you opened
-   it to read stayed frozen at the moment of the tap. Rebuilding the whole
-   thing every second instead would eat a tap that lands mid-rebuild and fold
-   up the sections you had open. */
-var sheetBuiltFor = null;                   /* 'on:<ip>' | 'off': what the DOM holds */
-var sheetOpen = {why: false, nums: false};  /* expandables, kept across polls */
-
+/* === SLAVE SHEET === */
 function openSlaveSheet(id) {
   if (!S) return;
-  if (activeSlaveSheet !== id) sheetOpen = {why: false, nums: false};
-  activeSlaveSheet = id;
-  sheetBuiltFor = null;
-  renderSlaveSheet();
-  document.getElementById('slave-sheet').classList.add('active');
-}
-
-function closeSlaveSheet() {
-  document.getElementById('slave-sheet').classList.remove('active');
-  activeSlaveSheet = null;
-  sheetBuiltFor = null;
-}
-
-function toggleSheetSection(key, header) {
-  sheetOpen[key] = !sheetOpen[key];
-  header.classList.toggle('open', sheetOpen[key]);
-  header.nextElementSibling.classList.toggle('open', sheetOpen[key]);
-}
-
-function sheetSwitches(id, sub) {
-  var names = {stream: 'STREAMING', logos: 'LOGOS', artists: 'ARTISTS'};
-  return '<div class="source-3way">' + ['stream', 'logos', 'artists'].map(function(k) {
-    return '<button data-sw="' + k + '" onclick="toggleNodeSw(' + id + ',\\'' + k + '\\')">'
-      + names[k]
-      + (sub ? '<br><span class="sw-sub" style="font-size:11px;color:var(--dim)"></span>' : '')
-      + '</button>';
-  }).join('') + '</div>';
-}
-
-function sheetSection(key, title, inner) {
-  var o = sheetOpen[key] ? ' open' : '';
-  return '<div class="expandable">'
-    + '<div class="expandable-header' + o + '" onclick="toggleSheetSection(\\'' + key + '\\', this)">' + title + '</div>'
-    + '<div class="expandable-content' + o + '"' + (inner ? '>' + inner : ' data-k="' + key + '">') + '</div>'
-    + '</div>';
-}
-
-function sheetStat(label, k) {
-  return '<div class="stat"><label>' + label + '</label><value data-k="' + k + '"></value></div>';
-}
-
-function buildSlaveSheet(slave) {
-  var id = slave.id, ip = slave.ip;
-  var sub = 'style="color:var(--dim);font-size:12px;margin:8px 0 4px"';
-  return '<div class="verdict" data-k="verdict"></div>' +
-    '<h3>IN THE SHOW</h3>' + sheetSwitches(id, true) +
-    '<p style="color:var(--dim);font-size:12px;margin:6px 0">Draw mode follows these: the node is on the stream when what is on air is switched on for it, and on its own mic otherwise.</p>' +
-    sheetSection('why', 'why?', '') +
-    '<h3>POWER &amp; SIGNAL</h3>' +
-    '<div class="battery-row">' +
-      '<span style="color:var(--dim);width:80px">battery</span>' +
-      '<div class="battery-bar" data-k="batbar"><span></span><span></span><span></span><span></span><span></span></div>' +
-      '<span data-k="vbat"></span>' +
-      '<span style="color:var(--dim)" data-k="batest"></span>' +
-    '</div>' +
-    '<div class="battery-row">' +
-      '<span style="color:var(--dim);width:80px">signal</span>' +
-      '<span data-k="rssi"></span>' +
-      '<span style="color:var(--dim)" data-k="rssilabel"></span>' +
-    '</div>' +
-    sheetSection('nums', 'all numbers',
-      '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">LINK</p>' +
-      '<div class="stats-grid">' + sheetStat('buf', 'buf') + sheetStat('up', 'up') + sheetStat('age', 'age') + '</div>' +
-      '<p ' + sub + '>STREAM</p>' +
-      '<div class="stats-grid">' + sheetStat('rx', 'rx') + sheetStat('drop', 'drop') + sheetStat('lost', 'lost') +
-        sheetStat('under', 'under') + sheetStat('tx-drop', 'txpct') + sheetStat('tx full', 'txfull') + '</div>' +
-      '<p ' + sub + '>POWER</p>' +
-      '<div class="stats-grid">' + sheetStat('vbat', 'vbatmv') + sheetStat('rssi', 'rssidbm') + '</div>') +
-    '<h3>ACTIONS</h3>' +
-    '<div class="action-row">' +
-      '<button onclick="cmd(\\'' + ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +
-      '<button class="danger" onclick="askConfirm(\\'Reboot slave ' + id + '? (2 s outage)\\', function(){cmd(\\'' + ip + '\\',{cmd:\\'reboot\\'})})">REBOOT</button>' +
-    '</div>';
-}
-
-/* The node is off or out of range, but its switches are still the show's
-   settings and still worth changing — that is what rigging is. */
-function buildOffSheet(id) {
-  return '<div class="verdict warn">No STATUS beacon from this node — powered off, or off the AP.</div>' +
-    '<h3>IN THE SHOW</h3>' + sheetSwitches(id, false) +
-    '<p style="color:var(--dim);font-size:12px;margin-top:8px">These are kept on the controller and applied the moment the node reports in.</p>';
-}
-
-/* Set one data-k slot. Text by default; html=true for markup this page built
-   and escaped itself. Only touches the DOM when the value changed. */
-function sheetSet(body, k, val, html) {
-  var el = body.querySelector('[data-k="' + k + '"]');
-  if (!el || el._v === val) return el;
-  el._v = val;
-  if (html) el.innerHTML = val; else el.textContent = val;
-  return el;
-}
-
-function renderSlaveSheet() {
-  if (!S || activeSlaveSheet === null) return;
-  var id = activeSlaveSheet;
   var slave = null;
-  for (var i = 0; i < (S.slaves || []).length; i++) {
+  for (var i = 0; i < S.slaves.length; i++) {
     if (S.slaves[i].id === id) { slave = S.slaves[i]; break; }
   }
-  var body = document.getElementById('sheet-body');
-  var key = slave ? 'on:' + slave.ip : 'off';
-  if (key !== sheetBuiltFor) {
-    body.innerHTML = slave ? buildSlaveSheet(slave) : buildOffSheet(id);
-    sheetBuiltFor = key;
+  if (!slave) {
+    /* The node is off or out of range, but its switches are still the show's
+       settings and still worth changing — that is what rigging is. */
+    var s0 = nodeSw(id);
+    activeSlaveSheet = id;
+    document.getElementById('sheet-title').textContent = 'SLAVE ' + id + '  (not on the air)';
+    document.getElementById('sheet-body').innerHTML =
+      '<div class="verdict warn">No STATUS beacon from this node — powered off, or off the AP.</div>' +
+      '<h3>IN THE SHOW</h3>' +
+      '<div class="source-3way">' +
+        '<button class="' + (s0.stream ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'stream\\')">STREAMING</button>' +
+        '<button class="' + (s0.logos ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'logos\\')">LOGOS</button>' +
+        '<button class="' + (s0.artists ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'artists\\')">ARTISTS</button>' +
+      '</div>' +
+      '<p style="color:var(--dim);font-size:12px;margin-top:8px">These are kept on the controller and applied the moment the node reports in.</p>';
+    document.getElementById('slave-sheet').classList.add('active');
+    return;
   }
-  document.getElementById('sheet-title').textContent =
-    'SLAVE ' + id + (slave ? '  ' + slave.ip : '  (not on the air)');
-
-  var sw = nodeSw(id);
-  var btns = body.querySelectorAll('.source-3way button[data-sw]');
-  for (var j = 0; j < btns.length; j++) {
-    var k = btns[j].getAttribute('data-sw');
-    btns[j].classList.toggle('active', sw[k]);
-    var subEl = btns[j].querySelector('.sw-sub');
-    if (subEl) subEl.textContent = sw[k] ? 'on' : (k === 'stream' ? 'off — own mic' : 'off');
-  }
-  if (!slave) return;
+  activeSlaveSheet = id;
+  document.getElementById('sheet-title').textContent = 'SLAVE ' + id + '  ' + slave.ip;
 
   var verdict = slaveVerdict(slave);
-  sheetSet(body, 'verdict', verdict.txt, true).className = 'verdict ' + verdict.cls;
+  var vbat = batteryLevel(slave.vbat_mv || 0);
+  var vbatStr = (slave.vbat_mv / 1000).toFixed(2) + ' V';
+  var battEst = batteryEstimate(slave.vbat_mv || 0);
+  var rssi = slave.rssi + ' dBm';
+  var rssiLabel = slave.rssi > -60 ? 'good' : slave.rssi > -75 ? 'marginal' : 'poor';
+  var buf = Math.round(slave.depth / 48) + ' ms';
+
+  var sw = nodeSw(slave.id);
 
   /* TX-drop info */
-  var tx = ((S.net || {}).tx || {})[slave.ip] || {};
+  var net = S.net || {};
+  var tx = (net.tx || {})[slave.ip] || {};
   var txDropPct = tx.pct || 0;
-  var whyHtml;
+  var txDropFull = tx.full || 0;
+  var txDropErr = tx.err || 0;
+  var whyHtml = '';
   if (!slave.source && S.stream_on) {
     if (txDropPct > 0) {
-      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets never arrived.</p>'
-        + '<p>' + txDropPct.toFixed(1) + '% died in this controller\\'s send buffer before reaching the air.</p>'
-        + '<p style="color:var(--warn)">That is airtime, not antenna — try reducing packet rate or increasing airtime.</p>';
+      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets never arrived.</p>';
+      whyHtml += '<p>' + txDropPct.toFixed(1) + '% died in this controller\\'s send buffer before reaching the air.</p>';
+      whyHtml += '<p style="color:var(--warn)">That is airtime, not antenna — try reducing packet rate or increasing airtime.</p>';
     } else {
-      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets lost, tx-drop ≈ 0.</p>'
-        + '<p style="color:var(--warn)">This is WiFi loss — signal, interference, or range.</p>';
+      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets lost, tx-drop ≈ 0.</p>';
+      whyHtml += '<p style="color:var(--warn)">This is WiFi loss — signal, interference, or range.</p>';
     }
   } else if (!S.stream_on) {
     whyHtml = '<p>Feed is SILENT — no audio is being sent to any slave.</p>';
   } else {
     whyHtml = '<p>Slave is receiving the stream normally.</p>';
   }
-  sheetSet(body, 'why', whyHtml, true);
 
-  paintBattery(body.querySelector('[data-k="batbar"]'), slave.vbat_mv);
-  sheetSet(body, 'vbat', batteryFrac(slave.vbat_mv) === null ? '—'
-                         : (slave.vbat_mv / 1000).toFixed(2) + ' V');
-  sheetSet(body, 'batest', batteryEstimate(slave.vbat_mv));
-  sheetSet(body, 'rssi', slave.rssi + ' dBm');
-  sheetSet(body, 'rssilabel', slave.rssi > -60 ? 'good' : slave.rssi > -75 ? 'marginal' : 'poor');
+  var body = document.getElementById('sheet-body');
+  body.innerHTML =
+    '<div class="verdict ' + verdict.cls + '">' + verdict.txt + '</div>' +
 
-  sheetSet(body, 'buf', Math.round(slave.depth / 48) + ' ms');
-  sheetSet(body, 'up', fmtUp(slave.uptime || 0));
-  sheetSet(body, 'age', (slave.age_ms / 1000).toFixed(1) + 's');
-  sheetSet(body, 'rx', fmtN(slave.rx));
-  sheetSet(body, 'drop', fmtN(slave.drop));
-  sheetSet(body, 'lost', slave.lost == null ? '—' : fmtN(slave.lost));
-  sheetSet(body, 'under', fmtN(slave.under));
-  sheetSet(body, 'txpct', txDropPct + '%');
-  sheetSet(body, 'txfull', fmtN(tx.full || 0));
-  sheetSet(body, 'vbatmv', slave.vbat_mv + ' mV');
-  sheetSet(body, 'rssidbm', slave.rssi + ' dBm');
+    '<h3>IN THE SHOW</h3>' +
+    '<div class="source-3way">' +
+      '<button class="' + (sw.stream ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'stream\\')">STREAMING<br><span style="font-size:11px;color:var(--dim)">' + (sw.stream ? 'on' : 'off — own mic') + '</span></button>' +
+      '<button class="' + (sw.logos ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'logos\\')">LOGOS<br><span style="font-size:11px;color:var(--dim)">' + (sw.logos ? 'on' : 'off') + '</span></button>' +
+      '<button class="' + (sw.artists ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'artists\\')">ARTISTS<br><span style="font-size:11px;color:var(--dim)">' + (sw.artists ? 'on' : 'off') + '</span></button>' +
+    '</div>' +
+    '<p style="color:var(--dim);font-size:12px;margin:6px 0">Draw mode follows these: the node is on the stream when what is on air is switched on for it, and on its own mic otherwise.</p>' +
+
+    '<div class="expandable">' +
+      '<div class="expandable-header" onclick="this.classList.toggle(\\'open\\');this.nextElementSibling.classList.toggle(\\'open\\')">why?</div>' +
+      '<div class="expandable-content">' + whyHtml + '</div>' +
+    '</div>' +
+
+    '<h3>POWER &amp; SIGNAL</h3>' +
+    '<div class="battery-row">' +
+      '<span style="color:var(--dim);width:80px">battery</span>' +
+      '<div class="battery-bar">' +
+        '<span class="' + (vbat >= 1 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 2 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 3 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 4 ? 'filled' : '') + '"></span>' +
+        '<span class="' + (vbat >= 5 ? 'filled' : '') + '"></span>' +
+      '</div>' +
+      '<span>' + vbatStr + '</span>' +
+      '<span style="color:var(--dim)">' + battEst + '</span>' +
+    '</div>' +
+    '<div class="battery-row">' +
+      '<span style="color:var(--dim);width:80px">signal</span>' +
+      '<span>' + rssi + '</span>' +
+      '<span style="color:var(--dim)">' + rssiLabel + '</span>' +
+    '</div>' +
+
+    '<div class="expandable">' +
+      '<div class="expandable-header" onclick="this.classList.toggle(\\'open\\');this.nextElementSibling.classList.toggle(\\'open\\')">all numbers</div>' +
+      '<div class="expandable-content">' +
+        '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">LINK</p>' +
+        '<div class="stats-grid">' +
+          '<div class="stat"><label>buf</label><value>' + buf + '</value></div>' +
+          '<div class="stat"><label>up</label><value>' + fmtUp(slave.uptime || 0) + '</value></div>' +
+          '<div class="stat"><label>age</label><value>' + (slave.age_ms/1000).toFixed(1) + 's</value></div>' +
+        '</div>' +
+        '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">STREAM</p>' +
+        '<div class="stats-grid">' +
+          '<div class="stat"><label>rx</label><value>' + fmtN(slave.rx) + '</value></div>' +
+          '<div class="stat"><label>drop</label><value>' + fmtN(slave.drop) + '</value></div>' +
+          '<div class="stat"><label>lost</label><value>' + (slave.lost == null ? '—' : fmtN(slave.lost)) + '</value></div>' +
+          '<div class="stat"><label>under</label><value>' + fmtN(slave.under) + '</value></div>' +
+          '<div class="stat"><label>tx-drop</label><value>' + txDropPct + '%</value></div>' +
+          '<div class="stat"><label>tx full</label><value>' + fmtN(txDropFull) + '</value></div>' +
+        '</div>' +
+        '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">POWER</p>' +
+        '<div class="stats-grid">' +
+          '<div class="stat"><label>vbat</label><value>' + slave.vbat_mv + ' mV</value></div>' +
+          '<div class="stat"><label>rssi</label><value>' + slave.rssi + ' dBm</value></div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<h3>ACTIONS</h3>' +
+    '<div class="action-row">' +
+      '<button onclick="cmd(\\'' + slave.ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +
+      '<button class="danger" onclick="askConfirm(\\'Reboot slave ' + slave.id + '? (2 s outage)\\', function(){cmd(\\'' + slave.ip + '\\',{cmd:\\'reboot\\'})})">REBOOT</button>' +
+    '</div>';
+
+  document.getElementById('slave-sheet').classList.add('active');
+}
+
+function closeSlaveSheet() {
+  document.getElementById('slave-sheet').classList.remove('active');
+  activeSlaveSheet = null;
 }
 
 /* === RATES (for diagnostics) === */
@@ -2869,8 +2792,6 @@ function render() {
   /* The settings sheet opens over either mode, so its countdown has to tick
      outside renderSetup. */
   if (activeCycleGroup) renderCycleSheet(false);
-  /* Same for the slave sheet: its numbers are what you opened it to read. */
-  if (activeSlaveSheet !== null) renderSlaveSheet();
 }
 
 function renderHeader() {
@@ -2902,14 +2823,6 @@ function renderApBanner() {
 
 function renderRigStrip() {
   ensureTileGrid();
-  /* No tile at all: say which of the two reasons it is. */
-  var empty = document.getElementById('rig-empty');
-  var none = Object.keys(slaveTiles).length === 0;
-  var apDown = (S.net || {}).egress === false;
-  empty.style.display = none ? '' : 'none';
-  empty.classList.toggle('bad', apDown);
-  empty.textContent = apDown ? 'no slaves — the AP is down'
-                             : 'no slaves discovered yet…';
   /* Patch existing tiles with current state */
   var activeIds = {};
   if (S.slaves) {
@@ -2957,8 +2870,9 @@ function toggleNodeSw(id, key) {
     cur[key] = body[key];
     S.nodes[String(id)] = cur;
     patchTileSwitches(id);
-    /* Repaint the sheet's copy of the switches now too, not on the poll. */
-    if (activeSlaveSheet === id) renderSlaveSheet();
+    /* The sheet is built once on open, so the buttons behind the tap would
+       keep their old highlight until it was closed and reopened. */
+    if (activeSlaveSheet === id) openSlaveSheet(id);
   }
   post("/api/node", body);
 }
@@ -2979,7 +2893,6 @@ function renderFeedToggle() {
   var on = S.stream_on;
   document.getElementById('feed-on').classList.toggle('active', on);
   document.getElementById('feed-off').classList.toggle('active', !on);
-  document.getElementById('feed-off').classList.toggle('silent', !on);
 }
 
 function renderDials() {
@@ -3386,22 +3299,6 @@ function nextBurst() {
   return next;
 }
 
-/* Output level. set_gain is absolute, not a step: the old "−" and "+" sent
-   0.9 and 1.1, so pressing − twice changed nothing, and the slave clamps to
-   1.0 (audio_out.cpp), which made "+" mean "back to full". The slave saves it
-   to NVS and STATUS does not carry it, so the page can only say what it
-   sent. */
-var GAIN_STEPS = [100, 90, 80, 70, 60, 50];
-
-function setLevel(ip, id, sel) {
-  var g = parseFloat(sel.value);
-  if (!isFinite(g)) return;
-  cmd(ip, {cmd: 'set_gain', gain: g}).then(function(d) {
-    if (d && d.ok) showToast('Slave ' + id + ' level set to ' + Math.round(g * 100) + ' %', 2500, 'success');
-  });
-  sel.value = '';
-}
-
 /* === SETUP RIG (per-slave cards) === */
 function renderSetupRig() {
   if (document.activeElement && document.activeElement.closest('#setup-rig')) return;
@@ -3441,13 +3338,9 @@ function renderSetupRig() {
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
         '<label>level</label>' +
-        '<select onchange="setLevel(\\'' + s.ip + '\\',' + s.id + ',this)">' +
-          '<option value="">set…</option>' +
-          GAIN_STEPS.map(function(v) {
-            return '<option value="' + v / 100 + '">' + v + ' %</option>';
-          }).join('') +
-        '</select>' +
-        '<span style="color:var(--dim);font-size:12px;margin-left:8px">saved on the slave; it does not report it back</span>' +
+        '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'set_gain\\',gain:0.9})" style="padding:4px 16px">−</button>' +
+        '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'set_gain\\',gain:1.1})" style="padding:4px 16px">+</button>' +
+        '<span style="color:var(--dim);font-size:12px;margin-left:8px">(nudges — value not readable)</span>' +
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
         '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +

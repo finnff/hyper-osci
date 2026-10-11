@@ -823,7 +823,7 @@ Cycle default is **5 s a side**, not 30. The offset is printed on the
 settings card: a cycle quietly running 34 s off the grid looks like a bug the
 first time someone times it with a phone.
 
-## Dashboard: seven defects from the post-show review (2026-10-11)
+## Dashboard: three defects that misreport the stage (2026-10-11)
 
 Found by reading the page against the controller and driving it in headless
 Chromium through `tools/uipreview.py`. **Not yet deployed to the board.**
@@ -847,26 +847,17 @@ Chromium through `tools/uipreview.py`. **Not yet deployed to the board.**
   list's ON AIR tag follows the same rule (it used to tag the pair holding
   the panel's preset, and any pair with an empty slot when nothing was
   loaded).
-- **"level − / +" were not nudges.** They sent absolute `set_gain` 0.9 and
-  1.1, and the slave clamps to 1.0 — "+" meant "full", "−" twice did
-  nothing. Now a list of absolute levels, 100–50 %, saying it is saved on
-  the slave and not read back.
-- **Battery figures were invented.** "~2 h" per charge against 11.9 h in
-  `power-budget.md`; a linear 3.2–4.2 V map; and a junk reading (121's
-  54 mV) drawn as a dead cell. Now a LiPo curve zeroed at the radio cut-out
-  (3.30 V), red below the 3.45 V warn, dashed "no reading" below 2 V (the
-  firmware's own threshold), hours from the 11.9 h figure.
 - **AP down was only reported in SETUP > Diagnostics.** Now a page-level
-  banner in both modes, and the empty rig strip says which of the two
-  reasons it is.
-- **The slave sheet froze at the moment it was opened.** Built once, patched
-  in place every poll, open sections kept — rebuilding it each second would
-  have eaten taps that land mid-rebuild.
-- **Small:** the header had no layout (SETUP wrapped under the title);
-  `.verdict.warn` had no style; the S/L/A switches were 22×20 px — 32 px
-  tall now, full tile width (four tiles on a 390 px phone leave ~24 px each).
+  banner in both modes; on the show screen an outage otherwise looked like
+  every slave being switched off.
+
+Four smaller page defects found in the same review — the level −/+ sending
+absolute gains, the invented battery estimate, the slave sheet freezing on
+open, and the header/switch sizing — were fixed in `795e8d6` and backed out
+of this batch to keep it to what changes the stage. `git revert` of the
+commit that backed them out (the one after `795e8d6`) brings them back.
 
 `uipreview.py` caught up with the controller on the way: it read `stream_on`
 where the page sends `stream` (SILENT never worked in the mock), its
 `/api/cycle` re-armed the countdown on any edit (the bug above, mirrored),
-and it gains a `panel` scenario and a junk battery reading in `fail`.
+and it gains a `panel` scenario (no cycle running).

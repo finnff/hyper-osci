@@ -114,8 +114,7 @@ def base_state():
 SCENARIOS = {
     "ok": "healthy four-slave rig, both cycles waiting on the mic",
     "panel": "no cycle running — the panel's own pattern is on the scopes",
-    "fail": "slave 123 dropping packets on a weak link, slave 121's battery "
-            "sense reading junk",
+    "fail": "slave 123 dropping packets on a weak link",
     "dark": "feed muted — nothing is being streamed",
     "apdown": "the AP is down, no interface holds the address",
     "burst": "a logo burst is on air",
@@ -133,8 +132,6 @@ def apply_scenario(st, name):
         s = st["slaves"][2]
         s.update(drop=42000, under=150, rssi=-94, vbat_mv=3400,
                  mode=0, source=0, lpat="square", age_ms=2400)
-        # A floating sense pin: the board has reported 54 mV for real.
-        st["slaves"][0]["vbat_mv"] = 54
     elif name == "dark":
         st["stream_on"] = False
     elif name == "apdown":
