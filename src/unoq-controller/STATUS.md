@@ -822,3 +822,51 @@ for the mid-burst case, not just the same-tick one.
 Cycle default is **5 s a side**, not 30. The offset is printed on the
 settings card: a cycle quietly running 34 s off the grid looks like a bug the
 first time someone times it with a phone.
+
+## Dashboard: seven defects from the post-show review (2026-10-11)
+
+Found by reading the page against the controller and driving it in headless
+Chromium through `tools/uipreview.py`. **Not yet deployed to the board.**
+
+- **NEXT / PREV / a set-list pair did nothing while the artist cycle ran —
+  and pushed the names back.** The pick changed the pair and loaded its A
+  side onto the panel, but between bursts every node is on its mic, so no
+  scope showed it. Worse, the changed pair changed `advance_cycle`'s
+  signature, which re-laid the grid: a burst due in 60 s moved to 300 s.
+  The signature now covers only what the grid is built from (period, burst
+  length, which groups play); a burst whose pair is swapped under it still
+  stops. `POST /api/cycle {"play": true}` plays the pair as a burst now and
+  re-lays that group's grid from it (next one a full period later, the other
+  group keeping its offset); with no cycle running it loads the first name
+  instead, as before. The page sends one POST instead of two that could land
+  in either order. 16 new checks in `test_policy.py`.
+- **ON AIR named the panel's pattern while every scope drew its mic.** The
+  `● MIC` indicator was computed and never shown. ON AIR now says MIC / MIC
+  pause / FEED SILENT with the next burst, ghosts the canvas, and labels it
+  as the panel's pattern; a burst shows its group and time left. The set
+  list's ON AIR tag follows the same rule (it used to tag the pair holding
+  the panel's preset, and any pair with an empty slot when nothing was
+  loaded).
+- **"level − / +" were not nudges.** They sent absolute `set_gain` 0.9 and
+  1.1, and the slave clamps to 1.0 — "+" meant "full", "−" twice did
+  nothing. Now a list of absolute levels, 100–50 %, saying it is saved on
+  the slave and not read back.
+- **Battery figures were invented.** "~2 h" per charge against 11.9 h in
+  `power-budget.md`; a linear 3.2–4.2 V map; and a junk reading (121's
+  54 mV) drawn as a dead cell. Now a LiPo curve zeroed at the radio cut-out
+  (3.30 V), red below the 3.45 V warn, dashed "no reading" below 2 V (the
+  firmware's own threshold), hours from the 11.9 h figure.
+- **AP down was only reported in SETUP > Diagnostics.** Now a page-level
+  banner in both modes, and the empty rig strip says which of the two
+  reasons it is.
+- **The slave sheet froze at the moment it was opened.** Built once, patched
+  in place every poll, open sections kept — rebuilding it each second would
+  have eaten taps that land mid-rebuild.
+- **Small:** the header had no layout (SETUP wrapped under the title);
+  `.verdict.warn` had no style; the S/L/A switches were 22×20 px — 32 px
+  tall now, full tile width (four tiles on a 390 px phone leave ~24 px each).
+
+`uipreview.py` caught up with the controller on the way: it read `stream_on`
+where the page sends `stream` (SILENT never worked in the mock), its
+`/api/cycle` re-armed the countdown on any edit (the bug above, mirrored),
+and it gains a `panel` scenario and a junk battery reading in `fail`.

@@ -978,79 +978,129 @@ def advance_cycle(state, tick_us):
     Frozen while the feed is silent: a cycle that kept counting through a
     two-minute mute would come back mid-pair with the clock in a place nobody
     could predict. Freezing pushes the grid out by the real time that passed.
+
+    state.cycle_play asks for one group's burst NOW (a pair picked on the show
+    screen). It is taken on the next tick or dropped: a request left pending
+    through a mute would fire minutes later, when nobody asked for it.
     """
     now = mono_us()
     apply_p = None
     ended = None
+    step = None
     # Before the lock: live_snapshot takes it, and this lock is not reentrant.
     # A burst records what the panel had so it can hand it straight back.
     before = state.live_snapshot()
     with state.lock:
         names = [p["name"] for p in state.presets]
-        plans = {g: burst_steps(state.cycles[g], g, names)
+        # What each group's selected pair would play, switched on or not: a
+        # pair played on demand runs even when its group has no period.
+        pair_plans = {g: burst_steps(dict(state.cycles[g], enabled=True), g,
+                                     names)
+                      for g in CYCLE_GROUPS}
+        plans = {g: pair_plans[g] if state.cycles[g]["enabled"] else []
                  for g in CYCLE_GROUPS}
-        sig = repr([(g, state.cycles[g]["every_s"], plans[g])
+        live = [g for g in CYCLE_GROUPS if plans[g]]
+        play, state.cycle_play = state.cycle_play, None
+        # Only what the grid is built from restages it: the periods, the
+        # burst lengths, and which groups play at all. The selected pair is
+        # not -- re-laying the grid on a pair pick pushed the next burst a
+        # full period out, so tapping NEXT a minute before the names were due
+        # took them off the scopes for five.
+        sig = repr([(g, state.cycles[g]["every_s"],
+                     cycle_burst_s(state.cycles[g]), g in live)
                     for g in CYCLE_GROUPS])
+        run = state.cycle_run
         if sig != state.cycle_sig:
-            # Config changed under us (a switch, a period, a pair swap, a
-            # preset renamed). The phases are only meaningful relative to
-            # each other, so both grids are laid out again off this moment.
+            # Config changed under us (a switch, a period, a burst length).
+            # The phases are only meaningful relative to each other, so both
+            # grids are laid out again off this moment.
             state.cycle_sig = sig
             state.cycle_phase = cycle_phases(state.cycles)
             state.cycle_next = {}
-            if state.cycle_run is not None:
-                ended, state.cycle_run = state.cycle_run, None
-                state.cycle_step = None
-        live = [g for g in CYCLE_GROUPS if plans[g]]
+            ended, run = run, None
+        elif run is not None and run["steps"] != pair_plans[run["group"]]:
+            # The burst on air is no longer what its pair would play (another
+            # pair picked, a name deleted or renamed): stop it rather than
+            # finish on a name the card no longer promises.
+            ended, run = run, None
+        if ended is not None:
+            state.cycle_run = state.cycle_step = None
+            state.cycle_mic = bool(live)
+        # What a burst starting now hands back when it ends: the panel's own
+        # pattern, which is not what is installed while a burst is on air.
+        restore = (run or ended or {"pattern": before})["pattern"]
         if live and not state.stream_on:
             for g in live:                    # hold the grid where it is
                 if g in state.cycle_next:
                     state.cycle_next[g] += tick_us
-            if state.cycle_run is not None:
-                state.cycle_run["until_us"] += tick_us
-            return None
-        for g in list(state.cycle_next):
-            if g not in live:
-                state.cycle_next.pop(g)
-        for g in live:
-            if g not in state.cycle_next:
-                _cycle_arm(state, g, now)
-        # Every group whose slot has passed loses that slot, whether or not
-        # anything is on air. Computed before the burst on air is stepped:
-        # left until the burst ended, a slot missed at second 30 of a 40 s
-        # burst fired the moment it released -- the queue, two bursts back to
-        # back, which is what the phases exist to prevent.
-        due = [g for g in live if state.cycle_next[g] <= now]
-        run = state.cycle_run
-        step = None
-        if run is None and due:
-            # Due together (phases cannot always separate incommensurate
-            # periods): the longer period wins, because it is the one the
-            # room sees least often. The loser waits for its own next slot.
-            pick = max(due, key=lambda g: (state.cycles[g]["every_s"], g))
-            step = dict(plans[pick][0])
-            state.cycle_run = {"group": pick, "steps": plans[pick], "pos": 0,
-                               "until_us": now + step["secs"] * 1_000_000,
-                               "pattern": before}
-        for g in due:
-            # Step the grid, never the clock: a burst that was skipped or ran
-            # long must not walk its phase away over an evening.
-            every = state.cycles[g]["every_s"] * 1_000_000
-            while state.cycle_next[g] <= now:
-                state.cycle_next[g] += every
-        if run is not None:
-            if now < run["until_us"]:
-                return None
-            pos = run["pos"] + 1
-            if pos < len(run["steps"]):
-                step = dict(run["steps"][pos])
-                run["pos"] = pos
-                run["until_us"] = now + step["secs"] * 1_000_000
-            else:
-                ended, state.cycle_run = run, None
-        state.cycle_step = step
-        state.cycle_mic = bool(live) and (step is None
-                                          or step["group"] is None)
+            if run is not None:
+                run["until_us"] += tick_us
+            run = None                        # and step nothing
+        else:
+            for g in list(state.cycle_next):
+                if g not in live:
+                    state.cycle_next.pop(g)
+            for g in live:
+                if g not in state.cycle_next:
+                    _cycle_arm(state, g, now)
+            if play is not None and pair_plans.get(play) and state.stream_on:
+                # On demand: this pair takes the stream now, replacing any
+                # burst on air. If the group runs on a period, its grid is
+                # re-laid with this burst as its slot -- the next one a full
+                # period out, the other group keeping its offset from it --
+                # because a scheduled burst straight after this one would
+                # read as a fault.
+                if play in live:
+                    anchor = now - state.cycle_phase.get(play, 0) * 1_000_000
+                    for g in live:
+                        every = state.cycles[g]["every_s"] * 1_000_000
+                        nxt = anchor + state.cycle_phase.get(g, 0) * 1_000_000
+                        while nxt <= now:
+                            nxt += every
+                        state.cycle_next[g] = nxt
+                step = dict(pair_plans[play][0])
+                state.cycle_run = {"group": play, "steps": pair_plans[play],
+                                   "pos": 0,
+                                   "until_us": now + step["secs"] * 1_000_000,
+                                   "pattern": restore}
+                run = None
+            # Every group whose slot has passed loses that slot, whether or
+            # not anything is on air. Computed before the burst on air is
+            # stepped: left until the burst ended, a slot missed at second 30
+            # of a 40 s burst fired the moment it released -- the queue, two
+            # bursts back to back, which is what the phases exist to prevent.
+            due = [g for g in live if state.cycle_next[g] <= now]
+            if state.cycle_run is None and due:
+                # Due together (phases cannot always separate incommensurate
+                # periods): the longer period wins, because it is the one the
+                # room sees least often. The loser waits for its own next slot.
+                pick = max(due, key=lambda g: (state.cycles[g]["every_s"], g))
+                step = dict(plans[pick][0])
+                state.cycle_run = {"group": pick, "steps": plans[pick],
+                                   "pos": 0,
+                                   "until_us": now + step["secs"] * 1_000_000,
+                                   "pattern": restore}
+            for g in due:
+                # Step the grid, never the clock: a burst that was skipped or
+                # ran long must not walk its phase away over an evening.
+                every = state.cycles[g]["every_s"] * 1_000_000
+                while state.cycle_next[g] <= now:
+                    state.cycle_next[g] += every
+            if run is not None and now >= run["until_us"]:
+                pos = run["pos"] + 1
+                if pos < len(run["steps"]):
+                    step = dict(run["steps"][pos])
+                    run["pos"] = pos
+                    run["until_us"] = now + step["secs"] * 1_000_000
+                else:
+                    ended, state.cycle_run = run, None
+                run = None
+            if run is None:
+                # A step started or a burst ended. Mid-step (run still set)
+                # both of these stand as they are.
+                state.cycle_step = step
+                state.cycle_mic = bool(live) and (step is None
+                                                  or step["group"] is None)
         if step is not None and step["group"] is not None:
             apply_p = next((dict(x) for x in state.presets
                             if x["name"] == step["preset"]), None)
@@ -1168,6 +1218,9 @@ class State:
         self.cycle_step = None
         self.cycle_mic = False
         self.cycle_sig = None
+        # A group whose selected pair should take the stream on the next
+        # policy tick, set by POST /api/cycle {"play": true}. Read-and-clear.
+        self.cycle_play = None
         # ip -> (mode, mono_us) of the last set_mode this box sent, so a
         # command is not repeated every tick while the 1 Hz beacon catches up.
         self.mode_sent = {}
@@ -1373,6 +1426,9 @@ html { color-scheme: dark; }
 * { box-sizing: border-box; margin: 0; padding: 0; touch-action: manipulation; }
 body { background: var(--bg); color: var(--fg); font: 14px/1.45 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; padding: 16px; }
 h1 { font-size: 18px; letter-spacing: .35em; color: var(--ph); text-shadow: 0 0 12px rgba(57,255,20,.55); }
+/* One row: title, link dot, mode toggle pushed right. Without the flex the
+   toggle's margin-left:auto did nothing and it wrapped under the title. */
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 
 /* === Connection banner === */
 .disconnection-banner {
@@ -1380,6 +1436,15 @@ h1 { font-size: 18px; letter-spacing: .35em; color: var(--ph); text-shadow: 0 0 
 }
 body.disconnected .disconnection-banner { display: block; }
 body.disconnected { filter: saturate(0.3); }
+/* AP down: nothing holds the AP address, so no slave CAN appear. Page level
+   and in both modes -- on the show screen it otherwise looks exactly like
+   every slave being switched off. */
+.ap-banner {
+  display: none; background: #3d1010; color: var(--bad); border: 1px solid var(--bad);
+  padding: 8px; text-align: center; border-radius: 4px; margin-bottom: 8px;
+}
+.ap-banner.active { display: block; }
+.ap-banner code { color: var(--fg); }
 
 /* === Mode toggle === */
 #mode-toggle {
@@ -1417,13 +1482,19 @@ body.disconnected { filter: saturate(0.3); }
 .battery-bar { display: flex; gap: 2px; margin-top: 2px; }
 .battery-bar span { width: 12px; height: 6px; background: var(--line); border-radius: 1px; }
 .battery-bar span.filled { background: var(--ph); }
-/* Three switches per node: stream / logos / artists. Lit = in the show. Big
-   enough for a thumb in the dark, and they swallow the tap so the tile's own
-   click does not open the slave sheet underneath. */
-.tile-sw { display: flex; gap: 3px; margin-top: 3px; }
+.battery-bar.low span.filled { background: var(--bad); }
+/* No usable reading (a floating sense pin reads tens of mV): not a flat cell. */
+.battery-bar.unknown span { background: transparent; border: 1px dashed var(--line); }
+.rig-empty { grid-column: 1 / -1; color: var(--dim); text-align: center; padding: 10px; font-size: 12px; }
+.rig-empty.bad { color: var(--bad); }
+/* Three switches per node: stream / logos / artists. Lit = in the show. They
+   swallow the tap so the tile's own click does not open the slave sheet
+   underneath. Four tiles across a 390 px phone leave each switch ~24 px of
+   width, so they take the full tile width and get their size from height. */
+.tile-sw { display: flex; gap: 2px; margin-top: 4px; width: 100%; }
 .tile-sw button {
-  width: 22px; height: 20px; padding: 0; font-size: 11px; font-weight: bold;
-  line-height: 18px; border: 1px solid var(--line); border-radius: 3px;
+  flex: 1; min-width: 0; height: 32px; padding: 0; font-size: 13px; font-weight: bold;
+  line-height: 30px; border: 1px solid var(--line); border-radius: 3px;
   background: #0d130d; color: var(--dim); cursor: pointer;
 }
 .tile-sw button.on { border-color: var(--ph); color: var(--bg); background: var(--ph); }
@@ -1445,6 +1516,10 @@ canvas#preview { max-width: 100%; height: auto; background: #020402; border: 1px
 .on-air-label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; }
 .on-air-name { font-size: 18px; color: var(--ph); text-align: center; margin: 4px 0; }
 .on-air-detail { font-size: 12px; color: var(--dim); text-align: center; }
+/* The rig is on the microphone: the canvas is the panel's pattern, which no
+   scope is drawing, so it is dimmed and the line under it says so. */
+.on-air-name.mic { color: var(--fg); }
+.on-air-panel { font-size: 11px; color: var(--dim); text-align: center; margin-top: 4px; }
 
 /* === Thumb-friendly buttons === */
 .thumb-btn {
@@ -1577,6 +1652,7 @@ canvas#preview { max-width: 100%; height: auto; background: #020402; border: 1px
 .verdict { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 12px; margin-bottom: 12px; }
 .verdict.bad { border-color: var(--bad); color: var(--bad); }
 .verdict.ok { border-color: var(--ph); }
+.verdict.warn { border-color: var(--warn); color: var(--warn); }
 
 /* Source 3-way */
 .source-3way { display: flex; gap: 4px; }
@@ -1626,7 +1702,7 @@ button.off { background: #1a0a0a; color: var(--dim); }
 @media (max-width: 640px), (max-height: 500px) {
   body { padding: 8px; }
   .rig-strip { grid-template-columns: repeat(4, 1fr); }
-  .rig-tile { min-height: 60px; padding: 6px; }
+  .rig-tile { min-height: 60px; padding: 6px 4px; }
   .tile-id { font-size: 14px; }
   .dial-row { flex-direction: column; align-items: stretch; gap: 2px; }
   .dial-row label { width: auto; }
@@ -1635,13 +1711,12 @@ button.off { background: #1a0a0a; color: var(--dim); }
 /* === Mode class toggles === */
 body.show .setup-only { display: none !important; }
 body.setup .show-only { display: none !important; }
-/* Both modes show header */
-body.show .both-modes, body.setup .both-modes { display: block; }
 </style>
 </head>
 <body>
 <!-- Disconnection banner (F1) -->
 <div id="conn-banner" class="disconnection-banner"></div>
+<div id="ap-banner" class="ap-banner"></div>
 
 <!-- === HEADER (both modes) === -->
 <header class="both-modes">
@@ -1655,6 +1730,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
 
   <!-- Rig strip (sticky) -->
   <div id="rig-strip" class="rig-strip panel">
+    <div id="rig-empty" class="rig-empty"></div>
     <!-- Tiles are built dynamically by JS -->
   </div>
 
@@ -1664,6 +1740,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
     <div id="preview-wrap"><canvas id="preview" width="400" height="400"></canvas></div>
     <div class="on-air-name" id="on-air-name">—</div>
     <div class="on-air-detail" id="on-air-detail"></div>
+    <div class="on-air-panel" id="on-air-panel"></div>
   </div>
 
   <!-- PREV / NEXT -->
@@ -1850,6 +1927,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <h3>Cycles</h3>
       <p>The rig's normal state is the <strong>microphone</strong>: every node on its own audio. A cycle interrupts it on a period — every N minutes, name A for a few seconds, an optional mic pause, name B, then straight back to the mic until the next one.</p>
       <p>LOGO SETTINGS and ARTIST SETTINGS are the same machine with a different period. Artists carry the b2b line-ups — pick which pair is playing tonight. A burst obeys the three switches: it does not appear on a node with that group switched off.</p>
+      <p>Tapping a pair on the show screen (or PREV / NEXT) puts it up straight away: with a cycle running it plays as a burst and the next one comes a full period later; with no cycle running its first name stays up. Picking a pair in ARTIST SETTINGS only changes which pair the next burst plays.</p>
       <p>With both cycles on, the controller offsets the two grids so their bursts do not collide — the card says by how much. Periods that share no useful multiple cannot always miss; when two do come due together the longer period wins and the other waits for its next slot, because the rig has one stream. Both freeze while the feed is SILENT.</p>
       <h3>Fallback</h3>
       <p>A streaming slave that stops receiving audio for ~1 s automatically draws its local pattern instead — whichever was last set.</p>
@@ -2038,7 +2116,9 @@ function post(path, body) {
       return d;
     })
     .catch(function() {})
-    .then(function() { return refresh(); });   /* not poll() — see poll() */
+    /* not poll() — see poll(). Resolves to the reply (or undefined), so a
+       caller can act on what the controller actually did. */
+    .then(function(d) { return refresh().then(function() { return d; }); });
 }
 
 var setP = function(p) { return post("/api/pattern", p); };
@@ -2142,7 +2222,7 @@ function stepPair(delta) {
   var pairs = cfg ? (cfg.pairs || []) : [];
   if (pairs.length < 2) return;
   var i = ((cfg.idx + delta) % pairs.length + pairs.length) % pairs.length;
-  pickArtistPair(i, pairs[i][0]);
+  pickArtistPair(i);
 }
 
 function goPrev() { stepPair(-1); }
@@ -2216,10 +2296,13 @@ function drawPreview() {
     g.beginPath(); g.moveTo(i*w/8, 0); g.lineTo(i*w/8, h); g.stroke();
     g.beginPath(); g.moveTo(0, i*h/8); g.lineTo(w, i*h/8); g.stroke();
   }
+  /* On the mic (or muted) no scope draws this, so it is drawn as a ghost. */
+  var ghost = airState() === 'mic' || airState() === 'silent';
+  g.globalAlpha = ghost ? 0.3 : 1;
   g.strokeStyle = '#39ff14';
   g.lineWidth = 2;
   g.shadowColor = '#39ff14';
-  g.shadowBlur = 8;
+  g.shadowBlur = ghost ? 0 : 8;
   g.beginPath();
 
   if ((p.kind === 'text' || p.kind === 'figure') && TP.pts.length) {
@@ -2249,6 +2332,7 @@ function drawPreview() {
   }
   g.stroke();
   g.shadowBlur = 0;
+  g.globalAlpha = 1;
 }
 
 /* === SLAVE VERDICT (one sentence) ===
@@ -2283,19 +2367,67 @@ function modeGlyph(s) {
   return '▲OWN';
 }
 
-/* === BATTERY BAR === */
+/* === BATTERY ===
+   Thresholds mirror src/esp32-slave/include/config.h; change both together.
+   Below VBAT_NO_SENSOR_MV the reading is a floating sense pin, not a cell --
+   ui.cpp's battery_policy ignores it for the same reason, and a slave once
+   reported 54 mV here, which drew as a dead battery. */
+var VBAT_NO_SENSOR_MV = 2000;
+var VBAT_WARN_MV = 3450;       /* the slave starts its low-battery blink */
+var VBAT_WIFI_OFF_MV = 3300;   /* the slave drops its radio: off the rig */
+/* Single-cell LiPo, mV -> fraction of the charge left before the radio cuts
+   out. A generic discharge curve, not measured on this cell: good to a tile,
+   not to a decimal. The old linear map read 3.84 V (half a cell) as
+   two-thirds, and 3.70 V (about an eighth) as half. */
+var VBAT_CURVE = [[VBAT_WIFI_OFF_MV, 0], [3610, .05], [3690, .10], [3750, .25],
+                  [3800, .40], [3840, .50], [3870, .60], [3950, .70],
+                  [4020, .80], [4110, .90], [4200, 1]];
+/* docs/hardware/power-budget.md §3: the 2000 mAh cell, derated, runs 11.9 h
+   with the radio on. Any slave the controller can hear has its radio on, so
+   that is the figure even for a node drawing its own mic. */
+var VBAT_FULL_HOURS = 11.9;
+
+/* -> 0..1, or null when there is no usable reading. */
+function batteryFrac(vbat_mv) {
+  if (vbat_mv == null || vbat_mv < VBAT_NO_SENSOR_MV) return null;
+  if (vbat_mv <= VBAT_CURVE[0][0]) return 0;
+  for (var i = 1; i < VBAT_CURVE.length; i++) {
+    var lo = VBAT_CURVE[i - 1], hi = VBAT_CURVE[i];
+    if (vbat_mv <= hi[0]) {
+      return lo[1] + (hi[1] - lo[1]) * (vbat_mv - lo[0]) / (hi[0] - lo[0]);
+    }
+  }
+  return 1;
+}
+
+/* Filled cells out of five, or null for no reading. A cell with any charge
+   left shows one cell: zero filled is "the radio is about to cut out". */
 function batteryLevel(vbat_mv) {
-  /* Approximate LiPo: 4200 = 100%, 3200 = 0% */
-  if (vbat_mv == null || vbat_mv === 0) return 0;
-  return Math.min(5, Math.max(0, Math.round((vbat_mv - 3200) / 200)));
+  var f = batteryFrac(vbat_mv);
+  if (f === null) return null;
+  return f > 0 ? Math.max(1, Math.round(f * 5)) : 0;
 }
 
 function batteryEstimate(vbat_mv) {
-  if (vbat_mv == null || vbat_mv === 0) return '? h';
-  /* rough: ~3.8V = ~2h typical for a small LiPo driving an oscilloscope */
-  var frac = (vbat_mv - 3200) / 1000;
-  if (frac <= 0) return '<1h';
-  return '~' + Math.round(frac * 2) + ' h';
+  var f = batteryFrac(vbat_mv);
+  if (f === null) return 'no reading';
+  var h = f * VBAT_FULL_HOURS;
+  if (vbat_mv < VBAT_WARN_MV) return 'LOW — charge now';
+  return h < 1 ? '<1 h left' : '~' + Math.round(h) + ' h left';
+}
+
+/* Paint a five-cell .battery-bar: filled cells, red when low, dashed when
+   there is no reading at all. */
+function paintBattery(bar, vbat_mv) {
+  var level = batteryLevel(vbat_mv);
+  var cells = bar.querySelectorAll('span');
+  for (var i = 0; i < cells.length; i++) {
+    cells[i].classList.toggle('filled', level !== null && i < level);
+  }
+  bar.classList.toggle('unknown', level === null);
+  bar.classList.toggle('low', level !== null && vbat_mv < VBAT_WARN_MV);
+  bar.title = level === null ? 'no battery reading'
+                             : (vbat_mv / 1000).toFixed(2) + ' V';
 }
 
 /* === RIG TILE BUILDING (F4 fix — incremental DOM) === */
@@ -2355,21 +2487,8 @@ function ensureTileGrid() {
 function patchTile(s) {
   var tile = slaveTiles[s.id];
   if (!tile) return;
-  var verdict = slaveVerdict(s);
   var age = s.age_ms / 1000;
-  var vbat = batteryLevel(s.vbat_mv || 0);
-  var tiles = tile.querySelectorAll('.battery-bar span');
-  /* Reset battery bar */
-  for (var i = 0; i < tiles.length; i++) tiles[i].classList.remove('filled');
-  for (var i = 0; i < vbat; i++) {
-    if (!tiles[i]) {
-      var span = document.createElement('span');
-      tile.querySelector('.battery-bar').appendChild(span);
-    }
-    tiles[i].classList.add('filled');
-  }
-  /* Remove extra cells */
-  for (var i = vbat; i < tiles.length; i++) tiles[i].classList.remove('filled');
+  paintBattery(tile.querySelector('.battery-bar'), s.vbat_mv);
 
   tile.querySelector('.tile-id').textContent = s.id;
   tile.querySelector('.tile-mode').textContent = modeGlyph(s);
@@ -2406,7 +2525,7 @@ function renderSetList() {
   if (!container) return;
   var cfg = (S.cycles && S.cycles.artists) ? S.cycles.artists : null;
   var pairs = cfg ? (cfg.pairs || []) : [];
-  var live = (S.cycle && S.cycle.preset) || curPreset;
+  var live = onAirPreset();
 
   container.innerHTML = '';
   if (!pairs.length) {
@@ -2416,12 +2535,13 @@ function renderSetList() {
   }
   for (var i = 0; i < pairs.length; i++) {
     var a = pairs[i][0] || '—', b = pairs[i][1] || '—';
-    var onAir = (pairs[i][0] === live || pairs[i][1] === live);
+    /* !!live: with nothing on air, '' would match a pair's empty slot. */
+    var onAir = !!live && (pairs[i][0] === live || pairs[i][1] === live);
     var row = document.createElement('div');
     row.className = 'preset-row' + (onAir ? ' on-air' : '');
-    row.onclick = (function(idx, first) {
-      return function() { pickArtistPair(idx, first); };
-    })(i, pairs[i][0]);
+    row.onclick = (function(idx) {
+      return function() { pickArtistPair(idx); };
+    })(i);
     row.innerHTML = '<span class="idx">' + (i + 1) + '</span>'
       + '<span class="name">' + esc(a) + '  b2b  ' + esc(b) + '</span>'
       + '<span class="tag">'
@@ -2431,43 +2551,98 @@ function renderSetList() {
   }
 }
 
-function pickArtistPair(i, firstName) {
-  post("/api/cycle", {group: 'artists', idx: i});
-  /* With the cycle off, nothing would move on its own — put the A side up so
-     the tap does what the tap looks like. With it on, advance_cycle restarts
-     the order at the same A side a moment later, which lands in the same
-     place. */
-  if (firstName) applyPreset(firstName);
+/* The tap puts the pair on the scopes now, and the controller decides how:
+   while any cycle runs the rig rests on the mic, so the pair plays as a burst
+   (and the artists' next scheduled one is a full period after it); with no
+   cycle running, its first name is loaded as the streamed pattern. One POST,
+   so the pick and the play cannot land out of order. Only a load changes the
+   panel's pattern, so only a load becomes the "current" preset. */
+function pickArtistPair(i) {
+  if (!S) return;
+  noteSlaveChange('all');
+  post("/api/cycle", {group: 'artists', idx: i, play: true}).then(function(d) {
+    if (d && d.loaded) setCur(d.loaded);
+  });
 }
 
-/* === ON AIR === */
+/* === ON AIR ===
+   What the scopes are drawing right now:
+     'silent' -- the feed is muted; every scope is on its own audio.
+     'burst'  -- a cycle step has the stream: S.cycle.preset is on air.
+     'mic'    -- the rig is resting on the microphone, between bursts or in
+                 the pause inside one. The panel's pattern streams to nobody.
+     'panel'  -- no cycle running: the panel's pattern is what streams. */
+function airState() {
+  if (!S.stream_on) return 'silent';
+  if (S.cycle && S.cycle.group) return 'burst';
+  if (S.mic) return 'mic';
+  return 'panel';
+}
+
+/* The preset name on the scopes, or '' when none is (or none is known). */
+function onAirPreset() {
+  var air = airState();
+  if (air === 'burst') return S.cycle.preset;
+  if (air === 'panel') return curPreset;
+  return '';
+}
+
+/* The installed pattern by name: the preset it came from, plus the words or
+   artwork it draws (N17) -- once, when an artist's preset is named after the
+   very words it draws. */
+function patternLabel(name) {
+  var p = S.pattern;
+  var what = p.kind === 'text' ? p.text : p.kind === 'figure' ? p.figure : '';
+  if (!what) return name || '—';
+  return name && name !== what ? what + ' (' + name + ')' : what;
+}
+
 function renderOnAir() {
-  var curName = curPreset;
-  var holdIndicator = '';
-  if (S.cycle && S.cycle.preset) {
-    curName = S.cycle.preset;
-    holdIndicator = '▶ ' + S.cycle.group.toUpperCase() + ' ';
-  } else if (S.mic) {
-    holdIndicator = '● MIC ';
-  }
+  var air = airState();
   var presets = S.presets || [];
-  /* Index off the preset name, before the text decoration below -- decorated,
-     it never matches the set list and every tile read "1 of N". */
-  var idx = presets.length ? presets.indexOf(curName) : -1;
-
-  /* Show text content for text patterns (N17) */
-  if (S.pattern.kind === 'text' && S.pattern.text) {
-    curName = curName ? S.pattern.text + ' (' + curName + ')' : S.pattern.text;
-  } else if (S.pattern.kind === 'figure' && S.pattern.figure) {
-    curName = curName ? S.pattern.figure + ' (' + curName + ')' : S.pattern.figure;
+  var name, detail, panel = '';
+  if (air === 'burst') {
+    name = patternLabel(S.cycle.preset);
+    detail = '▶ ' + S.cycle.group.toUpperCase() + ' burst · '
+      + fmtLeft(S.cycle.left_s) + ' left';
+  } else if (air === 'panel') {
+    /* Index off the preset name, before the decoration -- decorated, it
+       never matches the set list and every tile read "1 of N". On a phone
+       that has not loaded a preset this session there is no way to know
+       which one is on air: "1 of 7" was a guess printed as fact, and PREV
+       stepped from it. Say the kind and stop. */
+    var idx = curPreset ? presets.indexOf(curPreset) : -1;
+    name = patternLabel(curPreset);
+    detail = (S.pattern.kind || '?')
+      + (idx >= 0 ? ' · ' + (idx + 1) + ' of ' + presets.length : '');
+  } else {
+    /* No streamed pattern is on any scope. This used to keep naming the
+       panel's pattern, so "hyperwaves" sat under ON AIR while every scope
+       drew its own microphone. */
+    var nb = nextBurst();
+    if (air === 'silent') {
+      name = '● FEED SILENT';
+      detail = 'every scope on its own audio';
+    } else if (S.cycle) {
+      name = '● MIC pause';
+      detail = 'between the two names · ' + fmtLeft(S.cycle.left_s) + ' left';
+    } else {
+      name = '● MIC';
+      detail = 'every scope on its own audio'
+        + (nb ? ' · ' + nb.g + ' in ' + fmtLeft(nb.left) : '');
+    }
+    /* Inside a burst's pause the installed pattern is the burst's, not the
+       panel's, so only name the panel between bursts. */
+    if (!S.cycle) {
+      panel = 'panel: ' + patternLabel(curPreset) + ' — streams when '
+        + (air === 'silent' ? 'the feed is back on' : 'the cycles are off');
+    }
   }
-
-  document.getElementById('on-air-name').textContent = curName || '—';
-  /* On a phone that has not loaded a preset this session there is no way to
-     know which one is on air. "1 of 7" was a guess printed as fact, and PREV
-     stepped from it. Say the kind and stop. */
-  document.getElementById('on-air-detail').textContent = (S.pattern.kind || '?')
-    + (idx >= 0 ? ' · ' + (idx + 1) + ' of ' + presets.length : '');
+  var nameEl = document.getElementById('on-air-name');
+  nameEl.textContent = name;
+  nameEl.classList.toggle('mic', air === 'silent' || air === 'mic');
+  document.getElementById('on-air-detail').textContent = detail;
+  document.getElementById('on-air-panel').textContent = panel;
 
   /* NAV hint and nav buttons follow the pairs, like the list below them. */
   var acfg = (S.cycles && S.cycles.artists) ? S.cycles.artists : null;
@@ -2479,148 +2654,180 @@ function renderOnAir() {
     : '';
   document.getElementById('btn-prev').disabled = apairs.length < 2;
   document.getElementById('btn-next').disabled = apairs.length < 2;
-
-  /* Feed toggle */
-  var on = S.stream_on;
-  document.getElementById('feed-on').classList.toggle('active', on);
-  document.getElementById('feed-off').classList.toggle('active', !on);
-  document.getElementById('feed-off').classList.toggle('silent', !on);
 }
 
-/* === SLAVE SHEET === */
+/* === SLAVE SHEET ===
+   Built once per open -- and again only if the node drops off the air or
+   comes back -- then patched in place on every poll. It used to be one
+   innerHTML string built on open and never again, so the numbers you opened
+   it to read stayed frozen at the moment of the tap. Rebuilding the whole
+   thing every second instead would eat a tap that lands mid-rebuild and fold
+   up the sections you had open. */
+var sheetBuiltFor = null;                   /* 'on:<ip>' | 'off': what the DOM holds */
+var sheetOpen = {why: false, nums: false};  /* expandables, kept across polls */
+
 function openSlaveSheet(id) {
   if (!S) return;
-  var slave = null;
-  for (var i = 0; i < S.slaves.length; i++) {
-    if (S.slaves[i].id === id) { slave = S.slaves[i]; break; }
-  }
-  if (!slave) {
-    /* The node is off or out of range, but its switches are still the show's
-       settings and still worth changing — that is what rigging is. */
-    var s0 = nodeSw(id);
-    activeSlaveSheet = id;
-    document.getElementById('sheet-title').textContent = 'SLAVE ' + id + '  (not on the air)';
-    document.getElementById('sheet-body').innerHTML =
-      '<div class="verdict warn">No STATUS beacon from this node — powered off, or off the AP.</div>' +
-      '<h3>IN THE SHOW</h3>' +
-      '<div class="source-3way">' +
-        '<button class="' + (s0.stream ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'stream\\')">STREAMING</button>' +
-        '<button class="' + (s0.logos ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'logos\\')">LOGOS</button>' +
-        '<button class="' + (s0.artists ? 'active' : '') + '" onclick="toggleNodeSw(' + id + ',\\'artists\\')">ARTISTS</button>' +
-      '</div>' +
-      '<p style="color:var(--dim);font-size:12px;margin-top:8px">These are kept on the controller and applied the moment the node reports in.</p>';
-    document.getElementById('slave-sheet').classList.add('active');
-    return;
-  }
+  if (activeSlaveSheet !== id) sheetOpen = {why: false, nums: false};
   activeSlaveSheet = id;
-  document.getElementById('sheet-title').textContent = 'SLAVE ' + id + '  ' + slave.ip;
-
-  var verdict = slaveVerdict(slave);
-  var vbat = batteryLevel(slave.vbat_mv || 0);
-  var vbatStr = (slave.vbat_mv / 1000).toFixed(2) + ' V';
-  var battEst = batteryEstimate(slave.vbat_mv || 0);
-  var rssi = slave.rssi + ' dBm';
-  var rssiLabel = slave.rssi > -60 ? 'good' : slave.rssi > -75 ? 'marginal' : 'poor';
-  var buf = Math.round(slave.depth / 48) + ' ms';
-
-  var sw = nodeSw(slave.id);
-
-  /* TX-drop info */
-  var net = S.net || {};
-  var tx = (net.tx || {})[slave.ip] || {};
-  var txDropPct = tx.pct || 0;
-  var txDropFull = tx.full || 0;
-  var txDropErr = tx.err || 0;
-  var whyHtml = '';
-  if (!slave.source && S.stream_on) {
-    if (txDropPct > 0) {
-      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets never arrived.</p>';
-      whyHtml += '<p>' + txDropPct.toFixed(1) + '% died in this controller\\'s send buffer before reaching the air.</p>';
-      whyHtml += '<p style="color:var(--warn)">That is airtime, not antenna — try reducing packet rate or increasing airtime.</p>';
-    } else {
-      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets lost, tx-drop ≈ 0.</p>';
-      whyHtml += '<p style="color:var(--warn)">This is WiFi loss — signal, interference, or range.</p>';
-    }
-  } else if (!S.stream_on) {
-    whyHtml = '<p>Feed is SILENT — no audio is being sent to any slave.</p>';
-  } else {
-    whyHtml = '<p>Slave is receiving the stream normally.</p>';
-  }
-
-  var body = document.getElementById('sheet-body');
-  body.innerHTML =
-    '<div class="verdict ' + verdict.cls + '">' + verdict.txt + '</div>' +
-
-    '<h3>IN THE SHOW</h3>' +
-    '<div class="source-3way">' +
-      '<button class="' + (sw.stream ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'stream\\')">STREAMING<br><span style="font-size:11px;color:var(--dim)">' + (sw.stream ? 'on' : 'off — own mic') + '</span></button>' +
-      '<button class="' + (sw.logos ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'logos\\')">LOGOS<br><span style="font-size:11px;color:var(--dim)">' + (sw.logos ? 'on' : 'off') + '</span></button>' +
-      '<button class="' + (sw.artists ? 'active' : '') + '" onclick="toggleNodeSw(' + slave.id + ',\\'artists\\')">ARTISTS<br><span style="font-size:11px;color:var(--dim)">' + (sw.artists ? 'on' : 'off') + '</span></button>' +
-    '</div>' +
-    '<p style="color:var(--dim);font-size:12px;margin:6px 0">Draw mode follows these: the node is on the stream when what is on air is switched on for it, and on its own mic otherwise.</p>' +
-
-    '<div class="expandable">' +
-      '<div class="expandable-header" onclick="this.classList.toggle(\\'open\\');this.nextElementSibling.classList.toggle(\\'open\\')">why?</div>' +
-      '<div class="expandable-content">' + whyHtml + '</div>' +
-    '</div>' +
-
-    '<h3>POWER &amp; SIGNAL</h3>' +
-    '<div class="battery-row">' +
-      '<span style="color:var(--dim);width:80px">battery</span>' +
-      '<div class="battery-bar">' +
-        '<span class="' + (vbat >= 1 ? 'filled' : '') + '"></span>' +
-        '<span class="' + (vbat >= 2 ? 'filled' : '') + '"></span>' +
-        '<span class="' + (vbat >= 3 ? 'filled' : '') + '"></span>' +
-        '<span class="' + (vbat >= 4 ? 'filled' : '') + '"></span>' +
-        '<span class="' + (vbat >= 5 ? 'filled' : '') + '"></span>' +
-      '</div>' +
-      '<span>' + vbatStr + '</span>' +
-      '<span style="color:var(--dim)">' + battEst + '</span>' +
-    '</div>' +
-    '<div class="battery-row">' +
-      '<span style="color:var(--dim);width:80px">signal</span>' +
-      '<span>' + rssi + '</span>' +
-      '<span style="color:var(--dim)">' + rssiLabel + '</span>' +
-    '</div>' +
-
-    '<div class="expandable">' +
-      '<div class="expandable-header" onclick="this.classList.toggle(\\'open\\');this.nextElementSibling.classList.toggle(\\'open\\')">all numbers</div>' +
-      '<div class="expandable-content">' +
-        '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">LINK</p>' +
-        '<div class="stats-grid">' +
-          '<div class="stat"><label>buf</label><value>' + buf + '</value></div>' +
-          '<div class="stat"><label>up</label><value>' + fmtUp(slave.uptime || 0) + '</value></div>' +
-          '<div class="stat"><label>age</label><value>' + (slave.age_ms/1000).toFixed(1) + 's</value></div>' +
-        '</div>' +
-        '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">STREAM</p>' +
-        '<div class="stats-grid">' +
-          '<div class="stat"><label>rx</label><value>' + fmtN(slave.rx) + '</value></div>' +
-          '<div class="stat"><label>drop</label><value>' + fmtN(slave.drop) + '</value></div>' +
-          '<div class="stat"><label>lost</label><value>' + (slave.lost == null ? '—' : fmtN(slave.lost)) + '</value></div>' +
-          '<div class="stat"><label>under</label><value>' + fmtN(slave.under) + '</value></div>' +
-          '<div class="stat"><label>tx-drop</label><value>' + txDropPct + '%</value></div>' +
-          '<div class="stat"><label>tx full</label><value>' + fmtN(txDropFull) + '</value></div>' +
-        '</div>' +
-        '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">POWER</p>' +
-        '<div class="stats-grid">' +
-          '<div class="stat"><label>vbat</label><value>' + slave.vbat_mv + ' mV</value></div>' +
-          '<div class="stat"><label>rssi</label><value>' + slave.rssi + ' dBm</value></div>' +
-        '</div>' +
-      '</div>' +
-    '</div>' +
-
-    '<h3>ACTIONS</h3>' +
-    '<div class="action-row">' +
-      '<button onclick="cmd(\\'' + slave.ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +
-      '<button class="danger" onclick="askConfirm(\\'Reboot slave ' + slave.id + '? (2 s outage)\\', function(){cmd(\\'' + slave.ip + '\\',{cmd:\\'reboot\\'})})">REBOOT</button>' +
-    '</div>';
-
+  sheetBuiltFor = null;
+  renderSlaveSheet();
   document.getElementById('slave-sheet').classList.add('active');
 }
 
 function closeSlaveSheet() {
   document.getElementById('slave-sheet').classList.remove('active');
   activeSlaveSheet = null;
+  sheetBuiltFor = null;
+}
+
+function toggleSheetSection(key, header) {
+  sheetOpen[key] = !sheetOpen[key];
+  header.classList.toggle('open', sheetOpen[key]);
+  header.nextElementSibling.classList.toggle('open', sheetOpen[key]);
+}
+
+function sheetSwitches(id, sub) {
+  var names = {stream: 'STREAMING', logos: 'LOGOS', artists: 'ARTISTS'};
+  return '<div class="source-3way">' + ['stream', 'logos', 'artists'].map(function(k) {
+    return '<button data-sw="' + k + '" onclick="toggleNodeSw(' + id + ',\\'' + k + '\\')">'
+      + names[k]
+      + (sub ? '<br><span class="sw-sub" style="font-size:11px;color:var(--dim)"></span>' : '')
+      + '</button>';
+  }).join('') + '</div>';
+}
+
+function sheetSection(key, title, inner) {
+  var o = sheetOpen[key] ? ' open' : '';
+  return '<div class="expandable">'
+    + '<div class="expandable-header' + o + '" onclick="toggleSheetSection(\\'' + key + '\\', this)">' + title + '</div>'
+    + '<div class="expandable-content' + o + '"' + (inner ? '>' + inner : ' data-k="' + key + '">') + '</div>'
+    + '</div>';
+}
+
+function sheetStat(label, k) {
+  return '<div class="stat"><label>' + label + '</label><value data-k="' + k + '"></value></div>';
+}
+
+function buildSlaveSheet(slave) {
+  var id = slave.id, ip = slave.ip;
+  var sub = 'style="color:var(--dim);font-size:12px;margin:8px 0 4px"';
+  return '<div class="verdict" data-k="verdict"></div>' +
+    '<h3>IN THE SHOW</h3>' + sheetSwitches(id, true) +
+    '<p style="color:var(--dim);font-size:12px;margin:6px 0">Draw mode follows these: the node is on the stream when what is on air is switched on for it, and on its own mic otherwise.</p>' +
+    sheetSection('why', 'why?', '') +
+    '<h3>POWER &amp; SIGNAL</h3>' +
+    '<div class="battery-row">' +
+      '<span style="color:var(--dim);width:80px">battery</span>' +
+      '<div class="battery-bar" data-k="batbar"><span></span><span></span><span></span><span></span><span></span></div>' +
+      '<span data-k="vbat"></span>' +
+      '<span style="color:var(--dim)" data-k="batest"></span>' +
+    '</div>' +
+    '<div class="battery-row">' +
+      '<span style="color:var(--dim);width:80px">signal</span>' +
+      '<span data-k="rssi"></span>' +
+      '<span style="color:var(--dim)" data-k="rssilabel"></span>' +
+    '</div>' +
+    sheetSection('nums', 'all numbers',
+      '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">LINK</p>' +
+      '<div class="stats-grid">' + sheetStat('buf', 'buf') + sheetStat('up', 'up') + sheetStat('age', 'age') + '</div>' +
+      '<p ' + sub + '>STREAM</p>' +
+      '<div class="stats-grid">' + sheetStat('rx', 'rx') + sheetStat('drop', 'drop') + sheetStat('lost', 'lost') +
+        sheetStat('under', 'under') + sheetStat('tx-drop', 'txpct') + sheetStat('tx full', 'txfull') + '</div>' +
+      '<p ' + sub + '>POWER</p>' +
+      '<div class="stats-grid">' + sheetStat('vbat', 'vbatmv') + sheetStat('rssi', 'rssidbm') + '</div>') +
+    '<h3>ACTIONS</h3>' +
+    '<div class="action-row">' +
+      '<button onclick="cmd(\\'' + ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +
+      '<button class="danger" onclick="askConfirm(\\'Reboot slave ' + id + '? (2 s outage)\\', function(){cmd(\\'' + ip + '\\',{cmd:\\'reboot\\'})})">REBOOT</button>' +
+    '</div>';
+}
+
+/* The node is off or out of range, but its switches are still the show's
+   settings and still worth changing — that is what rigging is. */
+function buildOffSheet(id) {
+  return '<div class="verdict warn">No STATUS beacon from this node — powered off, or off the AP.</div>' +
+    '<h3>IN THE SHOW</h3>' + sheetSwitches(id, false) +
+    '<p style="color:var(--dim);font-size:12px;margin-top:8px">These are kept on the controller and applied the moment the node reports in.</p>';
+}
+
+/* Set one data-k slot. Text by default; html=true for markup this page built
+   and escaped itself. Only touches the DOM when the value changed. */
+function sheetSet(body, k, val, html) {
+  var el = body.querySelector('[data-k="' + k + '"]');
+  if (!el || el._v === val) return el;
+  el._v = val;
+  if (html) el.innerHTML = val; else el.textContent = val;
+  return el;
+}
+
+function renderSlaveSheet() {
+  if (!S || activeSlaveSheet === null) return;
+  var id = activeSlaveSheet;
+  var slave = null;
+  for (var i = 0; i < (S.slaves || []).length; i++) {
+    if (S.slaves[i].id === id) { slave = S.slaves[i]; break; }
+  }
+  var body = document.getElementById('sheet-body');
+  var key = slave ? 'on:' + slave.ip : 'off';
+  if (key !== sheetBuiltFor) {
+    body.innerHTML = slave ? buildSlaveSheet(slave) : buildOffSheet(id);
+    sheetBuiltFor = key;
+  }
+  document.getElementById('sheet-title').textContent =
+    'SLAVE ' + id + (slave ? '  ' + slave.ip : '  (not on the air)');
+
+  var sw = nodeSw(id);
+  var btns = body.querySelectorAll('.source-3way button[data-sw]');
+  for (var j = 0; j < btns.length; j++) {
+    var k = btns[j].getAttribute('data-sw');
+    btns[j].classList.toggle('active', sw[k]);
+    var subEl = btns[j].querySelector('.sw-sub');
+    if (subEl) subEl.textContent = sw[k] ? 'on' : (k === 'stream' ? 'off — own mic' : 'off');
+  }
+  if (!slave) return;
+
+  var verdict = slaveVerdict(slave);
+  sheetSet(body, 'verdict', verdict.txt, true).className = 'verdict ' + verdict.cls;
+
+  /* TX-drop info */
+  var tx = ((S.net || {}).tx || {})[slave.ip] || {};
+  var txDropPct = tx.pct || 0;
+  var whyHtml;
+  if (!slave.source && S.stream_on) {
+    if (txDropPct > 0) {
+      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets never arrived.</p>'
+        + '<p>' + txDropPct.toFixed(1) + '% died in this controller\\'s send buffer before reaching the air.</p>'
+        + '<p style="color:var(--warn)">That is airtime, not antenna — try reducing packet rate or increasing airtime.</p>';
+    } else {
+      whyHtml = '<p>' + fmtN(slave.lost || 0) + ' packets lost, tx-drop ≈ 0.</p>'
+        + '<p style="color:var(--warn)">This is WiFi loss — signal, interference, or range.</p>';
+    }
+  } else if (!S.stream_on) {
+    whyHtml = '<p>Feed is SILENT — no audio is being sent to any slave.</p>';
+  } else {
+    whyHtml = '<p>Slave is receiving the stream normally.</p>';
+  }
+  sheetSet(body, 'why', whyHtml, true);
+
+  paintBattery(body.querySelector('[data-k="batbar"]'), slave.vbat_mv);
+  sheetSet(body, 'vbat', batteryFrac(slave.vbat_mv) === null ? '—'
+                         : (slave.vbat_mv / 1000).toFixed(2) + ' V');
+  sheetSet(body, 'batest', batteryEstimate(slave.vbat_mv));
+  sheetSet(body, 'rssi', slave.rssi + ' dBm');
+  sheetSet(body, 'rssilabel', slave.rssi > -60 ? 'good' : slave.rssi > -75 ? 'marginal' : 'poor');
+
+  sheetSet(body, 'buf', Math.round(slave.depth / 48) + ' ms');
+  sheetSet(body, 'up', fmtUp(slave.uptime || 0));
+  sheetSet(body, 'age', (slave.age_ms / 1000).toFixed(1) + 's');
+  sheetSet(body, 'rx', fmtN(slave.rx));
+  sheetSet(body, 'drop', fmtN(slave.drop));
+  sheetSet(body, 'lost', slave.lost == null ? '—' : fmtN(slave.lost));
+  sheetSet(body, 'under', fmtN(slave.under));
+  sheetSet(body, 'txpct', txDropPct + '%');
+  sheetSet(body, 'txfull', fmtN(tx.full || 0));
+  sheetSet(body, 'vbatmv', slave.vbat_mv + ' mV');
+  sheetSet(body, 'rssidbm', slave.rssi + ' dBm');
 }
 
 /* === RATES (for diagnostics) === */
@@ -2646,6 +2853,7 @@ function rates(s) {
 function render() {
   if (!S) return;
   renderHeader();
+  renderApBanner();
   renderRigStrip();
   renderOnAir();
   renderFeedToggle();
@@ -2661,6 +2869,8 @@ function render() {
   /* The settings sheet opens over either mode, so its countdown has to tick
      outside renderSetup. */
   if (activeCycleGroup) renderCycleSheet(false);
+  /* Same for the slave sheet: its numbers are what you opened it to read. */
+  if (activeSlaveSheet !== null) renderSlaveSheet();
 }
 
 function renderHeader() {
@@ -2674,8 +2884,32 @@ function renderHeader() {
   }
 }
 
+/* net.egress false: nothing holds the AP address, so no slave can join and
+   every tile reads LOST for a reason no tile can show. Page level, both
+   modes -- this used to live only in SETUP > Diagnostics, so on the phone an
+   AP outage looked exactly like four slaves switched off. */
+function renderApBanner() {
+  var el = document.getElementById('ap-banner');
+  var net = S.net || {};
+  var down = net.egress === false;
+  el.classList.toggle('active', down);
+  if (down) {
+    el.innerHTML = '⚠ Wi-Fi AP is DOWN — no slave can connect. On the controller: '
+      + '<code>sudo nmcli c up hyperosci-ap</code> (no restart needed; the '
+      + 'netwatch timer also retries every 30 s)';
+  }
+}
+
 function renderRigStrip() {
   ensureTileGrid();
+  /* No tile at all: say which of the two reasons it is. */
+  var empty = document.getElementById('rig-empty');
+  var none = Object.keys(slaveTiles).length === 0;
+  var apDown = (S.net || {}).egress === false;
+  empty.style.display = none ? '' : 'none';
+  empty.classList.toggle('bad', apDown);
+  empty.textContent = apDown ? 'no slaves — the AP is down'
+                             : 'no slaves discovered yet…';
   /* Patch existing tiles with current state */
   var activeIds = {};
   if (S.slaves) {
@@ -2723,9 +2957,8 @@ function toggleNodeSw(id, key) {
     cur[key] = body[key];
     S.nodes[String(id)] = cur;
     patchTileSwitches(id);
-    /* The sheet is built once on open, so the buttons behind the tap would
-       keep their old highlight until it was closed and reopened. */
-    if (activeSlaveSheet === id) openSlaveSheet(id);
+    /* Repaint the sheet's copy of the switches now too, not on the poll. */
+    if (activeSlaveSheet === id) renderSlaveSheet();
   }
   post("/api/node", body);
 }
@@ -2746,6 +2979,7 @@ function renderFeedToggle() {
   var on = S.stream_on;
   document.getElementById('feed-on').classList.toggle('active', on);
   document.getElementById('feed-off').classList.toggle('active', !on);
+  document.getElementById('feed-off').classList.toggle('silent', !on);
 }
 
 function renderDials() {
@@ -3132,17 +3366,40 @@ function renderCycleLine() {
       + ' · ' + fmtLeft(cyc.left_s) + ' left';
     return;
   }
-  /* Between bursts. Name the group that lands next, not just a number: with
-     two cycles running the operator wants to know which one is coming. */
+  var next = nextBurst();
+  el.innerHTML = next
+    ? '<b>mic</b> · ' + next.g + ' in ' + fmtLeft(next.left)
+    : '<b>mic</b>';
+}
+
+/* The group whose burst lands next, {g, left}, or null. Name the group, not
+   just a number: with two cycles running the operator wants to know which
+   one is coming. */
+function nextBurst() {
+  var cs = S.cycles || {};
   var next = null;
   ['logos', 'artists'].forEach(function(g) {
     var c = cs[g];
     if (!c || !c.enabled || !c.seq.length || c.next_in == null) return;
     if (!next || c.next_in < next.left) next = {g: g, left: c.next_in};
   });
-  el.innerHTML = next
-    ? '<b>mic</b> · ' + next.g + ' in ' + fmtLeft(next.left)
-    : '<b>mic</b>';
+  return next;
+}
+
+/* Output level. set_gain is absolute, not a step: the old "−" and "+" sent
+   0.9 and 1.1, so pressing − twice changed nothing, and the slave clamps to
+   1.0 (audio_out.cpp), which made "+" mean "back to full". The slave saves it
+   to NVS and STATUS does not carry it, so the page can only say what it
+   sent. */
+var GAIN_STEPS = [100, 90, 80, 70, 60, 50];
+
+function setLevel(ip, id, sel) {
+  var g = parseFloat(sel.value);
+  if (!isFinite(g)) return;
+  cmd(ip, {cmd: 'set_gain', gain: g}).then(function(d) {
+    if (d && d.ok) showToast('Slave ' + id + ' level set to ' + Math.round(g * 100) + ' %', 2500, 'success');
+  });
+  sel.value = '';
 }
 
 /* === SETUP RIG (per-slave cards) === */
@@ -3184,9 +3441,13 @@ function renderSetupRig() {
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
         '<label>level</label>' +
-        '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'set_gain\\',gain:0.9})" style="padding:4px 16px">−</button>' +
-        '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'set_gain\\',gain:1.1})" style="padding:4px 16px">+</button>' +
-        '<span style="color:var(--dim);font-size:12px;margin-left:8px">(nudges — value not readable)</span>' +
+        '<select onchange="setLevel(\\'' + s.ip + '\\',' + s.id + ',this)">' +
+          '<option value="">set…</option>' +
+          GAIN_STEPS.map(function(v) {
+            return '<option value="' + v / 100 + '">' + v + ' %</option>';
+          }).join('') +
+        '</select>' +
+        '<span style="color:var(--dim);font-size:12px;margin-left:8px">saved on the slave; it does not report it back</span>' +
       '</div>' +
       '<div class="row" style="margin-top:8px">' +
         '<button onclick="cmd(\\'' + s.ip + '\\',{cmd:\\'identify\\'})">FLASH LEDS</button>' +
@@ -3654,10 +3915,19 @@ def make_http_handler(state, cmds):
         def _cycle(self, state, cmds, body):
             """Edit one pair cycle. {"group": "artists", "enabled": true,
             "every_s": 300, "show_s": 30, "pause_s": 10, "idx": 1,
-            "pairs": [[a, b], ...]}"""
+            "pairs": [[a, b], ...]}
+
+            "play": true also puts the selected pair on the scopes now -- the
+            show screen's pair pick. While any cycle runs the rig rests on
+            the mic, so loading a name as the panel's pattern would show
+            nothing: the pair plays as a burst instead. With no cycle running
+            the panel's pattern is what streams, so the pair's first name is
+            loaded there, as a preset tap would. The reply says which
+            ("played" / "loaded"), so the page knows what is on air."""
             group = body.get("group")
             if group not in CYCLE_GROUPS:
                 return self._json({"err": "need group logos|artists"}, 400)
+            played, load, note = False, None, None
             with state.lock:
                 cur = dict(state.cycles[group])
                 cur.update({k: body[k] for k in
@@ -3666,13 +3936,37 @@ def make_http_handler(state, cmds):
                 c = clean_cycle(cur, group)
                 state.cycles[group] = c
                 # Let advance_cycle notice the change on its own terms: it
-                # compares the burst plans, restages both phases and re-arms,
-                # so a period edited at 4m59s does not fire as you let go.
+                # compares the grid's inputs, restages both phases and
+                # re-arms, so a period edited at 4m59s does not fire as you
+                # let go.
                 cycles = {g: dict(v) for g, v in state.cycles.items()}
+                if body.get("play"):
+                    names = [p["name"] for p in state.presets]
+                    steps = burst_steps(dict(c, enabled=True), group, names)
+                    on_mic = any(burst_steps(v, g, names)
+                                 for g, v in state.cycles.items())
+                    if not steps:
+                        note = "that pair names no preset in the set list"
+                    elif not on_mic:
+                        load = next((dict(p) for p in state.presets
+                                     if p["name"] == steps[0]["preset"]),
+                                    None)
+                    elif state.stream_on:
+                        state.cycle_play = group
+                        played = True
+                    else:
+                        note = "pair selected — the feed is SILENT, so " \
+                               "nothing played"
             save_cycles(cycles)
+            if load is not None:
+                apply_preset(state, load)   # same path as a preset tap
+                self._takeover(state)
             advance_cycle(state, 0)
             reconcile_modes(state, cmds)
-            return self._json({"ok": True, "group": group, "cycle": c})
+            return self._json({"ok": True, "group": group, "cycle": c,
+                               "played": played,
+                               "loaded": load["name"] if load else None,
+                               "note": note})
 
 
     return Handler

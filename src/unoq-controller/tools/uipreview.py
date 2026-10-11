@@ -113,7 +113,9 @@ def base_state():
 
 SCENARIOS = {
     "ok": "healthy four-slave rig, both cycles waiting on the mic",
-    "fail": "slave 123 dropping packets on a weak link",
+    "panel": "no cycle running — the panel's own pattern is on the scopes",
+    "fail": "slave 123 dropping packets on a weak link, slave 121's battery "
+            "sense reading junk",
     "dark": "feed muted — nothing is being streamed",
     "apdown": "the AP is down, no interface holds the address",
     "burst": "a logo burst is on air",
@@ -123,10 +125,16 @@ SCENARIOS = {
 
 
 def apply_scenario(st, name):
-    if name == "fail":
+    if name == "panel":
+        for c in st["cycles"].values():
+            c.update(enabled=False, next_in=None)
+        st["mic"] = False
+    elif name == "fail":
         s = st["slaves"][2]
         s.update(drop=42000, under=150, rssi=-94, vbat_mv=3400,
                  mode=0, source=0, lpat="square", age_ms=2400)
+        # A floating sense pin: the board has reported 54 mV for real.
+        st["slaves"][0]["vbat_mv"] = 54
     elif name == "dark":
         st["stream_on"] = False
     elif name == "apdown":
@@ -208,9 +216,10 @@ class Handler(BaseHTTPRequestHandler):
                 st["pattern"][k] = body[k]
         if {"text", "font", "figure", "kind"} & set(body):
             st["pattern"]["sver"] += 1
-        if "stream_on" in body:
-            st["stream_on"] = bool(body["stream_on"])
-        self._takeover(st)
+        if "stream" in body:
+            st["stream_on"] = bool(body["stream"])
+        if set(body) - {"stream"}:    # a real pattern edit, not a mute
+            self._takeover(st)
         return self._json({"ok": True})
 
     def _takeover(self, st):
@@ -311,11 +320,43 @@ class Handler(BaseHTTPRequestHandler):
                            c["burst_s"] + 10)
         c["idx"] = min(max(0, int(c["idx"])), max(0, len(c["pairs"]) - 1))
         c["seq"] = burst_seq(c, group)
-        # Editing anything re-arms a full period out, so a slider nudge at
-        # 4m59s does not fire as you let go.
-        c["next_in"] = c["every_s"] if c["enabled"] and c["seq"] else None
-        self._takeover(st)
-        return self._json({"ok": True, "group": group, "cycle": c})
+        reply = {"ok": True, "group": group, "cycle": c,
+                 "played": False, "loaded": None, "note": None}
+        if {"enabled", "show_s", "pause_s", "every_s"} & set(body):
+            # The grid's inputs changed: the controller restages it a full
+            # period out (a nudge at 4m59s does not fire as you let go) and
+            # ends any burst on air. Picking a pair is not one of these.
+            c["next_in"] = c["every_s"] if c["enabled"] and c["seq"] else None
+            self._takeover(st)
+        if body.get("play"):
+            # The show screen's pair pick, answered as _cycle answers it.
+            on_mic = any(x["enabled"] and x["seq"]
+                         for x in st["cycles"].values())
+            if not c["seq"]:
+                reply["note"] = "that pair names no preset in the set list"
+            elif not on_mic:
+                self._takeover(st)
+                name = c["seq"][0]["preset"]
+                st["pattern"].update(kind="text", text=name)
+                st["pattern"]["sver"] += 1
+                reply["loaded"] = name
+            elif st["stream_on"]:
+                first = c["seq"][0]
+                st["cycle"] = {"group": group, "preset": first["preset"],
+                               "left_s": first["secs"]}
+                # A step installs its preset, as apply_preset does.
+                st["pattern"].update(kind="text", text=first["preset"])
+                st["pattern"]["sver"] += 1
+                st["mic"] = False
+                for g, x in st["cycles"].items():
+                    x["running"] = g == group
+                if c["enabled"]:
+                    c["next_in"] = c["every_s"]
+                reply["played"] = True
+            else:
+                reply["note"] = ("pair selected — the feed is SILENT, so "
+                                 "nothing played")
+        return self._json(reply)
 
     def _cmd(self, st, body):
         ip, c = body.get("ip"), body.get("cmd") or {}
