@@ -2544,12 +2544,14 @@ function onAirPreset() {
 }
 
 /* The installed pattern by name: the preset it came from, plus the words or
-   artwork it draws (N17). */
+   artwork it draws (N17) -- said once when they are the same, which is every
+   artist preset: a burst read "Anémi (Anémi)". A line break in the text
+   counts as a space for that comparison. */
 function patternLabel(name) {
   var p = S.pattern;
-  if (p.kind === 'text' && p.text) return name ? p.text + ' (' + name + ')' : p.text;
-  if (p.kind === 'figure' && p.figure) return name ? p.figure + ' (' + name + ')' : p.figure;
-  return name || '—';
+  var what = p.kind === 'text' ? p.text : p.kind === 'figure' ? p.figure : '';
+  if (!what) return name || '—';
+  return name && name !== what.split('\\n').join(' ') ? what + ' (' + name + ')' : what;
 }
 
 function renderOnAir() {

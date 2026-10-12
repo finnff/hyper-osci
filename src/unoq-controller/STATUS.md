@@ -846,7 +846,8 @@ Chromium through `tools/uipreview.py`. **Not yet deployed to the board.**
   as the panel's pattern; a burst shows its group and time left. The set
   list's ON AIR tag follows the same rule (it used to tag the pair holding
   the panel's preset, and any pair with an empty slot when nothing was
-  loaded).
+  loaded). An artist preset named after its own words now reads once, not
+  "Anémi (Anémi)" on every burst.
 - **AP down was only reported in SETUP > Diagnostics.** Now a page-level
   banner in both modes; on the show screen an outage otherwise looked like
   every slave being switched off.
