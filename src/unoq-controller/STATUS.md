@@ -826,9 +826,32 @@ first time someone times it with a phone.
 ## Dashboard: three defects that misreport the stage (2026-10-11)
 
 Found by reading the page against the controller and driving it in headless
-Chromium through `tools/uipreview.py`. **Not yet deployed to the board**;
-`test_policy`, `test_fixes`, `test_persist` and `test_figure` pass on it from
-a staged copy in `/tmp/hcstage` (2026-10-14).
+Chromium through `tools/uipreview.py`. **Deployed 2026-10-14** (`507436e`;
+the previous build and the four `hype_*.json` files are kept in
+`~/pre-pr1-20261014-102815/`). `test_policy`, `test_fixes`, `test_persist`
+and `test_figure` pass on the board from `/tmp/hcstage`, and `live_test.py`
+passes against the deployed daemon. Driven live with one slave (164, its
+logos/artists switches turned on for the test):
+
+- A show-screen pick with both cycles on plays at once: Anémi then HyperLili
+  for 5 s each, 164 goes to network mode and receives the stream, then back
+  to the mic with the panel's `Guild\nNavigator` handed back; the artists'
+  next burst is a full period out.
+- A settings-card pick (no `play`) moves neither grid; editing ARTIST
+  SETTINGS with artists off leaves the logos' countdown where it was;
+  switching artists back on restages both.
+- A pick while SILENT is kept, plays nothing, and does not fire on unmute.
+  A pick with artists off and logos on plays once and leaves the logos grid
+  alone. With no cycle on, the pick loads its first name and 164 streams it.
+- The dashboard reads MIC with the next burst and the panel line, then the
+  burst's group and time left after a NEXT tap; the set list tags the pair on
+  air, and "Guild Navigator" reads once.
+
+Not exercised on the board: the AP-down banner (taking the AP down drops
+the slave; checked in the `apdown` preview scenario). The show config was
+restored afterwards from the backup above.
+
+What changed:
 
 - **NEXT / PREV / a set-list pair did nothing while the artist cycle ran —
   and pushed the names back.** The pick changed the pair and loaded its A
