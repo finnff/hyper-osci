@@ -171,6 +171,36 @@ checked against the Seeed core's `variants/XIAORA4M1/pinmux.inc`, not just the
   alone sets the pin to 1.65 V, **code ≈ 8190** (seen on the first capture, 2026-10-14). Slave on
   and centred → ≈ 1.12 V, **code ≈ 5550**. Full scale ±3 V → ≈ 520 … 10570. Measured 2026-10-14,
   slave B on, no mic, quiet room: D2/D3 mean 5570/5585, ±100 codes, 28 LSB rms (the noise floor).
+- **Calibration, slave B (id 164) on D2/D3, 2026-10-14.** The test patterns come from the slave's
+  local renderer (`renderer_local.cpp`). The controller selects one with
+  `curl -XPOST localhost:8080/api/cmd -d '{"ip":"<slave ip>","cmd":{"cmd":"set_pattern","pattern":"square"}}'`
+  on the UNO-Q, with slave gain 1.0 (`set_gain`, persisted). The pattern plays while the slave is
+  local, and the controller's mode policy keeps it local between burst cycles. Bursts switch it to
+  the network stream, so read `cycles.*.next_in` from `/api/state` and capture between them. Restore
+  with `"pattern":"mic"`. Model: `code = offset + gain × sample` (16-bit signed sample):
+
+  | channel | offset (code at 0) | gain, ramp ±30000 | gain, square ±24000 | gain, circle 26000 |
+  |---|---|---|---|---|
+  | X (D2) | 5564 | 0.14533 | 0.14546 | 0.14510 |
+  | Y (D3) | 5582 | 0.14657 | 0.14665 | 0.14658 |
+
+  - Nominal is ≈ 0.150 codes/LSB, so the gain is 3 % low, as the 470 Ω predicts. X and Y differ by
+    0.8 % (resistor tolerance).
+  - **Linear and DC-coupled.** On the 0.2 / 0.13 Hz ramp the residual from a straight line stays
+    within ±13 codes over the whole ±30000 range (≤ 0.15 % of span), with no sag.
+  - **Clocks.** The circle fits 100.004 Hz, so the XIAO's and the slave's clocks agree within
+    ≈ 40 ppm. The ramp fits 0.15 % / 0.06 % fast. This is probably the slave's float32 phase
+    accumulator (unverified), so don't use the ramp as a time reference.
+  - **X/Y phase** at 100 Hz is 89.66° instead of 90°, about 9 µs between channels. Unexplained,
+    and far inside the ±5 ms skew budget.
+  - **Square edges** overshoot by ≈ 870 codes on a ≈ 7000-code step (≈ 12 %). That is the
+    PCM5102A interpolation filter's ringing (DESIGN §12); the plateaus are flat to 35–45 codes rms.
+  - **Polarity is not determined.** All four patterns are symmetric. The logic-analyzer decode of
+    the same pattern settles it.
+  - **One dropout.** In 16 s of patterns, the 2 s circle had one event 0.567 s in: both channels
+    sat at centre for 2.2 ms, then the waveform came back on its original phase. All capture
+    flags were clean, so it came from the slave side. Cause unknown. This is the kind of event the
+    logic-analyzer A/B checks (§9 item 3) should catch digitally.
 
 **More than one slave per XIAO: yes.** The RA4M1 has a single ADC unit that scans the enabled
 channels in turn, so every channel shares one timebase. Between channels of one scan there are only
@@ -354,6 +384,7 @@ something verified.
 3. Logic analyzer on 164: run the §3.5 pre-roll check and the §4.5 `droptest`/`fill` A/B. Then
    add a second slave for skew.
 4. XIAO RA4M1 analog channel (§4.3, §4.4) as the end-to-end check through the DAC stage: same
-   test patterns, compared against the digital capture (Due as fallback). Capture chain verified
-   with slave B running but silent (v3, D0–D3, 5 s, 0 gaps, no late reads); next: a test pattern.
+   test patterns, compared against the digital capture (Due as fallback). Slave B calibrated with
+   its local square / ramp / circle (§4.3); next: the same patterns on the logic analyzer for
+   polarity and a digital-vs-analog comparison.
 5. Only if needed: the S3 sniffer (§5) for soaks.
