@@ -1,7 +1,8 @@
 # Bench capture without an oscilloscope
 
-**Status:** plan only, nothing built or bought (2026-10-14). The spare-hardware inventory (§7) still
-has to be filled in at home.
+**Status (2026-10-14):** logic analyzer connected and verified (§3); no I2S capture yet, decoder
+not written. XIAO RA4M1 analog capture built and verified end to end on slave B's wiring with
+the slave powered off (§4.3, §4.4). Inventory in §7.
 
 **Goal:** check what the slaves actually output, without a scope on the bench, and in a way an agent
 can run end to end: drive the UNO-Q and the slave, capture the output, decode it, render it, judge it.
@@ -38,8 +39,16 @@ stage; one analog channel (§4) covers it when wanted.
 
 ## 3. Option A: logic analyzer on the I2S bus (start here)
 
-Probably a cheap FX2/CY7C68013A "24 MHz 8CH" clone; confirm the model at home. sigrok drives it
-with the `fx2lafw` driver.
+**Device (verified 2026-10-14):** FX2 clone enumerating as the original Saleae Logic,
+USB `0925:3881` ("Lakeview Research Saleae Logic"), high-speed (480M). sigrok sees it as
+`fx2lafw - Saleae Logic with 8 channels: D0 D1 D2 D3 D4 D5 D6 D7` and loads
+`fx2lafw-saleae-logic.fw` itself.
+
+- The firmware upload re-enumerates the device with a new device number (56 → 57 here), so select
+  it with `-d fx2lafw`, not a pinned `conn=bus.dev`.
+- Offered sample rates go up to 48 MHz; what USB actually sustains is in the limits table.
+- Floating inputs read `1` (raw byte `0xFF`): pull-ups or a buffer on the board. Whether there is
+  a 74HC245 is not checked (open the case or look for the chip).
 
 **Why first:**
 - No firmware to write.
@@ -54,18 +63,20 @@ with the `fx2lafw` driver.
 
 | item | number | consequence |
 |---|---|---|
-| sample rate | 8–12 MHz needed (5–8× BCK); FX2 max 24 MHz | use 12 MHz |
-| USB bandwidth | fx2lafw sends 1 byte/sample for ≤ 8 ch → 12 MB/s at 12 MHz | near practical USB 2 bulk limits; use its own port, not a busy hub |
-| capture size | ~720 MB/min | fine for 10–30 s bursts; too heavy for multi-minute soaks (use §5) |
+| sample rate | 8–12 MHz needed (5–8× BCK) | **use 12 MHz** (7.8× BCK) |
+| sustained rate, measured | 12 MHz: 10 s and 30 s complete. 16 MHz: 10 s complete. 24 MHz: aborts after 18.6 M samples (~0.8 s, `Device only sent 18589184 samples`) | 12 MHz has margin; 16 MHz is the ceiling on this port |
+| USB port | measured on root bus 1 shared with the UNO-Q (`2341:0078`, 480M) | sharing with the UNO-Q is fine at 12 MHz; keep other bulk traffic off that bus |
+| capture size | 1 byte/sample at ≤ 8 ch: 120 MB per 10 s at 12 MHz (measured), ~720 MB/min | fine for 10–30 s bursts; too heavy for multi-minute soaks (use §5) |
 | sigrok's I2S protocol decoder | Python, slow | don't use it on long captures. Save raw binary and decode with numpy (§6) |
-| analog | none on most clones | digital only, same coverage as §5 |
-| input levels | 3.3 V logic is fine; boards with a 74HC245 buffer are also 5 V tolerant | — |
+| analog | none | digital only, same coverage as §5 |
+| input levels | 3.3 V logic; FX2 inputs are 5 V tolerant, a 74HC245 (if present) too | — |
 
-**Setup** (packages exist in Fedora 44 repos; checked with `dnf list`, not installed yet):
+**Setup (done, 2026-10-14):** `sigrok-cli` 0.7.2, `libsigrok` 0.5.2 and
+`sigrok-firmware-fx2lafw` are installed; `60-libsigrok.rules` grants USB access, so no `sudo`.
 
 ```sh
-sudo dnf install sigrok-cli sigrok-firmware-fx2lafw   # pulls libsigrok; udev rules expected with it [unverified]
-sigrok-cli --scan                                     # confirm driver + channel names
+sigrok-cli --scan             # the two "serial-libsp: invalid parameters" lines are harmless noise
+sigrok-cli -d fx2lafw --show  # sample rates, triggers (0 1 r f e)
 ```
 
 **Wiring, per slave** (tap at the PCM5102A header; short leads):
@@ -82,6 +93,10 @@ sigrok-cli --scan                                     # confirm driver + channel
 sigrok-cli -d fx2lafw -C D0,D1,D2,D3,D4,D5 --config samplerate=12m --time 10s \
   -O binary -o /tmp/cap.bin
 ```
+
+The binary output is one raw port byte per sample (bits 6–7 are present even with only D0–D5
+enabled). Bit *n* = D*n* is expected but not yet checked against a known signal; check it on the
+first real capture (BCK is the only line toggling at 1.536 MHz).
 
 ## 4. Option B: analog capture with a spare MCU
 
@@ -111,14 +126,125 @@ Stream over USB, never WiFi (§8).
 
 | board | ADC | fit | verdict |
 |---|---|---|---|
-| **STM32 F103 (Blue Pill) / F3 / F4 / G4** | 12-bit, dual-ADC simultaneous mode (X and Y at the same instant), ~1 MSa/s class, USB FS | best analog option | **preferred if one of these families is in the box** |
-| **Seeed XIAO RA4M1** | 14-bit, single ADC unit scanning 2 channels (µs channel skew, irrelevant at audio rates), USB FS | works for a rough X/Y picture | good second choice; needs register-level timer-triggered sampling |
-| ESP32-S3 | `adc_continuous`, noisy, nonlinear near the rails | quick sanity view only | not for measurements |
+| **Seeed XIAO RA4M1** (several on hand) | 14-bit, single ADC unit scanning 2 channels (µs channel skew, irrelevant at audio rates), USB FS | works for the X/Y picture and the analog end-to-end test | **chosen**: several spares, so one can stay wired to the bench. Needs register-level timer-triggered sampling. 2 ch × 48 kSa/s × 2 B = 192 KB/s over USB CDC, well under USB FS, but throughput on the Arduino RA4M1 core is unverified; drop to 24 kSa/s if it falls short |
+| Arduino Due (on hand) | SAM3X8E: 12-bit, 1 MSa/s, timer trigger + PDC DMA, native USB **high-speed** port | good; the best USB path of the lot | fallback if RA4M1 USB throughput falls short. Inputs are 3.3 V max, so the §4.1 front-end is still required |
+| STM32F103 Blue Pill clone (on hand) | 12-bit, dual-ADC simultaneous mode, USB FS | good on a genuine F103 | skip unless needed: clones often carry a CKS32/CS32 chip whose dual-ADC mode can't be trusted, and many Blue Pills have the wrong USB D+ pull-up (R10) |
+| ESP32-S3 (T-Display S3 AMOLED) | `adc_continuous`, noisy, nonlinear near the rails | quick sanity view only | not for measurements |
+| ESP32 classic (WROOM-32D, 4 MB) | ADC1 via I2S/DMA, known nonlinear and noisy; USB only through a UART bridge | worse than the S3 | skip |
 | ESP32-C3 | ADC1 only, ~83 kSa/s total DMA ceiling | marginal | skip |
 | AVR Arduino (Uno/Nano) | 10-bit, ~10 kSa/s | too slow | no |
 
 Rate needed: the circle/Lissajous test patterns and the concealment events (5–20 ms holds, 10 ms
 ramps) read fine at 20–48 kSa/s per channel. Full-bandwidth content needs ≥ 48 kSa/s per channel.
+
+### 4.3 XIAO RA4M1 wiring (two slaves on one board)
+
+![XIAO RA4M1 capture wiring](xiao-ra4m1-capture-wiring.svg)
+
+Taken from the slaves' scope RCA outputs (tip = signal, sleeve = slave GND). Port → ADC channel
+checked against the Seeed core's `variants/XIAORA4M1/pinmux.inc`, not just the
+[Seeed pin map](https://wiki.seeedstudio.com/getting_started_xiao_ra4m1/):
+
+| signal | front-end → XIAO pin | RA4M1 port | ADC channel |
+|---|---|---|---|
+| slave A X (DAC L) | D0 / A0 | P014 | AN009 |
+| slave A Y (DAC R) | D1 / A1 | P000 | AN000 |
+| slave B X (DAC L) | D2 / A2 | P001 | AN001 |
+| slave B Y (DAC R) | D3 / A3 | P002 | AN002 |
+| divider tops (4×) | 3V3 | — | — |
+| divider bottoms, 1 nF caps, all 4 RCA sleeves | GND | — | — |
+
+- **RCA side:** the slave cables end in RCA plugs, so the capture side needs 4 RCA sockets
+  (breakout or panel jacks). An RCA Y-splitter keeps a real scope connected too; its 1 MΩ input
+  doesn't load the front-end.
+- **Ground:** every RCA sleeve goes to XIAO GND. For a slave on battery that is its only ground
+  link to the capture; without it the reading floats.
+- **P014 is also the RA4M1's DAC0 output.** It only acts as an ADC input while the capture
+  firmware leaves DAC0 off.
+- **Calibrate per channel, don't trust the nominal 1/3:** the module's ~470 Ω output resistor sits
+  in series with the input 10 kΩ, so the gain is ≈ 0.323, not 0.333 (−3 %), and the centre ≈ 1.12 V.
+  Resistor tolerance adds more. Take the offset from a centre (0, 0) capture and the gain from a
+  known full-scale pattern, cross-checked against the logic-analyzer decode of the same pattern.
+- **Unpowered XIAO:** with the slave at −3 V and the XIAO's 3V3 rail down, at most ≈ 0.2 mA flows
+  through the 3.3 kΩ source into a pin's clamp diode. Harmless; no power-up order needed.
+- **Reading a channel at a glance (14-bit codes):** slave off or RCA unplugged → the 3V3/GND pair
+  alone sets the pin to 1.65 V, **code ≈ 8190** (seen on the first capture, 2026-10-14). Slave on
+  and centred → ≈ 1.12 V, **code ≈ 5550**. Full scale ±3 V → ≈ 520 … 10570. Measured 2026-10-14,
+  slave B on, no mic, quiet room: D2/D3 mean 5570/5585, ±100 codes, 28 LSB rms (the noise floor).
+
+**More than one slave per XIAO: yes.** The RA4M1 has a single ADC unit that scans the enabled
+channels in turn, so every channel shares one timebase. Between channels of one scan there are only
+µs, far inside the ±5 ms skew budget, so two slaves on one XIAO also give an analog skew check.
+Two XIAOs don't: separate clocks, no common timebase.
+
+| slaves | analog pins | rate per channel | USB at 16-bit | measured |
+|---|---|---|---|---|
+| 1 | D2, D3 | 48 kSa/s | 192 KB/s | 5 s, 1000 blocks, 0 gaps, no scan overrun |
+| **2** | **D0–D3** | **48 kSa/s** | **384 KB/s** | **v3: 2 × 5 s, 0 gaps, no scan overrun, no late reads. Recommended** |
+| 4 | D0–D3, D5 (P100 / AN022), back pads D15 (AN021), D17 (AN020), D18 (AN019) | 24 kSa/s | 384 KB/s | not run; back pads are SMD castellations underneath: solder wires |
+
+Limits, measured 2026-10-14:
+1. **USB CDC throughput is CPU-bound, so the sampling ISR's cost comes straight off it.** ≈ 470 KB/s
+   ceiling with nothing else running (`--blast 5`). With the 48 kSa/s ISR running alongside
+   (`--blast 5 --load`) it was 369 KB/s on v2's ISR (FSP's GPT ISR + callback, from flash, 246
+   cycles/sample for the callback alone) and 4 ch at 48 kSa/s (387 KB/s) dropped ~5–7 % of blocks
+   in every run. v3 runs a lean ISR from RAM straight off the vector table (149 cycles at 4 ch,
+   114 at 2 ch): 449 KB/s loaded, 4 ch clean. 5 ch at 48 kSa/s (480 KB/s) is out of reach.
+   Keep the aggregate at ≤ 384 KB/s, and re-run `--blast 5 --load` after any ISR change.
+2. **Pins:** 5 analog pins on the front header and 3 more as back pads, so 4 slaves at most.
+3. **ADC time:** not a limit. Even a 5-channel scan finished inside the half period (10.4 µs) at
+   48 kSa/s: zero scan-overrun flags.
+4. **RAM:** the firmware uses a 15.1 KB block ring (8 blocks of 5 ms at 4 ch, 15 at 2 ch). The
+   heap and stack take the rest; a full 16 KB ring plus the RAM-resident ISR no longer links.
+5. **Noise floor:** ≈ 36 LSB rms per channel with the slave off (≈ 7 mV at the pin, ≈ 22 mV at the
+   DAC side, 0.7 % of ±3 V), white plus a 200 Hz line at the block rate (probably the USB bursts
+   coupling in; not isolated). Fine for the X/Y picture and the concealment checks; not a
+   precision measurement.
+
+### 4.4 Capture tool
+
+- **Firmware:** [`src/bench-capture/xiao_adc/xiao_adc.ino`](../../src/bench-capture/xiao_adc/xiao_adc.ino).
+  A GPT timer's compare-match A starts each ADC0 scan through the ELC at mid-period (hardware
+  timing, no ISR jitter); the timer's overflow interrupt copies the finished scan into 240-frame
+  (5 ms) blocks. Each block has a sequence number, a dropped-block counter and two flags: bit0
+  scan overrun (ADC still busy when read), bit1 late read (read after the next scan had started).
+  `info` reports `xiao_adc v3`; `stop` replies `stopped isr_avg=… isr_max=… calls=…` (sampling
+  ISR cycles since the last `cap`/`mon`), which `xiao_capture.py` prints after each capture.
+- **Commands** (text, newline-terminated; full list in the sketch header): `cap <rate> <pins>`,
+  `mon <rate> <pins>` (sample without streaming, for the LED), `stop`, `info`,
+  `led 2,3` / `led off`, `ledtest <r> <g> <b>`, `wsprobe on|off`, `blast <s> [load]`. A
+  `while` in v2's send loop never got back to reading commands at 4 ch / 48 kSa/s, so `stop` was
+  ignored; v3 sends one block per `loop()` pass.
+- **RGB LED meter** (WS2812 on P112, off at boot): `led 2,3` maps slave B's X swing to red, Y swing
+  to blue, beam speed to green, capped at 40/255; a still dot, silence or a powered-off slave stay
+  dark (floors: 400 codes of swing, 150 of speed). **It runs only in `mon` and the boot monitor,
+  never during `cap`**: v2 drew it during capture with interrupts off for ~6 µs per 4-bit chunk.
+  v2 also used a 0-bit high time of 17 cycles; the LED lit full white (every bit read as 1). v3
+  uses Adafruit_NeoPixel's RA4M1 timing (12 / 38 / 60 cycles), and `ws_show` keeps ≥ 300 µs low
+  between frames: without it two back-to-back frames latch as one and the LED keeps only the
+  first (v3's first `ledtest` sent black then the colour, and stayed dark). Verified 2026-10-14:
+  a red / green / blue / white `ledtest` cycle shows the right colours. If that ever breaks, `wsprobe on` mirrors the waveform onto D8 (P111, same port write, so same edges)
+  for the logic analyzer (spare channel D6, ≥ 24 MHz).
+- **Host:** [`src/bench-capture/xiao_capture.py`](../../src/bench-capture/xiao_capture.py) checks
+  sequence continuity, saves the 14-bit codes to `.npz`, prints per-channel stats and optionally
+  renders an X/Y + time-strip PNG.
+- **Toolchain:** `arduino-cli` with the Seeed core `Seeeduino:renesas_uno` 1.2.0 (board index
+  `https://files.seeedstudio.com/arduino/package_renesas_1.2.0_index.json`). Uploads need a udev
+  rule for Seeed's vendor ID; the core's `post_install.sh` only covers Arduino's `2341`:
+  `/etc/udev/rules.d/60-seeed-xiao.rules` = `SUBSYSTEMS=="usb", ATTRS{idVendor}=="2886", MODE="0660", TAG+="uaccess"`.
+
+- **Flashing:** plain `arduino-cli upload` fails on this board (`Cannot set alternate interface
+  zero: LIBUSB_ERROR_OTHER`, exit 74; the old firmware keeps running). The board definition turns
+  the 1200-baud touch off, so dfu-util tries the app's DFU run-time interface. `flash.sh` does the
+  1200-baud touch itself (the board comes back as `2886:8049` in ~0.5 s), uploads, then prints
+  `info`. Works even when the old firmware is stuck streaming.
+
+```sh
+src/bench-capture/flash.sh                                                # compile + flash + info
+python3 src/bench-capture/xiao_capture.py --pins 2,3 --seconds 5 --png   # slave B: X = D2, Y = D3
+python3 src/bench-capture/xiao_capture.py --blast 5 [--load]              # USB CDC throughput
+python3 src/bench-capture/xiao_capture.py --cmd info --cmd "ledtest 40 0 0"
+```
 
 ## 5. Option C: ESP32-S3 as an I2S sniffer (long captures)
 
@@ -133,8 +259,17 @@ This needs firmware we would write; nothing exists yet.
   - rare glitches;
   - whenever the logic analyzer's capture size or USB bandwidth gets in the way.
 - **Board requirement:** the S3 board must expose the **native USB** port, not only a UART bridge.
+  - **LilyGO T-Display S3 AMOLED** (ESP32-S3R8, 16 MB flash, 8 MB PSRAM) qualifies: its single
+    USB-C is the S3's native USB (vendor Arduino settings: "USB CDC On Boot: Enable",
+    "USB Mode: CDC and JTAG"). The display uses GPIO 0, 5, 6, 17, 18, 41, 42, 47; the sniffer
+    needs 6 other free input pins (3 per slave) from the header. Check the
+    [pinout](https://wiki.lilygo.cc/products/t-display-series/t-display-s3-amoled) before wiring.
 - **Why not the C3:** one I2S controller (one slave only), and USB-Serial-JTAG throughput for
   192 KB/s sustained is unverified.
+- **Why not the classic ESP32 (WROOM-32D):** it has two I2S controllers with slave RX, but no
+  native USB. 192 KB/s per slave needs ≥ 1.92 Mbaud sustained through the UART bridge (3.84 Mbaud
+  for two slaves). Board bridge chip not checked; most common ones don't reach that.
+- **Priority:** low now that the logic analyzer works; only for soaks or rare glitches.
 
 ## 6. The closed loop
 
@@ -178,18 +313,20 @@ Both the UNO-Q (USB) and the bench slave (USB serial) already plug into the work
 BCK/LRCK/DIN with known holds and loop-fills), so the first real capture is checked against
 something verified.
 
-## 7. Inventory to fill in at home
+## 7. Inventory
 
 | item | have? | model / notes |
 |---|---|---|
-| logic analyzer | probably | model / label (e.g. "24MHz 8CH"), FX2-based? buffered (74HC245)? |
-| ESP32-S3 boards | yes | which board; native USB port exposed? |
+| logic analyzer | **yes, verified** | Saleae Logic clone, `0925:3881`, FX2 / `fx2lafw`, 8 ch; 12 MHz sustained (§3). 74HC245 buffer unknown; irrelevant for 3.3 V I2S |
+| ESP32-S3 boards | yes | LilyGO T-Display S3 AMOLED; native USB on the USB-C (§5) |
+| ESP32 classic | yes | ESP32-WROOM-32D, 4 MB flash; UART bridge only |
 | ESP32-C3 boards | yes | SuperMini? |
-| Seeed XIAO RA4M1 | yes | how many |
-| STM32 boards | yes | which families (F103 / F3 / F4 / G4 / other) |
-| other Arduino boards | yes | which |
-| 10 kΩ resistors, 1 nF caps, jumper wires | ? | for §4.1 |
-| second slave on the bench | ? | needed for the skew check |
+| RA4M1 boards | yes, several | Seeed XIAO RA4M1 |
+| STM32 boards | yes | STM32F103 Blue Pill clone (chip unknown, §4.2) |
+| other Arduino boards | yes | Arduino Due |
+| 10 kΩ resistors, 1 nF caps | yes | for §4.1 |
+| jumper wires | ? | short leads for the I2S tap |
+| second slave on the bench | yes | for the skew check (§3 wiring, D3–D5) |
 
 ## 8. What won't work, or misleads
 
@@ -212,10 +349,11 @@ something verified.
 
 ## 9. Next steps
 
-1. Fill in §7.
+1. ~~Fill in §7~~ done; logic analyzer verified (§3). Only open: jumper wires.
 2. Write the numpy I2S decoder, classifier and renderer; prove them on a synthetic capture.
 3. Logic analyzer on 164: run the §3.5 pre-roll check and the §4.5 `droptest`/`fill` A/B. Then
    add a second slave for skew.
-4. Only if needed:
-   - the S3 sniffer (§5) for soaks;
-   - an STM32 or RA4M1 analog channel (§4) for the DAC stage.
+4. XIAO RA4M1 analog channel (§4.3, §4.4) as the end-to-end check through the DAC stage: same
+   test patterns, compared against the digital capture (Due as fallback). Capture chain verified
+   with slave B running but silent (v3, D0–D3, 5 s, 0 gaps, no late reads); next: a test pattern.
+5. Only if needed: the S3 sniffer (§5) for soaks.

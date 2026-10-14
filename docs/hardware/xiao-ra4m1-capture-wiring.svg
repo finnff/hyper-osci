@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 740" width="1000" height="740" font-family="Helvetica, Arial, sans-serif">
+<rect width="1000" height="740" fill="#fff"/>
+<text x="30" y="34" font-size="18" text-anchor="start" fill="#222" font-weight="bold" >XIAO RA4M1 analog capture: 2 slaves, 4 channels</text>
+<text x="30" y="54" font-size="12" text-anchor="start" fill="#888" font-weight="normal" >docs/hardware/bench-capture.md §4.3 · scope RCA outputs (tip = signal, sleeve = GND) · one front-end per channel</text>
+<text x="40" y="88" font-size="14" text-anchor="start" fill="#222" font-weight="bold" >Slave A (e.g. 164)</text>
+<text x="40" y="298" font-size="14" text-anchor="start" fill="#222" font-weight="bold" >Slave B</text>
+<circle cx="70" cy="120" r="13" fill="none" stroke="#222" stroke-width="2"/>
+<circle cx="70" cy="120" r="4" fill="#1f63b4"/>
+<text x="92" y="112" font-size="12" text-anchor="start" fill="#1f63b4" font-weight="bold" >RCA X (L)</text>
+<path d="M70,133 v10" stroke="#222" stroke-width="1.5"/>
+<path d="M70,143 v8 M60,151 h20 M64,155 h12 M68,159 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M74,120 H270" stroke="#1f63b4" stroke-width="2"/>
+<rect x="270" y="95" width="130" height="50" rx="4" fill="#f6f6f6" stroke="#222" stroke-width="1.5"/>
+<text x="335" y="117" font-size="12" text-anchor="middle" fill="#222" font-weight="bold" >front-end</text>
+<text x="335" y="133" font-size="11" text-anchor="middle" fill="#222" font-weight="normal" >3×10 kΩ + 1 nF</text>
+<text x="278" y="141" font-size="9" text-anchor="start" fill="#888" font-weight="normal" >IN</text>
+<text x="394" y="141" font-size="9" text-anchor="end" fill="#888" font-weight="normal" >OUT</text>
+<path d="M335,95 v-10 M327,85 h16" stroke="#d35400" stroke-width="1.5" fill="none"/>
+<text x="335" y="80" text-anchor="middle" font-size="12" fill="#d35400" font-weight="bold">3V3</text>
+<path d="M370,145 v4" stroke="#222" stroke-width="1.5"/>
+<path d="M370,149 v8 M360,157 h20 M364,161 h12 M368,165 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M400,120 H520 V130 H620" stroke="#1f63b4" stroke-width="2" fill="none"/>
+<circle cx="70" cy="210" r="13" fill="none" stroke="#222" stroke-width="2"/>
+<circle cx="70" cy="210" r="4" fill="#c0392b"/>
+<text x="92" y="202" font-size="12" text-anchor="start" fill="#c0392b" font-weight="bold" >RCA Y (R)</text>
+<path d="M70,223 v10" stroke="#222" stroke-width="1.5"/>
+<path d="M70,233 v8 M60,241 h20 M64,245 h12 M68,249 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M74,210 H270" stroke="#c0392b" stroke-width="2"/>
+<rect x="270" y="185" width="130" height="50" rx="4" fill="#f6f6f6" stroke="#222" stroke-width="1.5"/>
+<text x="335" y="207" font-size="12" text-anchor="middle" fill="#222" font-weight="bold" >front-end</text>
+<text x="335" y="223" font-size="11" text-anchor="middle" fill="#222" font-weight="normal" >3×10 kΩ + 1 nF</text>
+<text x="278" y="231" font-size="9" text-anchor="start" fill="#888" font-weight="normal" >IN</text>
+<text x="394" y="231" font-size="9" text-anchor="end" fill="#888" font-weight="normal" >OUT</text>
+<path d="M335,185 v-10 M327,175 h16" stroke="#d35400" stroke-width="1.5" fill="none"/>
+<text x="335" y="170" text-anchor="middle" font-size="12" fill="#d35400" font-weight="bold">3V3</text>
+<path d="M370,235 v4" stroke="#222" stroke-width="1.5"/>
+<path d="M370,239 v8 M360,247 h20 M364,251 h12 M368,255 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M400,210 H540 V180 H620" stroke="#c0392b" stroke-width="2" fill="none"/>
+<circle cx="70" cy="330" r="13" fill="none" stroke="#222" stroke-width="2"/>
+<circle cx="70" cy="330" r="4" fill="#1f63b4"/>
+<text x="92" y="322" font-size="12" text-anchor="start" fill="#1f63b4" font-weight="bold" >RCA X (L)</text>
+<path d="M70,343 v10" stroke="#222" stroke-width="1.5"/>
+<path d="M70,353 v8 M60,361 h20 M64,365 h12 M68,369 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M74,330 H270" stroke="#1f63b4" stroke-width="2"/>
+<rect x="270" y="305" width="130" height="50" rx="4" fill="#f6f6f6" stroke="#222" stroke-width="1.5"/>
+<text x="335" y="327" font-size="12" text-anchor="middle" fill="#222" font-weight="bold" >front-end</text>
+<text x="335" y="343" font-size="11" text-anchor="middle" fill="#222" font-weight="normal" >3×10 kΩ + 1 nF</text>
+<text x="278" y="351" font-size="9" text-anchor="start" fill="#888" font-weight="normal" >IN</text>
+<text x="394" y="351" font-size="9" text-anchor="end" fill="#888" font-weight="normal" >OUT</text>
+<path d="M335,305 v-10 M327,295 h16" stroke="#d35400" stroke-width="1.5" fill="none"/>
+<text x="335" y="290" text-anchor="middle" font-size="12" fill="#d35400" font-weight="bold">3V3</text>
+<path d="M370,355 v4" stroke="#222" stroke-width="1.5"/>
+<path d="M370,359 v8 M360,367 h20 M364,371 h12 M368,375 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M400,330 H560 V230 H620" stroke="#1f63b4" stroke-width="2" fill="none"/>
+<circle cx="70" cy="420" r="13" fill="none" stroke="#222" stroke-width="2"/>
+<circle cx="70" cy="420" r="4" fill="#c0392b"/>
+<text x="92" y="412" font-size="12" text-anchor="start" fill="#c0392b" font-weight="bold" >RCA Y (R)</text>
+<path d="M70,433 v10" stroke="#222" stroke-width="1.5"/>
+<path d="M70,443 v8 M60,451 h20 M64,455 h12 M68,459 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M74,420 H270" stroke="#c0392b" stroke-width="2"/>
+<rect x="270" y="395" width="130" height="50" rx="4" fill="#f6f6f6" stroke="#222" stroke-width="1.5"/>
+<text x="335" y="417" font-size="12" text-anchor="middle" fill="#222" font-weight="bold" >front-end</text>
+<text x="335" y="433" font-size="11" text-anchor="middle" fill="#222" font-weight="normal" >3×10 kΩ + 1 nF</text>
+<text x="278" y="441" font-size="9" text-anchor="start" fill="#888" font-weight="normal" >IN</text>
+<text x="394" y="441" font-size="9" text-anchor="end" fill="#888" font-weight="normal" >OUT</text>
+<path d="M335,395 v-10 M327,385 h16" stroke="#d35400" stroke-width="1.5" fill="none"/>
+<text x="335" y="380" text-anchor="middle" font-size="12" fill="#d35400" font-weight="bold">3V3</text>
+<path d="M370,445 v4" stroke="#222" stroke-width="1.5"/>
+<path d="M370,449 v8 M360,457 h20 M364,461 h12 M368,465 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M400,420 H580 V280 H620" stroke="#c0392b" stroke-width="2" fill="none"/>
+<rect x="640" y="66" width="220" height="399" rx="10" fill="#eef4fb" stroke="#222" stroke-width="2"/>
+<rect x="720" y="52" width="60" height="16" rx="4" fill="#ccc" stroke="#222"/>
+<text x="800" y="62" font-size="12" text-anchor="start" fill="#222" font-weight="bold" >USB-C → workstation</text>
+<text x="750" y="90" font-size="14" text-anchor="middle" fill="#222" font-weight="bold" >Seeed XIAO RA4M1</text>
+<text x="750" y="106" font-size="11" text-anchor="middle" fill="#888" font-weight="normal" >(top view, USB up)</text>
+<path d="M620,130 H640" stroke="#1f63b4" stroke-width="2"/>
+<rect x="634" y="125" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="652" y="134" font-size="13" text-anchor="start" fill="#222" font-weight="bold" >D0</text>
+<text x="684" y="134" font-size="11" text-anchor="start" fill="#1f63b4" font-weight="normal" >P014 · AN009</text>
+<path d="M620,180 H640" stroke="#c0392b" stroke-width="2"/>
+<rect x="634" y="175" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="652" y="184" font-size="13" text-anchor="start" fill="#222" font-weight="bold" >D1</text>
+<text x="684" y="184" font-size="11" text-anchor="start" fill="#c0392b" font-weight="normal" >P000 · AN000</text>
+<path d="M620,230 H640" stroke="#1f63b4" stroke-width="2"/>
+<rect x="634" y="225" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="652" y="234" font-size="13" text-anchor="start" fill="#222" font-weight="bold" >D2</text>
+<text x="684" y="234" font-size="11" text-anchor="start" fill="#1f63b4" font-weight="normal" >P001 · AN001</text>
+<path d="M620,280 H640" stroke="#c0392b" stroke-width="2"/>
+<rect x="634" y="275" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="652" y="284" font-size="13" text-anchor="start" fill="#222" font-weight="bold" >D3</text>
+<text x="684" y="284" font-size="11" text-anchor="start" fill="#c0392b" font-weight="normal" >P002 · AN002</text>
+<path d="M620,330 H640" stroke="#888" stroke-width="2"/>
+<rect x="634" y="325" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="652" y="334" font-size="13" text-anchor="start" fill="#888" font-weight="bold" >D4</text>
+<text x="684" y="334" font-size="11" text-anchor="start" fill="#888" font-weight="normal" >not used</text>
+<path d="M620,380 H640" stroke="#888" stroke-width="2"/>
+<rect x="634" y="375" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="652" y="384" font-size="13" text-anchor="start" fill="#888" font-weight="bold" >D5</text>
+<text x="684" y="384" font-size="11" text-anchor="start" fill="#888" font-weight="normal" >P100 · AN022 (spare)</text>
+<path d="M620,430 H640" stroke="#888" stroke-width="2"/>
+<rect x="634" y="425" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="652" y="434" font-size="13" text-anchor="start" fill="#888" font-weight="bold" >D6</text>
+<text x="684" y="434" font-size="11" text-anchor="start" fill="#888" font-weight="normal" >not used</text>
+<rect x="856" y="125" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="848" y="134" font-size="13" text-anchor="end" fill="#888" font-weight="bold" >5V</text>
+<rect x="856" y="175" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="848" y="184" font-size="13" text-anchor="end" fill="#222" font-weight="bold" >GND</text>
+<rect x="856" y="225" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="848" y="234" font-size="13" text-anchor="end" fill="#d35400" font-weight="bold" >3V3</text>
+<rect x="856" y="275" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="848" y="284" font-size="13" text-anchor="end" fill="#888" font-weight="bold" >D10</text>
+<rect x="856" y="325" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="848" y="334" font-size="13" text-anchor="end" fill="#888" font-weight="bold" >D9</text>
+<rect x="856" y="375" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="848" y="384" font-size="13" text-anchor="end" fill="#888" font-weight="bold" >D8</text>
+<rect x="856" y="425" width="10" height="10" fill="#fff" stroke="#222"/>
+<text x="848" y="434" font-size="13" text-anchor="end" fill="#888" font-weight="bold" >D7</text>
+<path d="M866,180 H900 v6" stroke="#222" stroke-width="1.5" fill="none"/>
+<path d="M900,186 v8 M890,194 h20 M894,198 h12 M898,202 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<text x="916" y="194" font-size="11" text-anchor="start" fill="#222" font-weight="normal" >all grounds</text>
+<text x="916" y="207" font-size="11" text-anchor="start" fill="#222" font-weight="normal" >common</text>
+<path d="M866,230 H920" stroke="#d35400" stroke-width="1.5"/>
+<text x="926" y="234" font-size="12" text-anchor="start" fill="#d35400" font-weight="bold" >3V3</text>
+<text x="926" y="249" font-size="11" text-anchor="start" fill="#d35400" font-weight="normal" >to all 4</text>
+<text x="926" y="262" font-size="11" text-anchor="start" fill="#d35400" font-weight="normal" >front-ends</text>
+<path d="M30,490 H970" stroke="#ccc" stroke-width="1"/>
+<text x="30" y="518" font-size="14" text-anchor="start" fill="#222" font-weight="bold" >Front-end, one per channel (4×). Same as §4.1.</text>
+<circle cx="60" cy="630" r="5" fill="#fff" stroke="#222" stroke-width="2"/>
+<text x="60" y="654" font-size="12" text-anchor="middle" fill="#222" font-weight="bold" >IN</text>
+<text x="60" y="668" font-size="11" text-anchor="middle" fill="#888" font-weight="normal" >RCA tip</text>
+<path d="M65,630 H120" stroke="#222" stroke-width="2"/>
+<rect x="120" y="622" width="70" height="16" fill="#fff" stroke="#222" stroke-width="2"/>
+<text x="155" y="616" font-size="12" text-anchor="middle" fill="#222" font-weight="normal" >10 kΩ</text>
+<path d="M190,630 H520" stroke="#222" stroke-width="2"/>
+<circle cx="260" cy="630" r="3.5" fill="#222"/>
+<path d="M260,630 V618" stroke="#222" stroke-width="2"/>
+<rect x="252" y="568" width="16" height="50" fill="#fff" stroke="#222" stroke-width="2"/>
+<path d="M260,568 V562" stroke="#222" stroke-width="2"/>
+<path d="M260,562 v-10 M252,552 h16" stroke="#d35400" stroke-width="1.5" fill="none"/>
+<text x="260" y="547" text-anchor="middle" font-size="12" fill="#d35400" font-weight="bold">3V3</text>
+<text x="276" y="596" font-size="12" text-anchor="start" fill="#222" font-weight="normal" >10 kΩ</text>
+<path d="M260,630 V642" stroke="#222" stroke-width="2"/>
+<rect x="252" y="642" width="16" height="50" fill="#fff" stroke="#222" stroke-width="2"/>
+<path d="M260,692 V700" stroke="#222" stroke-width="2"/>
+<path d="M260,700 v8 M250,708 h20 M254,712 h12 M258,716 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<text x="276" y="672" font-size="12" text-anchor="start" fill="#222" font-weight="normal" >10 kΩ</text>
+<circle cx="400" cy="630" r="3.5" fill="#222"/>
+<path d="M400,630 V658 M386,658 h28 M386,666 h28 M400,666 V700" stroke="#222" stroke-width="2" fill="none"/>
+<path d="M400,700 v8 M390,708 h20 M394,712 h12 M398,716 h4" stroke="#222" stroke-width="1.5" fill="none"/>
+<text x="420" y="668" font-size="12" text-anchor="start" fill="#222" font-weight="normal" >1 nF</text>
+<text x="420" y="682" font-size="11" text-anchor="start" fill="#888" font-weight="normal" >close to the pin</text>
+<circle cx="525" cy="630" r="5" fill="#fff" stroke="#222" stroke-width="2"/>
+<text x="525" y="616" font-size="12" text-anchor="middle" fill="#222" font-weight="bold" >OUT</text>
+<text x="525" y="654" font-size="11" text-anchor="middle" fill="#888" font-weight="normal" >XIAO ADC pin</text>
+<text x="600" y="568" font-size="13" text-anchor="start" fill="#222" font-weight="normal" >V_pin = (V_in + 3.3 V) / 3</text>
+<text x="600" y="592" font-size="13" text-anchor="start" fill="#222" font-weight="normal" >±3 V full scale → 0.1 … 2.1 V, centre ≈ 1.1 V</text>
+<text x="600" y="616" font-size="13" text-anchor="start" fill="#222" font-weight="normal" >Load on the DAC ≈ 15 kΩ (fine for a line out)</text>
+<text x="600" y="640" font-size="13" text-anchor="start" fill="#222" font-weight="normal" >Source impedance 3.3 kΩ; with 1 nF the pole ≈ 48 kHz</text>
+<text x="600" y="664" font-size="13" text-anchor="start" fill="#222" font-weight="normal" >Worst case with the XIAO unpowered: ≈ 0.2 mA into a pin</text>
+<text x="600" y="688" font-size="13" text-anchor="start" fill="#c0392b" font-weight="bold" >Never wire an RCA tip straight to a pin (−3 V)</text>
+</svg>

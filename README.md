@@ -43,6 +43,7 @@ Sync target ±5 ms via 500 ms beacons; the stream deliberately runs ~450 ms ahea
 | [docs/hardware/wiring.md](docs/hardware/wiring.md) | Complete hookup guide + bring-up checklist (breadboard now, PCB later) |
 | [docs/hardware/pcb.md](docs/hardware/pcb.md) | Carrier PCB: full BOM, power path, layout notes |
 | [docs/hardware/power-budget.md](docs/hardware/power-budget.md) | Current draw, battery life, low-battery policy derivation |
+| [docs/hardware/bench-capture.md](docs/hardware/bench-capture.md) | Checking slave output without a scope: logic analyzer / spare-MCU capture options, closed agent loop |
 | [docs/firmware/esp32-architecture.md](docs/firmware/esp32-architecture.md) | Slave firmware architecture (tasks, drivers, buffers) |
 | [docs/osci-render-feature-port-feasibility.md](docs/osci-render-feature-port-feasibility.md) | What else is worth porting from osci-render (fonts, SVG, effects), measured on the board — and the 6 bugs found while looking, all now fixed (§1) |
 | [docs/performance-heat-analysis.md](docs/performance-heat-analysis.md) | Why the slave runs hot and why streaming dropped (2026-07-18), with the prioritized fix plan |
