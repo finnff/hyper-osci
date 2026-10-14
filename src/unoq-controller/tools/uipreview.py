@@ -26,8 +26,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from hype_controller import PAGE, PRESETS_MAX, CYCLE_GROUPS
 
 # The show as it stands, so the seeded pairs below name presets that exist.
-PRESETS = ["HYPERWAVES", "Flux Collective", "Anémi", "Gan D",
-           "Guild Navigator", "Eastern Distributor", "HyperLili", "Liso"]
+PRESETS = ["HYPERWAVES", "Oracle Bones", "Nikos", "trillosta", "JEANS",
+           "Mama Snake", "HyperLili", "S]NE"]
 
 
 def slave(ip, sid, **kw):
@@ -72,7 +72,7 @@ def base_state():
                     "figure": "hyperwaves",
                     "pulse_rate": 1.2, "pulse_depth": 0.0, "rot": 0.0,
                     "flip_x": False, "flip_y": False, "sver": 373},
-        "figures": ["hyperwaves", "flux-collective"],
+        "figures": ["hyperwaves", "oracle-bones"],
         "presets": list(PRESETS),
         "stream_on": True,
         "slaves": [
@@ -97,12 +97,13 @@ def base_state():
         "cycles": {
             "logos": cycle("logos", show_s=10, every_s=120, phase=34,
                            next_in=78,
-                           pairs=[["HYPERWAVES", "Flux Collective"]]),
+                           pairs=[["HYPERWAVES", "Oracle Bones"]]),
             "artists": cycle("artists", show_s=15, every_s=60, phase=0,
                              next_in=41,
-                             pairs=[["Anémi", "HyperLili"],
-                                    ["Eastern Distributor", "Gan D"],
-                                    ["Guild Navigator", "Liso"]]),
+                             pairs=[["Nikos", ""],
+                                    ["trillosta", "JEANS"],
+                                    ["Mama Snake", "HyperLili"],
+                                    ["S]NE", ""]]),
         },
         # The resting state of the rig: every node on its own audio, waiting
         # for the next burst.

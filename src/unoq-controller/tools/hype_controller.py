@@ -124,9 +124,10 @@ def sanitize_text(s):
 
 def sanitize_name(s):
     # Preset names are embedded in onclick attributes client-side — keep them
-    # to a safe charset instead of escaping in four places.
+    # to a safe charset instead of escaping in four places. Brackets are inert
+    # there and an artist spells their name with one (S]NE).
     return "".join(c for c in unicodedata.normalize("NFC", str(s))
-                   if c.isalnum() or c in " ._-()&+")[:24].strip()
+                   if c.isalnum() or c in " ._-()[]&+")[:24].strip()
 
 
 def clean_preset(p):
@@ -381,10 +382,11 @@ CYCLE_PAIRS_MAX = 6
 # are not baked into the logic: every name is looked up in the preset list at
 # run time, and the page edits both slots of every pair.
 CYCLE_SEED = {
-    "logos": [["HYPERWAVES", "Flux Collective"]],
-    "artists": [["Anémi", "HyperLili"],
-                ["Eastern Distributor", "Gan D"],
-                ["Guild Navigator", "Liso"]],
+    "logos": [["HYPERWAVES", "Oracle Bones"]],
+    "artists": [["Nikos", ""],
+                ["trillosta", "JEANS"],
+                ["Mama Snake", "HyperLili"],
+                ["S]NE", ""]],
 }
 CYCLE_DEFAULTS = {"enabled": False, "show_s": 5, "pause_s": 0, "idx": 0,
                   "every_s": 300}
@@ -2491,7 +2493,6 @@ function renderSetList() {
     return;
   }
   for (var i = 0; i < pairs.length; i++) {
-    var a = pairs[i][0] || '—', b = pairs[i][1] || '—';
     /* !!live: with nothing on air, '' would match a pair's empty slot. */
     var onAir = !!live && (pairs[i][0] === live || pairs[i][1] === live);
     var row = document.createElement('div');
@@ -2500,12 +2501,18 @@ function renderSetList() {
       return function() { pickArtistPair(idx); };
     })(i);
     row.innerHTML = '<span class="idx">' + (i + 1) + '</span>'
-      + '<span class="name">' + esc(a) + '  b2b  ' + esc(b) + '</span>'
+      + '<span class="name">' + esc(pairLabel(pairs[i], '  b2b  ')) + '</span>'
       + '<span class="tag">'
       + (onAir ? 'ON AIR' : (cfg.idx === i ? 'SELECTED' : ''))
       + '</span>';
     container.appendChild(row);
   }
+}
+
+/* A line-up slot left at "— none —" is a solo set, not half a b2b. */
+function pairLabel(p, sep) {
+  var names = [p[0], p[1]].filter(function(n) { return n; });
+  return names.length ? names.join(sep) : '—';
 }
 
 /* The tap puts the pair on the scopes now, and the controller decides how:
@@ -2608,7 +2615,7 @@ function renderOnAir() {
   var nextPair = apairs.length > 1
     ? apairs[(acfg.idx + 1) % apairs.length] : null;
   document.getElementById('nav-next-hint').textContent = nextPair
-    ? 'next pair → ' + (nextPair[0] || '—') + ' b2b ' + (nextPair[1] || '—')
+    ? 'next → ' + pairLabel(nextPair, ' b2b ')
     : '';
   document.getElementById('btn-prev').disabled = apairs.length < 2;
   document.getElementById('btn-next').disabled = apairs.length < 2;
@@ -4159,7 +4166,7 @@ def main():
     for g, c in state.cycles.items():
         if c["enabled"] and c["pairs"]:
             pair = c["pairs"][min(c["idx"], len(c["pairs"]) - 1)]
-            print(f"[controller] {g} cycle on: {' / '.join(pair)}, "
+            print(f"[controller] {g} cycle on: {' / '.join(n for n in pair if n)}, "
                   f"{c['show_s']}s each every {c['every_s']}s"
                   + (f" (+{state.cycle_phase[g]}s offset)"
                      if state.cycle_phase.get(g) else "")

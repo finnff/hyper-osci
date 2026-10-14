@@ -2,8 +2,8 @@
 import json, math, subprocess, threading, time, urllib.request
 
 B = "http://127.0.0.1:8080"
-NAMES = ["HYPERWAVES", "Flux Collective", "Anémi", "Gan D", "Guild Navigator",
-         "Eastern Distributor", "HyperLili", "Liso"]
+NAMES = ["HYPERWAVES", "Oracle Bones", "Nikos", "trillosta", "JEANS",
+         "Mama Snake", "HyperLili", "S]NE"]
 fails = []
 
 

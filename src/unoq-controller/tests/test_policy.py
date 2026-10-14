@@ -217,8 +217,6 @@ c = hc.clean_cycle({}, "artists")
 ok(c["enabled"] is False and c["show_s"] == 5 and c["pause_s"] == 0,
    "an empty config fills from the defaults (5 s a side), and starts OFF",
    json.dumps(c))
-ok(len(c["pairs"]) == 3, "the artists seed carries the three b2b pairs",
-   json.dumps(c["pairs"]))
 ok(hc.clean_cycle({"show_s": 9999}, "logos")["show_s"] == 600,
    "show clamps to 600 s")
 ok(hc.clean_cycle({"show_s": 0}, "logos")["show_s"] == 3,
@@ -260,6 +258,14 @@ cyc["logos"]["pairs"] = [["HYPERWAVES", "Flux Collective"]]
 cyc["logos"]["enabled"] = False
 ok(hc.burst_steps(cyc["logos"], "logos", names) == [],
    "and a group that is switched off plays nothing")
+cyc["artists"].update(enabled=True, show_s=5, pause_s=3, idx=0,
+                      pairs=hc.clean_cycle({"pairs": [["S]NE", ""]]},
+                                           "artists")["pairs"])
+ok([(s["group"], s["preset"]) for s in
+    hc.burst_steps(cyc["artists"], "artists", names + ["S]NE"])]
+   == [("artists", "S]NE")],
+   "a solo set keeps its bracketed name and plays alone, no trailing pause",
+   str(cyc["artists"]["pairs"]))
 
 print("\n[cycle] the two grids are offset so their bursts miss")
 cyc = hc.load_cycles()

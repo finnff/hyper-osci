@@ -23,8 +23,8 @@ os.environ["HYPE_PRESETS"] = os.path.join(_TD, "presets.json")
 import hype_controller as hc  # noqa: E402
 
 FAIL = []
-NAMES = ["HYPERWAVES", "Flux Collective", "Anémi", "Gan D",
-         "Guild Navigator", "Eastern Distributor", "HyperLili", "Liso"]
+NAMES = ["HYPERWAVES", "Oracle Bones", "Nikos", "trillosta", "JEANS",
+         "Mama Snake", "HyperLili", "S]NE"]
 FONTS = list(hc.TEXT_FONTS)
 
 

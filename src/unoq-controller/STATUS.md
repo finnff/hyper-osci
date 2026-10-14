@@ -890,3 +890,37 @@ both hashes stay in history) brings them back.
 where the page sends `stream` (SILENT never worked in the mock), its
 `/api/cycle` re-armed the countdown on any edit (the bug above, mirrored),
 and it gains a `panel` scenario (no cycle running).
+
+## HYPERWAVES × Oracle Bones and the new line-up (2026-10-14)
+
+Live on the board. Everything before it is in `~/pre-lineup-20261014-105048/`
+(controller, the four `hype_*.json`, `hype_figures/`).
+
+- **Oracle Bones replaces Flux Collective** as the second logo. The PNG the
+  promoter sent went through `magick -threshold 50%` → `potrace -s -t 20` →
+  `figures/oracle-bones.svg`, then `bake_svg.py`: 13 contours, L = 17.43
+  drawn + 3.80 retrace, retrace 0.179 (0.267 in document order). The preset
+  took Flux's slot, freq (70 Hz) and pulse, with `text: "Oracle\nBones"` as
+  the fallback. `flux-collective.tbl` stays in `~/hype_figures/`, unused.
+- **Artists, in order:** Nikos · trillosta b2b JEANS · Mama Snake b2b
+  HyperLili · S]NE. Two of the four are solo sets: the pair's second slot is
+  "— none —", which the cycle already played as a single name. The page
+  showed it as "Nikos b2b —"; the set list, the NEXT hint and the boot
+  banner now leave the empty slot out.
+- **`S]NE` needed `[` `]` in preset names.** `sanitize_name` stripped the
+  bracket, so the preset and the pair slot both became `SNE`. Brackets are
+  inert in the `onclick` strings the whitelist protects. New check in
+  `test_policy.py`; it fails on the old sanitizer.
+- Fonts, picked from a contact sheet of every face rendered on the board:
+  Nikos duplex, trillosta script, JEANS simplex, `Mama\nSnake` simplex,
+  S]NE duplex; HyperLili stays italic. Freqs are 55–60 Hz. The panel's own
+  pattern starts on Nikos, and the artist cycle is on pair 1. Cycle timings
+  and node switches are unchanged.
+
+Checked on the board: `test_fixes` (now renders the new eight names in
+every face), `test_policy`, `test_persist` and `test_figure` pass from
+`/tmp/hcstage`. With 164's logos/artists switches turned on for the test,
+each of the four artist entries and the logo pair was played from the show
+screen. 164 switched to the network and showed the names in order, then
+went back to the mic. Oracle Bones aired as `figure oracle-bones`, not the
+circle fallback. The switches were turned back off afterwards.
