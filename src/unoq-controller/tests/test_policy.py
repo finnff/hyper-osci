@@ -421,6 +421,26 @@ ok(st.figure == "hyperwaves",
 ok(st.cycle_next["logos"] == armed,
    "and the grid is untouched: cutting one burst does not shift the evening")
 
+print("\n[cycle] editing a group that is off leaves the running grid alone")
+st = fresh()
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=120,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+st.cycles["artists"].update(enabled=False, pairs=[["Anemi", "HyperLili"]])
+hc.advance_cycle(st, 250_000)
+st.cycle_next["logos"] = hc.mono_us() + 60_000_000
+armed = st.cycle_next["logos"]
+st.cycles["artists"].update(show_s=9, pause_s=4, every_s=600)
+ok(hc.advance_cycle(st, 250_000) is None
+   and st.cycle_next["logos"] == armed,
+   "ARTIST SETTINGS edited while only the logos run does not push the "
+   "logos a period out",
+   f"{(st.cycle_next['logos'] - hc.mono_us()) / 1e6:.0f}s to go")
+st.cycles["artists"]["enabled"] = True
+hc.advance_cycle(st, 250_000)
+ok(st.cycle_next["logos"] != armed and "artists" in st.cycle_next,
+   "switching the group on still restages both grids around it",
+   str(st.cycle_next))
+
 print("\n[cycle] picking another pair leaves the grid where it is")
 st = fresh()
 st.cycles["artists"].update(enabled=True, show_s=3, pause_s=0, every_s=300,

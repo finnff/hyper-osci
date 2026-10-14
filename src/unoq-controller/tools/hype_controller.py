@@ -1001,14 +1001,15 @@ def advance_cycle(state, tick_us):
                  for g in CYCLE_GROUPS}
         live = [g for g in CYCLE_GROUPS if plans[g]]
         play, state.cycle_play = state.cycle_play, None
-        # Only what the grid is built from restages it: the periods, the
-        # burst lengths, and which groups play at all. The selected pair is
-        # not -- re-laying the grid on a pair pick pushed the next burst a
-        # full period out, so tapping NEXT a minute before the names were due
-        # took them off the scopes for five.
+        # Only what the grid is built from restages it: the periods and burst
+        # lengths of the groups that play, and which groups those are. The
+        # selected pair is not -- re-laying the grid on a pair pick pushed the
+        # next burst a full period out, so tapping NEXT a minute before the
+        # names were due took them off the scopes for five. Nor is a group
+        # that is off: cycle_phases ignores it, so editing ARTIST SETTINGS
+        # while only the logos run must not push the logos back.
         sig = repr([(g, state.cycles[g]["every_s"],
-                     cycle_burst_s(state.cycles[g]), g in live)
-                    for g in CYCLE_GROUPS])
+                     cycle_burst_s(state.cycles[g])) for g in live])
         run = state.cycle_run
         if sig != state.cycle_sig:
             # Config changed under us (a switch, a period, a burst length).

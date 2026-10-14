@@ -826,20 +826,24 @@ first time someone times it with a phone.
 ## Dashboard: three defects that misreport the stage (2026-10-11)
 
 Found by reading the page against the controller and driving it in headless
-Chromium through `tools/uipreview.py`. **Not yet deployed to the board.**
+Chromium through `tools/uipreview.py`. **Not yet deployed to the board**;
+`test_policy`, `test_fixes`, `test_persist` and `test_figure` pass on it from
+a staged copy in `/tmp/hcstage` (2026-10-14).
 
 - **NEXT / PREV / a set-list pair did nothing while the artist cycle ran —
   and pushed the names back.** The pick changed the pair and loaded its A
   side onto the panel, but between bursts every node is on its mic, so no
   scope showed it. Worse, the changed pair changed `advance_cycle`'s
   signature, which re-laid the grid: a burst due in 60 s moved to 300 s.
-  The signature now covers only what the grid is built from (period, burst
-  length, which groups play); a burst whose pair is swapped under it still
-  stops. `POST /api/cycle {"play": true}` plays the pair as a burst now and
-  re-lays that group's grid from it (next one a full period later, the other
-  group keeping its offset); with no cycle running it loads the first name
-  instead, as before. The page sends one POST instead of two that could land
-  in either order. 16 new checks in `test_policy.py`.
+  The signature now covers only what the grid is built from (period and
+  burst length of the groups that play, and which groups those are) — not
+  the pair, and not a group that is off, so editing ARTIST SETTINGS while
+  only the logos run no longer pushes the logos back. A burst whose pair is
+  swapped under it still stops. `POST /api/cycle {"play": true}` plays the
+  pair as a burst now and re-lays that group's grid from it (next one a full
+  period later, the other group keeping its offset); with no cycle running it
+  loads the first name instead, as before. The page sends one POST instead
+  of two that could land in either order. 18 new checks in `test_policy.py`.
 - **ON AIR named the panel's pattern while every scope drew its mic.** The
   `● MIC` indicator was computed and never shown. ON AIR now says MIC / MIC
   pause / FEED SILENT with the next burst, ghosts the canvas, and labels it
@@ -855,8 +859,9 @@ Chromium through `tools/uipreview.py`. **Not yet deployed to the board.**
 Four smaller page defects found in the same review — the level −/+ sending
 absolute gains, the invented battery estimate, the slave sheet freezing on
 open, and the header/switch sizing — were fixed in `795e8d6` and backed out
-of this batch to keep it to what changes the stage. `git revert` of the
-commit that backed them out (the one after `795e8d6`) brings them back.
+of this batch to keep it to what changes the stage. `git revert a4b8564`
+(the commit that backed them out; the branch is merged, not squashed, so
+both hashes stay in history) brings them back.
 
 `uipreview.py` caught up with the controller on the way: it read `stream_on`
 where the page sends `stream` (SILENT never worked in the mock), its

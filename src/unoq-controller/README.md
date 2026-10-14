@@ -100,8 +100,9 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    - **A burst is never persisted** as the live pattern, and `op=save` is
      refused while one is on air — it would save the logo, not the artist.
    - **Picking a pair is not a config change.** Selecting another pair
-     leaves the grid alone; only a period, a burst length or a group going on
-     or off restages it. Picking one *on the show screen* (`"play": true`)
+     leaves the grid alone; only a running group's period or burst length, or
+     a group going on or off, restages it (editing a group that is off does
+     not). Picking one *on the show screen* (`"play": true`)
      plays it now as a burst, and that group's next one comes a full period
      later; with no cycle running there is no burst to play — the rig streams
      the panel — so its first name is loaded there instead.
