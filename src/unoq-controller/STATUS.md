@@ -822,3 +822,48 @@ for the mid-burst case, not just the same-tick one.
 Cycle default is **5 s a side**, not 30. The offset is printed on the
 settings card: a cycle quietly running 34 s off the grid looks like a bug the
 first time someone times it with a phone.
+
+## Dashboard: three defects that misreport the stage (2026-10-11)
+
+Found by reading the page against the controller and driving it in headless
+Chromium through `tools/uipreview.py`. **Not yet deployed to the board**;
+`test_policy`, `test_fixes`, `test_persist` and `test_figure` pass on it from
+a staged copy in `/tmp/hcstage` (2026-10-14).
+
+- **NEXT / PREV / a set-list pair did nothing while the artist cycle ran —
+  and pushed the names back.** The pick changed the pair and loaded its A
+  side onto the panel, but between bursts every node is on its mic, so no
+  scope showed it. Worse, the changed pair changed `advance_cycle`'s
+  signature, which re-laid the grid: a burst due in 60 s moved to 300 s.
+  The signature now covers only what the grid is built from (period and
+  burst length of the groups that play, and which groups those are) — not
+  the pair, and not a group that is off, so editing ARTIST SETTINGS while
+  only the logos run no longer pushes the logos back. A burst whose pair is
+  swapped under it still stops. `POST /api/cycle {"play": true}` plays the
+  pair as a burst now and re-lays that group's grid from it (next one a full
+  period later, the other group keeping its offset); with no cycle running it
+  loads the first name instead, as before. The page sends one POST instead
+  of two that could land in either order. 18 new checks in `test_policy.py`.
+- **ON AIR named the panel's pattern while every scope drew its mic.** The
+  `● MIC` indicator was computed and never shown. ON AIR now says MIC / MIC
+  pause / FEED SILENT with the next burst, ghosts the canvas, and labels it
+  as the panel's pattern; a burst shows its group and time left. The set
+  list's ON AIR tag follows the same rule (it used to tag the pair holding
+  the panel's preset, and any pair with an empty slot when nothing was
+  loaded). An artist preset named after its own words now reads once, not
+  "Anémi (Anémi)" on every burst.
+- **AP down was only reported in SETUP > Diagnostics.** Now a page-level
+  banner in both modes; on the show screen an outage otherwise looked like
+  every slave being switched off.
+
+Four smaller page defects found in the same review — the level −/+ sending
+absolute gains, the invented battery estimate, the slave sheet freezing on
+open, and the header/switch sizing — were fixed in `795e8d6` and backed out
+of this batch to keep it to what changes the stage. `git revert a4b8564`
+(the commit that backed them out; the branch is merged, not squashed, so
+both hashes stay in history) brings them back.
+
+`uipreview.py` caught up with the controller on the way: it read `stream_on`
+where the page sends `stream` (SILENT never worked in the mock), its
+`/api/cycle` re-armed the countdown on any edit (the bug above, mirrored),
+and it gains a `panel` scenario (no cycle running).

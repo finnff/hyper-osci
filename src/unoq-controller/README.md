@@ -81,7 +81,7 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
    `policy_loop`'s thread (a font rebuild on the stream thread is an audible
    gap on every scope).
 
-   Four things worth knowing:
+   Five things worth knowing:
    - **There is one streamed pattern for the whole rig**, so the two cycles
      cannot both be on air. Their grids are phase-shifted apart
      (`cycle_phases`): logos every 2 min against artists every 1 min becomes
@@ -99,12 +99,21 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
      shift.
    - **A burst is never persisted** as the live pattern, and `op=save` is
      refused while one is on air — it would save the logo, not the artist.
+   - **Picking a pair is not a config change.** Selecting another pair
+     leaves the grid alone; only a running group's period or burst length, or
+     a group going on or off, restages it (editing a group that is off does
+     not). Picking one *on the show screen* (`"play": true`)
+     plays it now as a burst, and that group's next one comes a full period
+     later; with no cycle running there is no burst to play — the rig streams
+     the panel — so its first name is loaded there instead.
 
 HTTP API: `GET /api/state`, `GET /api/shapepreview` (the live point table,
 decimated — text and figure both); `POST /api/pattern`,
 `POST /api/cmd` (per-slave HYPE_CMD), `POST /api/preset` (op=save|load|delete),
 `POST /api/node {"id":121,"logos":false}`,
-`POST /api/cycle {"group":"artists","every_s":300,"idx":1,...}`.
+`POST /api/cycle {"group":"artists","every_s":300,"idx":1,...}` (add
+`"play":true` to put the selected pair on the scopes now; the reply's
+`played` / `loaded` says which way it went).
 
 Per-node switches and the pair cycles (2026-08-21): every node carries
 `stream` / `logos` / `artists` in `~/hype_nodes.json` (keyed by slave id, so

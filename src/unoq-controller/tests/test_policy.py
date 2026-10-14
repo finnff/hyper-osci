@@ -421,6 +421,101 @@ ok(st.figure == "hyperwaves",
 ok(st.cycle_next["logos"] == armed,
    "and the grid is untouched: cutting one burst does not shift the evening")
 
+print("\n[cycle] editing a group that is off leaves the running grid alone")
+st = fresh()
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=120,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+st.cycles["artists"].update(enabled=False, pairs=[["Anemi", "HyperLili"]])
+hc.advance_cycle(st, 250_000)
+st.cycle_next["logos"] = hc.mono_us() + 60_000_000
+armed = st.cycle_next["logos"]
+st.cycles["artists"].update(show_s=9, pause_s=4, every_s=600)
+ok(hc.advance_cycle(st, 250_000) is None
+   and st.cycle_next["logos"] == armed,
+   "ARTIST SETTINGS edited while only the logos run does not push the "
+   "logos a period out",
+   f"{(st.cycle_next['logos'] - hc.mono_us()) / 1e6:.0f}s to go")
+st.cycles["artists"]["enabled"] = True
+hc.advance_cycle(st, 250_000)
+ok(st.cycle_next["logos"] != armed and "artists" in st.cycle_next,
+   "switching the group on still restages both grids around it",
+   str(st.cycle_next))
+
+print("\n[cycle] picking another pair leaves the grid where it is")
+st = fresh()
+st.cycles["artists"].update(enabled=True, show_s=3, pause_s=0, every_s=300,
+                            pairs=[["Anemi", "HyperLili"],
+                                   ["HyperLili", "Anemi"]], idx=0)
+hc.advance_cycle(st, 250_000)
+st.cycle_next["artists"] = hc.mono_us() + 60_000_000   # a minute to go
+armed = st.cycle_next["artists"]
+st.cycles["artists"]["idx"] = 1
+ok(hc.advance_cycle(st, 250_000) is None
+   and st.cycle_next["artists"] == armed,
+   "a pair picked a minute before the burst is still a minute away — it "
+   "used to restage the grid and push the names five minutes out",
+   f"{(st.cycle_next['artists'] - hc.mono_us()) / 1e6:.0f}s to go")
+
+print("\n[cycle] a pair played on demand")
+st.cycle_play = "artists"
+step = hc.advance_cycle(st, 250_000)
+ok(step and step["preset"] == "HyperLili" and st.text == "HyperLili",
+   "the picked pair's first name takes the stream on the next tick",
+   str(step))
+ok(st.cycle_play is None, "the request is consumed, not left armed")
+ok(not st.cycle_mic and set(hc.desired_modes(st).values()) == {1},
+   "and the rig comes off the mic to show it")
+ok(st.cycle_next["artists"] > hc.mono_us() + 290_000_000,
+   "the grid restarts from this burst, so the scheduled one does not follow "
+   "straight after it",
+   f"{(st.cycle_next['artists'] - hc.mono_us()) / 1e6:.0f}s to go")
+st.cycles["artists"]["idx"] = 0
+st.cycle_play = "artists"
+step = hc.advance_cycle(st, 250_000)
+ok(step and step["preset"] == "Anemi"
+   and st.cycle_run["pattern"]["kind"] == "circle",
+   "a second pick replaces the burst on air, and still hands back the "
+   "panel's own pattern rather than the first pick's name",
+   st.cycle_run["pattern"]["kind"])
+st.cycle_run["until_us"] = hc.mono_us() - 1
+hc.advance_cycle(st, 250_000)
+st.cycle_run["until_us"] = hc.mono_us() - 1
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_run is None
+   and st.kind == "circle" and st.cycle_mic,
+   "and when it ends the rig is back on the mic with the panel restored",
+   st.kind)
+
+st.cycle_play = "artists"
+hc.advance_cycle(st, 250_000)
+st.cycles["artists"]["idx"] = 1                # picked from the settings card
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_run is None
+   and st.kind == "circle",
+   "a burst whose pair is swapped under it stops, rather than finishing on "
+   "a name the card no longer shows", st.kind)
+
+st.stream_on = False
+st.cycle_play = "artists"
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_run is None
+   and st.cycle_play is None,
+   "a pick while the feed is SILENT is dropped, not queued")
+st.stream_on = True
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_run is None,
+   "so unmuting does not fire a burst nobody asked for just now")
+
+st = fresh()
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=60,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+st.cycles["artists"].update(enabled=False, pairs=[["Anemi", "HyperLili"]])
+hc.advance_cycle(st, 250_000)
+logo_next = st.cycle_next["logos"]
+st.cycle_play = "artists"
+step = hc.advance_cycle(st, 250_000)
+ok(step and step["preset"] == "Anemi" and "artists" not in st.cycle_next,
+   "a group with no period of its own still plays once on demand, and gets "
+   "no grid out of it", str(st.cycle_next))
+ok(st.cycle_next["logos"] == logo_next,
+   "the running group's grid is left alone by a one-off")
+
 # --------------------------------------------------------------------- HTTP
 print("\n[policy] over HTTP: the switches and the cycle persist")
 import threading                                            # noqa: E402
@@ -486,6 +581,32 @@ ok(len(snap["cycles"]["logos"]["seq"]) == 3
    and snap["cycles"]["logos"]["burst_s"] == 99,
    "and each group carries its own burst plan and countdown",
    json.dumps(snap["cycles"]["logos"]))
+
+print("\n[policy] over HTTP: a pair picked on the show screen")
+code, body = post("/api/cycle", {"group": "artists", "idx": 0, "play": True,
+                                 "pairs": [["Anemi", "HyperLili"]]})
+ok(code == 200 and body["played"] is True and body["loaded"] is None
+   and st.cycle_run and st.cycle_run["group"] == "artists",
+   "with a cycle running the rig rests on the mic, so the pair plays as a "
+   "burst — loading it onto the panel would show nothing", json.dumps(body))
+post("/api/cycle", {"group": "logos", "enabled": False})
+code, body = post("/api/cycle", {"group": "artists", "idx": 0, "play": True})
+ok(code == 200 and body["loaded"] == "Anemi" and not body["played"]
+   and st.text == "Anemi" and st.cycle_run is None,
+   "with no cycle running the panel streams, so the first name is loaded "
+   "there and stays up", json.dumps(body))
+post("/api/cycle", {"group": "artists", "enabled": True})
+st.stream_on = False
+code, body = post("/api/cycle", {"group": "artists", "idx": 0, "play": True})
+ok(code == 200 and not body["played"] and "SILENT" in (body["note"] or "")
+   and st.cycle_run is None,
+   "while the feed is SILENT the pick is kept but nothing plays, and the "
+   "reply says why", json.dumps(body))
+st.stream_on = True
+code, body = post("/api/cycle", {"group": "artists", "play": True,
+                                 "pairs": [["Gone", "Missing"]]})
+ok(code == 200 and not body["played"] and body["note"],
+   "a pair naming no preset plays nothing and says so", json.dumps(body))
 _srv.shutdown()
 
 print("\n" + ("ALL PASS" if not FAIL else f"{len(FAIL)} FAILED: {FAIL}"))

@@ -978,79 +978,130 @@ def advance_cycle(state, tick_us):
     Frozen while the feed is silent: a cycle that kept counting through a
     two-minute mute would come back mid-pair with the clock in a place nobody
     could predict. Freezing pushes the grid out by the real time that passed.
+
+    state.cycle_play asks for one group's burst NOW (a pair picked on the show
+    screen). It is taken on the next tick or dropped: a request left pending
+    through a mute would fire minutes later, when nobody asked for it.
     """
     now = mono_us()
     apply_p = None
     ended = None
+    step = None
     # Before the lock: live_snapshot takes it, and this lock is not reentrant.
     # A burst records what the panel had so it can hand it straight back.
     before = state.live_snapshot()
     with state.lock:
         names = [p["name"] for p in state.presets]
-        plans = {g: burst_steps(state.cycles[g], g, names)
+        # What each group's selected pair would play, switched on or not: a
+        # pair played on demand runs even when its group has no period.
+        pair_plans = {g: burst_steps(dict(state.cycles[g], enabled=True), g,
+                                     names)
+                      for g in CYCLE_GROUPS}
+        plans = {g: pair_plans[g] if state.cycles[g]["enabled"] else []
                  for g in CYCLE_GROUPS}
-        sig = repr([(g, state.cycles[g]["every_s"], plans[g])
-                    for g in CYCLE_GROUPS])
+        live = [g for g in CYCLE_GROUPS if plans[g]]
+        play, state.cycle_play = state.cycle_play, None
+        # Only what the grid is built from restages it: the periods and burst
+        # lengths of the groups that play, and which groups those are. The
+        # selected pair is not -- re-laying the grid on a pair pick pushed the
+        # next burst a full period out, so tapping NEXT a minute before the
+        # names were due took them off the scopes for five. Nor is a group
+        # that is off: cycle_phases ignores it, so editing ARTIST SETTINGS
+        # while only the logos run must not push the logos back.
+        sig = repr([(g, state.cycles[g]["every_s"],
+                     cycle_burst_s(state.cycles[g])) for g in live])
+        run = state.cycle_run
         if sig != state.cycle_sig:
-            # Config changed under us (a switch, a period, a pair swap, a
-            # preset renamed). The phases are only meaningful relative to
-            # each other, so both grids are laid out again off this moment.
+            # Config changed under us (a switch, a period, a burst length).
+            # The phases are only meaningful relative to each other, so both
+            # grids are laid out again off this moment.
             state.cycle_sig = sig
             state.cycle_phase = cycle_phases(state.cycles)
             state.cycle_next = {}
-            if state.cycle_run is not None:
-                ended, state.cycle_run = state.cycle_run, None
-                state.cycle_step = None
-        live = [g for g in CYCLE_GROUPS if plans[g]]
+            ended, run = run, None
+        elif run is not None and run["steps"] != pair_plans[run["group"]]:
+            # The burst on air is no longer what its pair would play (another
+            # pair picked, a name deleted or renamed): stop it rather than
+            # finish on a name the card no longer promises.
+            ended, run = run, None
+        if ended is not None:
+            state.cycle_run = state.cycle_step = None
+            state.cycle_mic = bool(live)
+        # What a burst starting now hands back when it ends: the panel's own
+        # pattern, which is not what is installed while a burst is on air.
+        restore = (run or ended or {"pattern": before})["pattern"]
         if live and not state.stream_on:
             for g in live:                    # hold the grid where it is
                 if g in state.cycle_next:
                     state.cycle_next[g] += tick_us
-            if state.cycle_run is not None:
-                state.cycle_run["until_us"] += tick_us
-            return None
-        for g in list(state.cycle_next):
-            if g not in live:
-                state.cycle_next.pop(g)
-        for g in live:
-            if g not in state.cycle_next:
-                _cycle_arm(state, g, now)
-        # Every group whose slot has passed loses that slot, whether or not
-        # anything is on air. Computed before the burst on air is stepped:
-        # left until the burst ended, a slot missed at second 30 of a 40 s
-        # burst fired the moment it released -- the queue, two bursts back to
-        # back, which is what the phases exist to prevent.
-        due = [g for g in live if state.cycle_next[g] <= now]
-        run = state.cycle_run
-        step = None
-        if run is None and due:
-            # Due together (phases cannot always separate incommensurate
-            # periods): the longer period wins, because it is the one the
-            # room sees least often. The loser waits for its own next slot.
-            pick = max(due, key=lambda g: (state.cycles[g]["every_s"], g))
-            step = dict(plans[pick][0])
-            state.cycle_run = {"group": pick, "steps": plans[pick], "pos": 0,
-                               "until_us": now + step["secs"] * 1_000_000,
-                               "pattern": before}
-        for g in due:
-            # Step the grid, never the clock: a burst that was skipped or ran
-            # long must not walk its phase away over an evening.
-            every = state.cycles[g]["every_s"] * 1_000_000
-            while state.cycle_next[g] <= now:
-                state.cycle_next[g] += every
-        if run is not None:
-            if now < run["until_us"]:
-                return None
-            pos = run["pos"] + 1
-            if pos < len(run["steps"]):
-                step = dict(run["steps"][pos])
-                run["pos"] = pos
-                run["until_us"] = now + step["secs"] * 1_000_000
-            else:
-                ended, state.cycle_run = run, None
-        state.cycle_step = step
-        state.cycle_mic = bool(live) and (step is None
-                                          or step["group"] is None)
+            if run is not None:
+                run["until_us"] += tick_us
+            run = None                        # and step nothing
+        else:
+            for g in list(state.cycle_next):
+                if g not in live:
+                    state.cycle_next.pop(g)
+            for g in live:
+                if g not in state.cycle_next:
+                    _cycle_arm(state, g, now)
+            if play is not None and pair_plans.get(play) and state.stream_on:
+                # On demand: this pair takes the stream now, replacing any
+                # burst on air. If the group runs on a period, its grid is
+                # re-laid with this burst as its slot -- the next one a full
+                # period out, the other group keeping its offset from it --
+                # because a scheduled burst straight after this one would
+                # read as a fault.
+                if play in live:
+                    anchor = now - state.cycle_phase.get(play, 0) * 1_000_000
+                    for g in live:
+                        every = state.cycles[g]["every_s"] * 1_000_000
+                        nxt = anchor + state.cycle_phase.get(g, 0) * 1_000_000
+                        while nxt <= now:
+                            nxt += every
+                        state.cycle_next[g] = nxt
+                step = dict(pair_plans[play][0])
+                state.cycle_run = {"group": play, "steps": pair_plans[play],
+                                   "pos": 0,
+                                   "until_us": now + step["secs"] * 1_000_000,
+                                   "pattern": restore}
+                run = None
+            # Every group whose slot has passed loses that slot, whether or
+            # not anything is on air. Computed before the burst on air is
+            # stepped: left until the burst ended, a slot missed at second 30
+            # of a 40 s burst fired the moment it released -- the queue, two
+            # bursts back to back, which is what the phases exist to prevent.
+            due = [g for g in live if state.cycle_next[g] <= now]
+            if state.cycle_run is None and due:
+                # Due together (phases cannot always separate incommensurate
+                # periods): the longer period wins, because it is the one the
+                # room sees least often. The loser waits for its own next slot.
+                pick = max(due, key=lambda g: (state.cycles[g]["every_s"], g))
+                step = dict(plans[pick][0])
+                state.cycle_run = {"group": pick, "steps": plans[pick],
+                                   "pos": 0,
+                                   "until_us": now + step["secs"] * 1_000_000,
+                                   "pattern": restore}
+            for g in due:
+                # Step the grid, never the clock: a burst that was skipped or
+                # ran long must not walk its phase away over an evening.
+                every = state.cycles[g]["every_s"] * 1_000_000
+                while state.cycle_next[g] <= now:
+                    state.cycle_next[g] += every
+            if run is not None and now >= run["until_us"]:
+                pos = run["pos"] + 1
+                if pos < len(run["steps"]):
+                    step = dict(run["steps"][pos])
+                    run["pos"] = pos
+                    run["until_us"] = now + step["secs"] * 1_000_000
+                else:
+                    ended, state.cycle_run = run, None
+                run = None
+            if run is None:
+                # A step started or a burst ended. Mid-step (run still set)
+                # both of these stand as they are.
+                state.cycle_step = step
+                state.cycle_mic = bool(live) and (step is None
+                                                  or step["group"] is None)
         if step is not None and step["group"] is not None:
             apply_p = next((dict(x) for x in state.presets
                             if x["name"] == step["preset"]), None)
@@ -1168,6 +1219,9 @@ class State:
         self.cycle_step = None
         self.cycle_mic = False
         self.cycle_sig = None
+        # A group whose selected pair should take the stream on the next
+        # policy tick, set by POST /api/cycle {"play": true}. Read-and-clear.
+        self.cycle_play = None
         # ip -> (mode, mono_us) of the last set_mode this box sent, so a
         # command is not repeated every tick while the 1 Hz beacon catches up.
         self.mode_sent = {}
@@ -1380,6 +1434,15 @@ h1 { font-size: 18px; letter-spacing: .35em; color: var(--ph); text-shadow: 0 0 
 }
 body.disconnected .disconnection-banner { display: block; }
 body.disconnected { filter: saturate(0.3); }
+/* AP down: nothing holds the AP address, so no slave CAN appear. Page level
+   and in both modes -- on the show screen it otherwise looks exactly like
+   every slave being switched off. */
+.ap-banner {
+  display: none; background: #3d1010; color: var(--bad); border: 1px solid var(--bad);
+  padding: 8px; text-align: center; border-radius: 4px; margin-bottom: 8px;
+}
+.ap-banner.active { display: block; }
+.ap-banner code { color: var(--fg); }
 
 /* === Mode toggle === */
 #mode-toggle {
@@ -1445,6 +1508,10 @@ canvas#preview { max-width: 100%; height: auto; background: #020402; border: 1px
 .on-air-label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .1em; }
 .on-air-name { font-size: 18px; color: var(--ph); text-align: center; margin: 4px 0; }
 .on-air-detail { font-size: 12px; color: var(--dim); text-align: center; }
+/* The rig is on the microphone: the canvas is the panel's pattern, which no
+   scope is drawing, so it is dimmed and the line under it says so. */
+.on-air-name.mic { color: var(--fg); }
+.on-air-panel { font-size: 11px; color: var(--dim); text-align: center; margin-top: 4px; }
 
 /* === Thumb-friendly buttons === */
 .thumb-btn {
@@ -1642,6 +1709,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
 <body>
 <!-- Disconnection banner (F1) -->
 <div id="conn-banner" class="disconnection-banner"></div>
+<div id="ap-banner" class="ap-banner"></div>
 
 <!-- === HEADER (both modes) === -->
 <header class="both-modes">
@@ -1664,6 +1732,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
     <div id="preview-wrap"><canvas id="preview" width="400" height="400"></canvas></div>
     <div class="on-air-name" id="on-air-name">—</div>
     <div class="on-air-detail" id="on-air-detail"></div>
+    <div class="on-air-panel" id="on-air-panel"></div>
   </div>
 
   <!-- PREV / NEXT -->
@@ -1850,6 +1919,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <h3>Cycles</h3>
       <p>The rig's normal state is the <strong>microphone</strong>: every node on its own audio. A cycle interrupts it on a period — every N minutes, name A for a few seconds, an optional mic pause, name B, then straight back to the mic until the next one.</p>
       <p>LOGO SETTINGS and ARTIST SETTINGS are the same machine with a different period. Artists carry the b2b line-ups — pick which pair is playing tonight. A burst obeys the three switches: it does not appear on a node with that group switched off.</p>
+      <p>Tapping a pair on the show screen (or PREV / NEXT) puts it up straight away: with a cycle running it plays as a burst and the next one comes a full period later; with no cycle running its first name stays up. Picking a pair in ARTIST SETTINGS only changes which pair the next burst plays.</p>
       <p>With both cycles on, the controller offsets the two grids so their bursts do not collide — the card says by how much. Periods that share no useful multiple cannot always miss; when two do come due together the longer period wins and the other waits for its next slot, because the rig has one stream. Both freeze while the feed is SILENT.</p>
       <h3>Fallback</h3>
       <p>A streaming slave that stops receiving audio for ~1 s automatically draws its local pattern instead — whichever was last set.</p>
@@ -2038,7 +2108,9 @@ function post(path, body) {
       return d;
     })
     .catch(function() {})
-    .then(function() { return refresh(); });   /* not poll() — see poll() */
+    /* not poll() — see poll(). Resolves to the reply (or undefined), so a
+       caller can act on what the controller actually did. */
+    .then(function(d) { return refresh().then(function() { return d; }); });
 }
 
 var setP = function(p) { return post("/api/pattern", p); };
@@ -2142,7 +2214,7 @@ function stepPair(delta) {
   var pairs = cfg ? (cfg.pairs || []) : [];
   if (pairs.length < 2) return;
   var i = ((cfg.idx + delta) % pairs.length + pairs.length) % pairs.length;
-  pickArtistPair(i, pairs[i][0]);
+  pickArtistPair(i);
 }
 
 function goPrev() { stepPair(-1); }
@@ -2216,10 +2288,13 @@ function drawPreview() {
     g.beginPath(); g.moveTo(i*w/8, 0); g.lineTo(i*w/8, h); g.stroke();
     g.beginPath(); g.moveTo(0, i*h/8); g.lineTo(w, i*h/8); g.stroke();
   }
+  /* On the mic (or muted) no scope draws this, so it is drawn as a ghost. */
+  var ghost = airState() === 'mic' || airState() === 'silent';
+  g.globalAlpha = ghost ? 0.3 : 1;
   g.strokeStyle = '#39ff14';
   g.lineWidth = 2;
   g.shadowColor = '#39ff14';
-  g.shadowBlur = 8;
+  g.shadowBlur = ghost ? 0 : 8;
   g.beginPath();
 
   if ((p.kind === 'text' || p.kind === 'figure') && TP.pts.length) {
@@ -2249,6 +2324,7 @@ function drawPreview() {
   }
   g.stroke();
   g.shadowBlur = 0;
+  g.globalAlpha = 1;
 }
 
 /* === SLAVE VERDICT (one sentence) ===
@@ -2406,7 +2482,7 @@ function renderSetList() {
   if (!container) return;
   var cfg = (S.cycles && S.cycles.artists) ? S.cycles.artists : null;
   var pairs = cfg ? (cfg.pairs || []) : [];
-  var live = (S.cycle && S.cycle.preset) || curPreset;
+  var live = onAirPreset();
 
   container.innerHTML = '';
   if (!pairs.length) {
@@ -2416,12 +2492,13 @@ function renderSetList() {
   }
   for (var i = 0; i < pairs.length; i++) {
     var a = pairs[i][0] || '—', b = pairs[i][1] || '—';
-    var onAir = (pairs[i][0] === live || pairs[i][1] === live);
+    /* !!live: with nothing on air, '' would match a pair's empty slot. */
+    var onAir = !!live && (pairs[i][0] === live || pairs[i][1] === live);
     var row = document.createElement('div');
     row.className = 'preset-row' + (onAir ? ' on-air' : '');
-    row.onclick = (function(idx, first) {
-      return function() { pickArtistPair(idx, first); };
-    })(i, pairs[i][0]);
+    row.onclick = (function(idx) {
+      return function() { pickArtistPair(idx); };
+    })(i);
     row.innerHTML = '<span class="idx">' + (i + 1) + '</span>'
       + '<span class="name">' + esc(a) + '  b2b  ' + esc(b) + '</span>'
       + '<span class="tag">'
@@ -2431,43 +2508,99 @@ function renderSetList() {
   }
 }
 
-function pickArtistPair(i, firstName) {
-  post("/api/cycle", {group: 'artists', idx: i});
-  /* With the cycle off, nothing would move on its own — put the A side up so
-     the tap does what the tap looks like. With it on, advance_cycle restarts
-     the order at the same A side a moment later, which lands in the same
-     place. */
-  if (firstName) applyPreset(firstName);
+/* The tap puts the pair on the scopes now, and the controller decides how:
+   while any cycle runs the rig rests on the mic, so the pair plays as a burst
+   (and the artists' next scheduled one is a full period after it); with no
+   cycle running, its first name is loaded as the streamed pattern. One POST,
+   so the pick and the play cannot land out of order. Only a load changes the
+   panel's pattern, so only a load becomes the "current" preset. */
+function pickArtistPair(i) {
+  if (!S) return;
+  noteSlaveChange('all');
+  post("/api/cycle", {group: 'artists', idx: i, play: true}).then(function(d) {
+    if (d && d.loaded) setCur(d.loaded);
+  });
 }
 
-/* === ON AIR === */
+/* === ON AIR ===
+   What the scopes are drawing right now:
+     'silent' -- the feed is muted; every scope is on its own audio.
+     'burst'  -- a cycle step has the stream: S.cycle.preset is on air.
+     'mic'    -- the rig is resting on the microphone, between bursts or in
+                 the pause inside one. The panel's pattern streams to nobody.
+     'panel'  -- no cycle running: the panel's pattern is what streams. */
+function airState() {
+  if (!S.stream_on) return 'silent';
+  if (S.cycle && S.cycle.group) return 'burst';
+  if (S.mic) return 'mic';
+  return 'panel';
+}
+
+/* The preset name on the scopes, or '' when none is (or none is known). */
+function onAirPreset() {
+  var air = airState();
+  if (air === 'burst') return S.cycle.preset;
+  if (air === 'panel') return curPreset;
+  return '';
+}
+
+/* The installed pattern by name: the preset it came from, plus the words or
+   artwork it draws (N17) -- said once when they are the same, which is every
+   artist preset: a burst read "Anémi (Anémi)". A line break in the text
+   counts as a space for that comparison. */
+function patternLabel(name) {
+  var p = S.pattern;
+  var what = p.kind === 'text' ? p.text : p.kind === 'figure' ? p.figure : '';
+  if (!what) return name || '—';
+  return name && name !== what.split('\\n').join(' ') ? what + ' (' + name + ')' : what;
+}
+
 function renderOnAir() {
-  var curName = curPreset;
-  var holdIndicator = '';
-  if (S.cycle && S.cycle.preset) {
-    curName = S.cycle.preset;
-    holdIndicator = '▶ ' + S.cycle.group.toUpperCase() + ' ';
-  } else if (S.mic) {
-    holdIndicator = '● MIC ';
-  }
+  var air = airState();
   var presets = S.presets || [];
-  /* Index off the preset name, before the text decoration below -- decorated,
-     it never matches the set list and every tile read "1 of N". */
-  var idx = presets.length ? presets.indexOf(curName) : -1;
-
-  /* Show text content for text patterns (N17) */
-  if (S.pattern.kind === 'text' && S.pattern.text) {
-    curName = curName ? S.pattern.text + ' (' + curName + ')' : S.pattern.text;
-  } else if (S.pattern.kind === 'figure' && S.pattern.figure) {
-    curName = curName ? S.pattern.figure + ' (' + curName + ')' : S.pattern.figure;
+  var name, detail, panel = '';
+  if (air === 'burst') {
+    name = patternLabel(S.cycle.preset);
+    detail = '▶ ' + S.cycle.group.toUpperCase() + ' burst · '
+      + fmtLeft(S.cycle.left_s) + ' left';
+  } else if (air === 'panel') {
+    /* Index off the preset name, before the decoration -- decorated, it
+       never matches the set list and every tile read "1 of N". On a phone
+       that has not loaded a preset this session there is no way to know
+       which one is on air: "1 of 7" was a guess printed as fact, and PREV
+       stepped from it. Say the kind and stop. */
+    var idx = curPreset ? presets.indexOf(curPreset) : -1;
+    name = patternLabel(curPreset);
+    detail = (S.pattern.kind || '?')
+      + (idx >= 0 ? ' · ' + (idx + 1) + ' of ' + presets.length : '');
+  } else {
+    /* No streamed pattern is on any scope. This used to keep naming the
+       panel's pattern, so "hyperwaves" sat under ON AIR while every scope
+       drew its own microphone. */
+    var nb = nextBurst();
+    if (air === 'silent') {
+      name = '● FEED SILENT';
+      detail = 'every scope on its own audio';
+    } else if (S.cycle) {
+      name = '● MIC pause';
+      detail = 'between the two names · ' + fmtLeft(S.cycle.left_s) + ' left';
+    } else {
+      name = '● MIC';
+      detail = 'every scope on its own audio'
+        + (nb ? ' · ' + nb.g + ' in ' + fmtLeft(nb.left) : '');
+    }
+    /* Inside a burst's pause the installed pattern is the burst's, not the
+       panel's, so only name the panel between bursts. */
+    if (!S.cycle) {
+      panel = 'panel: ' + patternLabel(curPreset) + ' — streams when '
+        + (air === 'silent' ? 'the feed is back on' : 'the cycles are off');
+    }
   }
-
-  document.getElementById('on-air-name').textContent = curName || '—';
-  /* On a phone that has not loaded a preset this session there is no way to
-     know which one is on air. "1 of 7" was a guess printed as fact, and PREV
-     stepped from it. Say the kind and stop. */
-  document.getElementById('on-air-detail').textContent = (S.pattern.kind || '?')
-    + (idx >= 0 ? ' · ' + (idx + 1) + ' of ' + presets.length : '');
+  var nameEl = document.getElementById('on-air-name');
+  nameEl.textContent = name;
+  nameEl.classList.toggle('mic', air === 'silent' || air === 'mic');
+  document.getElementById('on-air-detail').textContent = detail;
+  document.getElementById('on-air-panel').textContent = panel;
 
   /* NAV hint and nav buttons follow the pairs, like the list below them. */
   var acfg = (S.cycles && S.cycles.artists) ? S.cycles.artists : null;
@@ -2646,6 +2779,7 @@ function rates(s) {
 function render() {
   if (!S) return;
   renderHeader();
+  renderApBanner();
   renderRigStrip();
   renderOnAir();
   renderFeedToggle();
@@ -2671,6 +2805,22 @@ function renderHeader() {
   } else {
     cs.textContent = '⚠ ' + pollFailures + 's';
     cs.className = 'stale';
+  }
+}
+
+/* net.egress false: nothing holds the AP address, so no slave can join and
+   every tile reads LOST for a reason no tile can show. Page level, both
+   modes -- this used to live only in SETUP > Diagnostics, so on the phone an
+   AP outage looked exactly like four slaves switched off. */
+function renderApBanner() {
+  var el = document.getElementById('ap-banner');
+  var net = S.net || {};
+  var down = net.egress === false;
+  el.classList.toggle('active', down);
+  if (down) {
+    el.innerHTML = '⚠ Wi-Fi AP is DOWN — no slave can connect. On the controller: '
+      + '<code>sudo nmcli c up hyperosci-ap</code> (no restart needed; the '
+      + 'netwatch timer also retries every 30 s)';
   }
 }
 
@@ -3132,17 +3282,24 @@ function renderCycleLine() {
       + ' · ' + fmtLeft(cyc.left_s) + ' left';
     return;
   }
-  /* Between bursts. Name the group that lands next, not just a number: with
-     two cycles running the operator wants to know which one is coming. */
+  var next = nextBurst();
+  el.innerHTML = next
+    ? '<b>mic</b> · ' + next.g + ' in ' + fmtLeft(next.left)
+    : '<b>mic</b>';
+}
+
+/* The group whose burst lands next, {g, left}, or null. Name the group, not
+   just a number: with two cycles running the operator wants to know which
+   one is coming. */
+function nextBurst() {
+  var cs = S.cycles || {};
   var next = null;
   ['logos', 'artists'].forEach(function(g) {
     var c = cs[g];
     if (!c || !c.enabled || !c.seq.length || c.next_in == null) return;
     if (!next || c.next_in < next.left) next = {g: g, left: c.next_in};
   });
-  el.innerHTML = next
-    ? '<b>mic</b> · ' + next.g + ' in ' + fmtLeft(next.left)
-    : '<b>mic</b>';
+  return next;
 }
 
 /* === SETUP RIG (per-slave cards) === */
@@ -3654,10 +3811,19 @@ def make_http_handler(state, cmds):
         def _cycle(self, state, cmds, body):
             """Edit one pair cycle. {"group": "artists", "enabled": true,
             "every_s": 300, "show_s": 30, "pause_s": 10, "idx": 1,
-            "pairs": [[a, b], ...]}"""
+            "pairs": [[a, b], ...]}
+
+            "play": true also puts the selected pair on the scopes now -- the
+            show screen's pair pick. While any cycle runs the rig rests on
+            the mic, so loading a name as the panel's pattern would show
+            nothing: the pair plays as a burst instead. With no cycle running
+            the panel's pattern is what streams, so the pair's first name is
+            loaded there, as a preset tap would. The reply says which
+            ("played" / "loaded"), so the page knows what is on air."""
             group = body.get("group")
             if group not in CYCLE_GROUPS:
                 return self._json({"err": "need group logos|artists"}, 400)
+            played, load, note = False, None, None
             with state.lock:
                 cur = dict(state.cycles[group])
                 cur.update({k: body[k] for k in
@@ -3666,13 +3832,37 @@ def make_http_handler(state, cmds):
                 c = clean_cycle(cur, group)
                 state.cycles[group] = c
                 # Let advance_cycle notice the change on its own terms: it
-                # compares the burst plans, restages both phases and re-arms,
-                # so a period edited at 4m59s does not fire as you let go.
+                # compares the grid's inputs, restages both phases and
+                # re-arms, so a period edited at 4m59s does not fire as you
+                # let go.
                 cycles = {g: dict(v) for g, v in state.cycles.items()}
+                if body.get("play"):
+                    names = [p["name"] for p in state.presets]
+                    steps = burst_steps(dict(c, enabled=True), group, names)
+                    on_mic = any(burst_steps(v, g, names)
+                                 for g, v in state.cycles.items())
+                    if not steps:
+                        note = "that pair names no preset in the set list"
+                    elif not on_mic:
+                        load = next((dict(p) for p in state.presets
+                                     if p["name"] == steps[0]["preset"]),
+                                    None)
+                    elif state.stream_on:
+                        state.cycle_play = group
+                        played = True
+                    else:
+                        note = "pair selected — the feed is SILENT, so " \
+                               "nothing played"
             save_cycles(cycles)
+            if load is not None:
+                apply_preset(state, load)   # same path as a preset tap
+                self._takeover(state)
             advance_cycle(state, 0)
             reconcile_modes(state, cmds)
-            return self._json({"ok": True, "group": group, "cycle": c})
+            return self._json({"ok": True, "group": group, "cycle": c,
+                               "played": played,
+                               "loaded": load["name"] if load else None,
+                               "note": note})
 
 
     return Handler
