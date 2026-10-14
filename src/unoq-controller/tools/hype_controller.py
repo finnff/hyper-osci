@@ -874,10 +874,20 @@ def apply_preset(state, p):
 
 
 
-# A commanded mode is only confirmed by the slave's next STATUS beacon, which
-# is 1 Hz. Re-sending inside that window would be three packets per node per
-# second, all saying the same thing, on the one radio the audio needs.
-MODE_RESEND_US = 3_000_000
+# A commanded mode is confirmed by the slave's next STATUS: a reply to the
+# CMD from current firmware, else its 1 Hz beacon. Until then, re-send every
+# policy tick (250 ms): a lost `network` would otherwise cost that node 3 s of
+# a 5 s name, and a lost `local` leaves it draining to the centre dot. A few
+# ~40-byte packets per transition is nothing next to 200 audio packets/s.
+MODE_RESEND_US = 200_000
+
+# Forward pacing drift (a scheduler/GIL stall) at or below this is absorbed
+# by the lead: the backlog goes out late with its original deadlines and
+# still arrives ~LEAD_US - drift early. Above it, jump the epoch and drop the
+# backlog — one discontinuity, which every slave rebuffers from. Kept near
+# 100 ms because the backlog leaves as one unpaced burst per slave, and at 3+
+# slaves a bigger burst overflows the TX queue (AUG_9 report, EAGAIN).
+REANCHOR_US = 100_000
 
 
 def node_flags(state, sid):
@@ -4031,13 +4041,17 @@ def stream_loop(state, iface_ip):
             # capped so a long stall can't wedge the loop).
             burst = 0
             while now >= next_audio and burst < 10:
-                # Keep deadlines glued to real time (see hype_sender.py): if
-                # pacing drifted >20 ms, re-anchor the epoch — the slave sees
-                # one discontinuity and cleanly rebuffers.
+                # Invariant: a packet sent on schedule is due LEAD_US after
+                # it leaves, so drift is how far behind schedule we are (≥ 0).
+                # A small stall is caught up with the original deadlines; only
+                # a long one re-anchors, forward, and drops the backlog — so
+                # no catch-up burst can overshoot into a backward jump (each
+                # one was a second reset on every slave, Aug 21-22).
                 ideal = epoch + frames_sent * 1_000_000 // SAMPLE_RATE
                 drift = (now + LEAD_US) - ideal
-                if abs(drift) > 20_000:
+                if drift > REANCHOR_US:
                     epoch += drift
+                    next_audio = now
                     print(f"[re-anchor] drift={drift/1000:.1f}ms", flush=True)
                 deadline = epoch + frames_sent * 1_000_000 // SAMPLE_RATE
                 payload = gen.block(FRAMES, state.pattern_params())
@@ -4063,11 +4077,12 @@ def stream_loop(state, iface_ip):
                 next_audio += PACKET_US
                 burst += 1
                 now = mono_us()
-            if now - next_audio > 200_000:  # hopelessly behind: resync pacing
-                next_audio = now
         else:
-            # Paused: keep pacing anchored so resume re-anchors once, cleanly.
-            next_audio = now + PACKET_US
+            # Paused: slide the epoch along with the pacing clock so resume
+            # starts on schedule (the slaves see one gap, and rebuffer).
+            resume = now + PACKET_US
+            epoch += resume - next_audio
+            next_audio = resume
 
         # Publish TX accounting: one atomic store per second, no lock.
         if now >= next_txstat:

@@ -13,6 +13,7 @@ struct Stats {
   uint32_t underruns;
   uint32_t seq_gaps;      // gap events (any seq discontinuity)
   uint32_t lost_packets;  // cumulative missing packets inferred from gap sizes
+  uint32_t gap_resets;    // > 20 ms deadline holes that flushed the buffer
   int8_t rssi_dbm;
   bool wifi_up;
   bool stream_up;
@@ -30,6 +31,9 @@ bool radio_enabled();
 bool wifi_connected();
 const char* ps_mode();  // live WiFi power-save state: "none"|"min"|"max"|"?"
 bool stream_active();  // audio packets within STREAM_TIMEOUT_MS
+// Lead (deadline - now, ms) of the packet that last started an empty buffer;
+// mode_manager::EV_NO_LEAD if the clock wasn't synced.
+int32_t start_lead_ms();
 
 // Audio-task side: fill one block from the jitter buffer, honoring the
 // ±DEADLINE_SLACK_US policy. Anything but PLAYED means the network source

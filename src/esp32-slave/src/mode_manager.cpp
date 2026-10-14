@@ -38,18 +38,21 @@ uint32_t conceal_blocks = 0;
 constexpr uint32_t CONCEAL_HOLD_BLOCKS = 4;  // 20 ms
 constexpr uint32_t CONCEAL_RAMP_BLOCKS = 2;  // 10 ms
 
-// Has a network block played since this mode stint (or stream) began? Until
-// it has, the slave is in pre-roll: the controller's blocks are due LEAD_US
-// after it sends them, so a fresh join sees a head that is "too early" for
-// ~0.45 s. That wait must show the local render, not the concealment ladder
-// (whose centre dot is for hiccups inside a playing stream). Cleared on a
-// real mode change and when the stream goes away (WiFi reconnect, unmute
-// after silence, controller restart all rejoin like a fresh start).
+// Has a network block played since this join? Until it has, the slave is in
+// pre-roll: the controller's blocks are due LEAD_US after it sends them, so a
+// fresh join sees a head that is "too early" for ~0.45 s. That wait must show
+// the local render, not the concealment ladder (whose centre dot is for
+// hiccups inside a playing stream). Cleared on a real mode change, when the
+// stream goes away (WiFi reconnect, unmute after silence, controller restart
+// all rejoin like a fresh start), and on underrun: with a 450 ms lead the
+// buffer only runs dry after ~0.45 s without packets — a stopped stream
+// (lost `local` command, SILENT mid-burst, controller crash), not a hiccup.
 volatile bool g_net_played = false;
 // Audio task's view of stream_active(), to catch its edges. Reset on mode
 // change so each stint logs its own STREAM_UP.
 volatile bool g_stream_seen = false;
 volatile uint32_t g_entry_ms = 0;  // millis() of the last mode change
+volatile uint32_t g_join_ms = 0;   // millis() of the last stream-up / underrun
 volatile uint32_t g_last_preroll_ms = 0;
 
 // Event ring: any task produces, loop task consumes (ui.cpp prints).
@@ -58,11 +61,12 @@ mode_manager::Event ev_ring[EV_RING];
 uint32_t ev_head = 0, ev_tail = 0, ev_dropped = 0;
 portMUX_TYPE ev_mux = portMUX_INITIALIZER_UNLOCKED;
 
-void log_event(mode_manager::EventKind kind, uint32_t arg) {
+void log_event(mode_manager::EventKind kind, uint32_t arg,
+               int32_t arg2 = mode_manager::EV_NO_LEAD) {
   const uint32_t now = millis();
   portENTER_CRITICAL(&ev_mux);
   if (ev_head - ev_tail < EV_RING) {
-    ev_ring[ev_head % EV_RING] = {now, arg, kind, g_mode};
+    ev_ring[ev_head % EV_RING] = {now, arg, arg2, kind, g_mode};
     ev_head++;
   } else {
     ev_dropped++;
@@ -210,7 +214,7 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
         g_last_net_ms = millis();
         if (!g_net_played) {
           g_net_played = true;
-          g_last_preroll_ms = since_entry();
+          g_last_preroll_ms = millis() - g_join_ms;
           log_event(EventKind::FIRST_PLAY, g_last_preroll_ms);
         }
         g_stream_seen = true;
@@ -221,12 +225,18 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
         break;
       }
       if (r == net_rx::Pull::UNDERRUN) {
+        // The stream stopped feeding us (see g_net_played): show the mic,
+        // and time the rejoin from here.
+        g_net_played = false;
+        g_join_ms = millis();
         log_event(EventKind::UNDERRUN, since_entry());
       }
       if (net_rx::stream_active()) {
         if (!g_stream_seen) {
           g_stream_seen = true;
-          log_event(EventKind::STREAM_UP, since_entry());
+          g_join_ms = millis();
+          log_event(EventKind::STREAM_UP, since_entry(),
+                    net_rx::start_lead_ms());
         }
         if (g_net_played) {
           // Brief hiccup inside a playing stream (rebuffer / lost packets):
@@ -295,6 +305,10 @@ bool pop_event(Event& out) {
 uint32_t events_dropped() { return ev_dropped; }
 
 uint32_t last_preroll_ms() { return g_last_preroll_ms; }
+
+void note_reset(uint32_t hole_ms, int32_t lead_ms) {
+  log_event(EventKind::RESET, hole_ms, lead_ms);
+}
 
 void handle_command(const char* json, size_t len) {
   JsonDocument doc;

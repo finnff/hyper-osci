@@ -44,6 +44,10 @@ volatile uint32_t st_rx_dropped = 0;
 volatile uint32_t st_underruns = 0;
 volatile uint32_t st_seq_gaps = 0;    // gap EVENTS (any seq discontinuity)
 volatile uint32_t st_lost_packets = 0;  // cumulative missing packets (gap sizes)
+volatile uint32_t st_gap_resets = 0;  // > 20 ms deadline holes that flushed
+// Lead (deadline - master now, ms) of the packet that last started an empty
+// buffer: ~LEAD_US when it arrived promptly, less if it sat in transit.
+volatile int32_t g_start_lead_ms = mode_manager::EV_NO_LEAD;
 // Written by the async_udp task, and cleared by set_accept_audio() from the
 // net/loop task while audio is not being accepted.
 volatile uint32_t last_seq = 0;
@@ -58,6 +62,11 @@ uint8_t pkt_buf[1500];
 
 constexpr uint16_t JB_TARGET_FRAMES =
     (uint16_t)((uint32_t)JB_TARGET_DEPTH_MS * SAMPLE_RATE / 1000);
+
+int32_t lead_ms(uint64_t deadline_us) {
+  if (!timesync::valid()) return mode_manager::EV_NO_LEAD;
+  return (int32_t)(((int64_t)(deadline_us - timesync::master_now_us())) / 1000);
+}
 
 // Runs in the "async_udp" task via on_audio_packet(); buf points into the
 // lwIP pbuf and is only valid for the duration of the call — everything is
@@ -120,6 +129,7 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
       (const int16_t*)(buf + sizeof(HypeHeader) + sizeof(HypeAudioPayload));
   bool ok;
   if (jb.depth_frames() == 0) {
+    g_start_lead_ms = lead_ms(h.timestamp_us);
     ok = jb.push(samples, ap.frame_count, h.timestamp_us);
   } else {
     const int64_t delta =
@@ -136,6 +146,9 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
     } else if (delta > 20000) {
       // Large discontinuity (epoch jump, long outage): rebuffer from here.
       jb.reset();
+      st_gap_resets++;
+      g_start_lead_ms = lead_ms(h.timestamp_us);
+      mode_manager::note_reset((uint32_t)(delta / 1000), g_start_lead_ms);
       ok = jb.push(samples, ap.frame_count, h.timestamp_us);
     } else {
       ok = jb.push(samples, ap.frame_count, h.timestamp_us);  // contiguous
@@ -160,6 +173,8 @@ void on_audio_packet(AsyncUDPPacket& packet) {
   handle_audio_packet(packet.data(), packet.length());
 }
 
+void send_status();
+
 void handle_ctrl_packet(size_t len, IPAddress src) {
   if (len < sizeof(HypeHeader)) return;
   const HypeHeader* h = (const HypeHeader*)pkt_buf;
@@ -174,6 +189,9 @@ void handle_ctrl_packet(size_t len, IPAddress src) {
       if (cmd_handler != nullptr && len > sizeof(HypeHeader)) {
         cmd_handler((const char*)(pkt_buf + sizeof(HypeHeader)),
                     len - sizeof(HypeHeader));
+        // Confirm at once rather than at the next 1 Hz beacon: the
+        // controller re-sends an unconfirmed set_mode until a STATUS agrees.
+        send_status();
       }
       break;
     default:
@@ -375,6 +393,8 @@ bool stream_active() {
          st_rx_packets > 0;
 }
 
+int32_t start_lead_ms() { return g_start_lead_ms; }
+
 Pull pull_block(int16_t* frames, size_t frame_count) {
   if (!jb.started()) return Pull::IDLE;
 
@@ -421,6 +441,7 @@ Stats stats() {
   s.underruns = st_underruns;
   s.seq_gaps = st_seq_gaps;
   s.lost_packets = st_lost_packets;
+  s.gap_resets = st_gap_resets;
   s.rssi_dbm = g_rssi;
   s.wifi_up = g_wifi_up;
   s.stream_up = stream_active();

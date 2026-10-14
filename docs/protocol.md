@@ -76,7 +76,7 @@ UNO-Q 192.168.50.1
   ├── :5000 AUDIO ──unicast──▶ slave1:5000 … slave4:5000   (200 pps each, 988 B)
   ├── :5001 SYNC ──multicast─▶ 239.0.0.1:5001              (every 500 ms, 20 B — discovery beacon)
   ├── :5001 CMD ────unicast──▶ slaveN:5001                 (on demand, JSON)
-  └── :5002 ◀──────────────── slaveN → STATUS              (1 Hz, 59 B, starts after first SYNC)
+  └── :5002 ◀──────────────── slaveN → STATUS              (1 Hz + one per CMD, 59 B, starts after first SYNC)
 ```
 
 ---
@@ -350,8 +350,12 @@ image, so a lost 5 ms block is nearly invisible.
   `timestamp_us` lands 1–20 ms past the buffer's tail deadline implies lost packets ahead of it —
   the hole is hold-filled (§5.2 table) so the buffer stays contiguous. The v1 buffer is
   append-only; a reordered packet arriving after its successor is dropped (already-covered time).
-- **Concealment ladder** (also applies to underrun, i.e. buffer empty at playout tick) — only once
-  a block has played in the current mode stint / stream (see *pre-roll* below):
+- **Concealment ladder** — for blocks the buffer can't serve while it still holds audio (rebuffer
+  after a reset, a head not yet due), and only once a block has played since the join (see
+  *pre-roll* below). An **underrun** (buffer empty at a playout tick) is not a hiccup: with a
+  450 ms lead it takes ~0.45 s without packets, so the stream has stopped (lost `local` command,
+  SILENT, controller crash). It ends the stint's playing state, and the slave shows the local
+  render until the stream plays again or `STREAM_TIMEOUT_MS` passes:
   1. **0–20 ms of missing signal:** last-value hold — repeat the last played (X,Y) frame. The beam
      parks at its last position; at ≤ 20 ms this is imperceptible.
   2. **> 20 ms:** ramp X/Y to 0 over ~10 ms (beam glides to center dot — avoids leaving the beam
@@ -361,8 +365,8 @@ image, so a lost 5 ms block is nearly invisible.
 - **Recovery:** deadlines are absolute, so recovery is automatic — when AUDIO packets with
   in-window deadlines arrive again, the slave re-buffers (the "wait" rule §5.2 provides the ~60 ms
   refill) and switches source back to the network stream at a block boundary. No handshake.
-- **Pre-roll:** a slave that joins (mode change to NETWORK, or the stream returning after a
-  `STREAM_TIMEOUT_MS` loss) sees head blocks due `LEAD_US` (450 ms) in the future. Until the first
+- **Pre-roll:** a slave that joins (mode change to NETWORK, an underrun, or the stream returning
+  after a `STREAM_TIMEOUT_MS` loss) sees head blocks due `LEAD_US` (450 ms) in the future. Until the first
   block plays it keeps drawing the local render, not the ladder — the ladder's centre dot is for
   hiccups inside a playing stream, and ~0.45 s of it at every join was the visible burst-start
   glitch (2026-10-14, `docs/stream-concealment-plan.md` §3.2).
@@ -413,8 +417,7 @@ sequenceDiagram
 
     C->>S: AUDIO seq n (playing normally, NET LED solid)
     Note over C: stream stops (app crash, RF dropout, ...)
-    Note over S: buffer drains to empty -> underruns++<br/>0-20 ms: last-value hold (beam parked)
-    Note over S: after 20 ms: ramp X/Y to 0, hold center dot
+    Note over S: buffer drains to empty -> underruns++<br/>-> local render (stream stopped, not a hiccup)
     Note over S: 1000 ms with no AUDIO (STREAM_TIMEOUT_MS)<br/>-> source = local render, NET LED 5 Hz
     S->>C: STATUS (mode = 1 NETWORK, source = 0 local)
     Note over C: stream restored
@@ -436,13 +439,13 @@ sequenceDiagram
     P->>C: HTTP POST /api/cmd {"ip":"<slave3-ip>","cmd":{"cmd":"set_mode","mode":"hybrid"}}
     C->>S: CMD {"cmd":"set_mode","mode":"hybrid"} (unicast :5001)
     Note over S: apply immediately, MODE LED 1 Hz (HYBRID)
-    S->>C: STATUS (mode = 2) within 1 s
+    S->>C: STATUS (mode = 2), sent as soon as the CMD is applied
     P->>C: GET /api/state (UI polls at 1 Hz)
     C->>P: JSON state incl. slave mode = 2
 ```
 
-(The web UI is plain 1 Hz polling of `GET /api/state` — no WebSocket. Commands are
-fire-and-forget; the next STATUS beacon is the confirmation the UI displays.)
+(The web UI is plain 1 Hz polling of `GET /api/state` — no WebSocket. A slave answers every CMD
+with an immediate STATUS; that, or the next 1 Hz beacon, is the confirmation the UI displays.)
 
 ---
 
@@ -534,9 +537,9 @@ the roster by `mac`; store `slave_id`, the source **IP** (unicast destination fo
 telemetry, and last-seen time. Mark offline after ~3 s silence. Watch `rx_dropped`/`underruns`
 deltas per interval — nonzero deltas during a show mean RF trouble (§8) or pacing bugs.
 
-**CMD.** JSON per §3.3, unicast to `roster[mac].ip:5001`. Fire-and-forget + observe: if the next
-STATUS (≤ 1 s) doesn't reflect an expected `mode` change, re-send once after ~250 ms. All v1
-commands are idempotent.
+**CMD.** JSON per §3.3, unicast to `roster[mac].ip:5001`. Fire-and-forget + observe: the slave
+answers each CMD with a STATUS; until a STATUS reflects an expected `mode` change, re-send every
+~200 ms (`MODE_RESEND_US`, i.e. each 250 ms policy tick). All v1 commands are idempotent.
 
 **Process hygiene.** `SCHED_FIFO` or at least `nice -10` for the sender loop; it needs 5 ms
 regularity, which stock Debian achieves easily when not swapping. The AP must stay on

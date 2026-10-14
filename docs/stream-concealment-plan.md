@@ -1,7 +1,7 @@
 # Stream gaps on the scope: burst-start cleanup and loop-fill concealment
 
-**Status:** Phase 1 implemented and bench-run on 164 (2026-10-14, §3.6); scope check still
-open. Phases 2–3 not started (rev 3).
+**Status:** Phase 1 and 1b implemented and bench-run on 164 (2026-10-14, §3.6–3.8); scope check
+still open. Phases 2–3 not started (rev 4).
 - Measurements: `src/unoq-controller/STATUS.md`, "Transmission to one node (164)".
 - Normative wire spec stays `protocol.md` + `protocol.h`; this file says what will change in them
   and why.
@@ -147,12 +147,14 @@ Phase 1 adds the logging that told these apart (§3.6).
   - The command and the audio share the AP's queue to that slave, so audio sent before the
     command arrives first and is then flushed.
   - No post-burst tail, even for unflashed slaves.
-- **If a command is lost** (seen 1 in ~19 on the bench, §3.6):
-  - *lost `network`*: no audio is accepted (gate closed); the 3 s resend starts the burst late.
-  - *lost `local`*: the slave stays NETWORK while the stream to it has stopped. Its buffer
-    drains (one underrun), the ladder shows ~0.55 s of centre dot, then the mic after
-    `STREAM_TIMEOUT_MS`. Before 3.3 the same loss kept streaming the last pattern for up to 3 s.
-    Fix candidates in §9.
+- **If a command is lost** (2 of ~19 `local` commands on the 2026-10-14 bench, both at the end
+  of a logos burst; §3.6):
+  - *lost `network`*: no audio is accepted (gate closed) until the resend arrives.
+  - *lost `local`*: the slave stays NETWORK while the stream to it has stopped, and its buffer
+    drains. Phase 1 showed ~0.55 s of centre dot here; before 3.3 the same loss kept streaming
+    the last pattern for up to 3 s.
+  - Phase 1b (§3.7) answers both: resend every policy tick, an immediate STATUS reply so the
+    resend rarely fires, and an underrun shows the mic instead of the dot.
 
 ### 3.4 On-air timing (consequence, decision deferred)
 
@@ -207,12 +209,70 @@ depends on what follows:
 
 - **The per-burst underrun is gone** with only the slave gate in place: it was the post-burst
   refill (§2.3 candidate 1).
-- **Stream-up → first play is ~580 ms, not the 450 ms lead.** Cause not pinned; [INFERENCE] a
-  ~130 ms error in the slave's clock offset or the controller running ahead of its epoch.
+- **Stream-up → first play is ~580 ms, not the 450 ms lead:** a buffer reset during pre-roll at
+  every join, found with the Phase 1b logging (§3.8). Not a clock error: the buffer holds only
+  512 ms, so a 580 ms lead would have counted drops.
 - **Scope not checked yet.** The mic-not-dot pre-roll follows from the code path
   (`g_net_played` false → `renderer_local::render`); the phone-video row of §3.5 is still open.
-- Pending command → stream: `mode change → stream-up` halved; the remaining ~100 ms is
-  between the slave's mode change and its first accepted audio, cause not pinned.
+- Pending command → stream: `mode change → stream-up` went from 181–186 ms to 85–111 ms. The
+  old figure is partly a probe artefact (each pick landed at the same point of 164's 1 Hz
+  STATUS; in the show that lag is 0–1 s), so the gain is larger than it reads.
+
+### 3.7 Phase 1b: after the Phase 1 review
+
+- **Controller, `MODE_RESEND_US` 3 s → 200 ms:** an unconfirmed `set_mode` goes out again on every
+  250 ms policy tick. A lost `network` used to cost 3.45 s of a 5 s name.
+- **Slave, STATUS reply to every CMD** (`handle_ctrl_packet`): confirmation in one round trip,
+  so the resend only fires on a real loss. Unflashed slaves confirm at their 1 Hz beacon and get
+  ≤ 4 harmless duplicates per transition.
+- **Slave, an underrun ends the playing state** (`g_net_played = false`): with a 450 ms lead the
+  buffer only runs dry after ~0.45 s without packets, so the stream has stopped (lost `local`,
+  SILENT mid-burst, controller crash). It shows the mic, not ~0.55 s of centre dot, and a
+  restart is timed as a fresh join.
+- **Controller, forward-only re-anchor above 100 ms, backlog dropped** (`REANCHOR_US`, also in
+  `hype_sender.py` at half its 80 ms lead). Show night (Aug 21–22) had five re-anchors of 26,
+  347, 28, 21 and 52 ms, each followed within 50 ms by a −20…−23 ms one: the > 20 ms forward
+  jump reset every slave (~0.45 s of dot on all scopes), and the catch-up burst then
+  overshot into a backward re-anchor whose ~4 packets the slaves dropped as duplicates. Now a
+  stall ≤ 100 ms is caught up with the original deadlines (they still arrive ≥ 350 ms early);
+  a longer one jumps the epoch once and sets `next_audio = now`, so there is no catch-up
+  burst and no lead ratchet (a replay of the loop: 26/52/99 ms stalls → no jump, lead back
+  to 450 ms; 347 ms → one forward jump). 4 of the 5 show-night events would have been
+  invisible. A pause (SILENT) slides the epoch with the pacing clock, so resume is on
+  schedule. This takes controller re-anchors off Phase 3's list.
+- **Slave logging:** a `reset` event with the hole size and the restarting packet's lead, a
+  `resets=` counter in `stat`; `stream-up` carries the first packet's lead; `first-play`
+  and `preroll=` are timed from the join (stream-up or underrun), not the mode change.
+- **Slave console never blocks:** `Serial.setTxTimeoutMs(0)` with a 1 KB TX ring. With USB
+  plugged into a host that isn't reading, each write could wait up to 2 s (20 × 100 ms) and
+  stall the loop task's LEDs, MODE button and battery cutout.
+
+### 3.8 Phase 1b bench result (2026-10-14, 164 on USB serial)
+
+Same probe, 5 rounds (10 bursts), then a burst with SILENT pressed 3 s in and released 2 s later.
+
+| | per join (10 bursts) |
+|---|---|
+| mode change → stream-up | 80–111 ms |
+| first packet's lead at stream-up | 262–336 ms (sent with 450) |
+| buffer reset during pre-roll | **every join**: hole 90–180 ms, then lead 414–449 ms |
+| stream-up → first play | 575–605 ms |
+| `set_mode` sends per transition (journal) | 1 for all 20 burst transitions; the first `network` after the reflash went out twice, 1 s apart |
+| controller re-anchors | 0 |
+
+- **SILENT mid-burst:** underrun 0.5 s after the stream stopped, `stream-lost` 0.54 s later,
+  no `first-play` in between, so the slave drew the mic, not the dot. On resume the stream
+  rejoined like any join (lead 328 ms, a 105 ms hole, first play 676 ms after).
+- **The first ~130 ms of every new flow to the slave arrives late, then ~90–180 ms of it is
+  lost.** The controller printed no re-anchor and the seq gaps count it as lost packets, so it
+  is in transit, between the UNO-Q's `sendto` and the slave's `async_udp` queue. Same after the
+  2 s SILENT pause, so a short idle is enough to trigger it. [INFERENCE] Candidates: block-ack
+  session setup on the AP holding the TID's frames, then releasing them as a burst; or that burst
+  overflowing `async_udp`'s 32-deep queue (STATUS 2026-08 saw ~60-packet AP bursts do that).
+  Cost today: none visible (the reset falls in pre-roll, which shows the mic), ~130 ms of extra
+  latency per join. It also explains the old ~180 ms mode → stream-up.
+- Final `stat`: rx=18876 drop=0 gaps=538 lost=1069 resets=12 underrun=2 (the SILENT test and a
+  boot transient before the clock synced) depth=0.
 
 ## 4. Phase 2: loop-fill concealment
 
@@ -463,9 +523,11 @@ This blocks no phase; it decides whether the loss itself can be cut.
 | Item | Status | How it closes |
 |---|---|---|
 | Cause of the one underrun per burst (§2.3) | **closed**: post-burst refill; fixed by the LOCAL gate (§3.6) | — |
-| Lost `local` command → ~0.55 s centre dot (§3.3) | seen 1 in ~19 commands | your call: resend unconfirmed `set_mode` every ~250 ms instead of 3 s (≤ 4 extra packets per transition), or keep streaming to a node until it confirms `local` (old behaviour: shows the last pattern instead of the dot) |
-| Stream-up → first play ≈ 580 ms vs 450 ms lead (§3.6) | measured, unexplained | compare `stat` sync offset against a controller-side timestamp |
-| Scope check of Phase 1 pre-roll (§3.5) | open | phone video of a burst start |
+| Lost `local` command → ~0.55 s centre dot (§3.3) | **fixed in Phase 1b** (§3.7): 200 ms resend, STATUS reply per CMD, underrun → mic | scope check below |
+| Stream-up → first play ≈ 580 ms vs 450 ms lead (§3.6) | **explained** (§3.8): a pre-roll reset at every join | — |
+| Late + lost start of every new flow (§3.8) | measured, cause not pinned | log arrival time, seq and lead of each packet in a join's first 300 ms on the slave; check `async_udp` queue overflow vs AP release |
+| Do these joins need concealment? | open | the reset is invisible today (pre-roll); Phase 2's loop-fill (≤ 150 ms) would cover most of the 90–180 ms holes and bring first play ~130 ms earlier — decide once Phase 2 runs |
+| Scope check of Phase 1 / 1b (§3.5) | open | phone video of a burst start (mic → name, no dot) and of SILENT pressed mid-burst (mic, no dot) |
 | Air vs ESP32 loss (§6) | open | laptop comparison |
 | STATUS 2026-08-04 "zero tx retries, zero tx failed" | rests on counters ath10k likely leaves at 0; the 1139 pkt/s receiver-side result stands | mark that line "not populated by ath10k", not "clean link", once §6 confirms |
 | Phase 3 limit | needs Phase 2 histogram at show node count | §5 |

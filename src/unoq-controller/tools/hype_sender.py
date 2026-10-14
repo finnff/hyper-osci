@@ -38,6 +38,9 @@ FRAMES = 240  # 5 ms
 PACKET_US = FRAMES * 1_000_000 // SAMPLE_RATE
 LEAD_US = 80_000  # deadline lead: becomes the slaves' steady-state depth
 SYNC_INTERVAL_US = 500_000
+# Stalls up to this are caught up with the original deadlines; must stay
+# well under LEAD_US or the backlog arrives stale.
+REANCHOR_US = LEAD_US // 2
 
 MODE_NAMES = {0: "local", 1: "network", 2: "hybrid"}
 
@@ -137,15 +140,18 @@ def main():
         # so a long stall can't wedge the loop).
         burst = 0
         while now >= next_audio and burst < 10:
-            # Keep deadlines glued to real time: ideally each packet's
-            # deadline is LEAD_US ahead of its send time. If pacing drifted
-            # (Python jitter accumulates), re-anchor the epoch — the slave
-            # sees one >20 ms discontinuity and cleanly rebuffers, instead of
-            # deadlines sliding into the stale-drop past forever.
+            # Keep deadlines glued to real time: a packet sent on schedule is
+            # due LEAD_US after it leaves, so drift is how far behind schedule
+            # we are. A stall ≤ REANCHOR_US is caught up with the original
+            # deadlines (the lead absorbs it); a longer one jumps the epoch
+            # forward and drops the backlog — the slave sees one discontinuity
+            # and rebuffers, and no catch-up burst overshoots into a backward
+            # jump. Same rule as hype_controller.py.
             ideal = epoch + frames_sent * 1_000_000 // SAMPLE_RATE
             drift = (now + LEAD_US) - ideal
-            if abs(drift) > 20_000:
+            if drift > REANCHOR_US:
                 epoch += drift
+                next_audio = now
                 print(f"[re-anchor] drift={drift/1000:.1f}ms", flush=True)
             deadline = epoch + frames_sent * 1_000_000 // SAMPLE_RATE
             payload = gen.block(FRAMES)
@@ -162,8 +168,6 @@ def main():
             next_audio += PACKET_US
             burst += 1
             now = mono_us()
-        if now - next_audio > 200_000:  # hopelessly behind: resync pacing
-            next_audio = now
 
         # STATUS receive + slave discovery
         timeout = max(0.0, min(next_audio, next_sync) - mono_us()) / 1e6

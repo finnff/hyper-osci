@@ -979,3 +979,29 @@ The lost command is in the journal as sent; 164 stayed on the network with
 the stream stopped, drained, and showed ~0.55 s of centre dot before the
 mic. A shorter resend is the open fix (plan §9). Not yet looked at on a
 scope. Deployed `b8afdd63…`; backup in `~/pre-phase1-20261014-142936/`.
+
+## Phase 1b — fast mode resend, forward-only re-anchor (2026-10-14)
+
+After review of Phase 1 (plan §3.7–3.8). Controller deployed (md5
+`8d4449da…`, backup `~/pre-phase1b-20261014-125806/`); 164 reflashed.
+
+- **`MODE_RESEND_US` 3 s → 200 ms** (every policy tick), and the slave
+  answers each CMD with a STATUS. The 3 s in the node-switch entry above is
+  superseded. On the bench every transition went out once.
+- **Re-anchor forward only, above `REANCHOR_US` = 100 ms, dropping the
+  backlog.** The journal from show night (Aug 21–22) had five re-anchors of
+  26–347 ms, each followed within 50 ms by a −20…−23 ms one: every scope reset
+  (~0.45 s of centre dot), then the catch-up burst overshot backward. Stalls
+  ≤ 100 ms are now caught up with their original deadlines; 4 of those 5
+  would not have been seen. `hype_sender.py` has the same rule at half its
+  80 ms lead.
+- **Slave:** an underrun now shows the mic, not the centre dot (SILENT
+  mid-burst checked on the serial log); new `reset` event and `resets=`
+  counter; the console no longer blocks when nobody reads the USB port.
+
+Found with the new logging: **every join** to 164 starts late and loses a
+piece. The first packet arrives with 262–336 ms of its 450 ms lead left, then
+a 90–180 ms run of packets is lost and the slave rebuffers, all within the
+pre-roll, so the scope shows the mic throughout and the name comes up ~130 ms
+late (first play 575–605 ms after stream-up). No controller re-anchor fired.
+The cause is open (plan §9).

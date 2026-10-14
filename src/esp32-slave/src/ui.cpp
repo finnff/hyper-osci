@@ -190,12 +190,12 @@ void print_stat() {
                 net_rx::ps_mode(), s.stream_up ? "up" : "down", s.rssi_dbm,
                 WiFi.localIP().toString().c_str());
   Serial.printf(
-      "rx=%lu drop=%lu gaps=%lu lost=%lu underrun=%lu depth=%u frames "
-      "preroll=%lums\n",
+      "rx=%lu drop=%lu gaps=%lu lost=%lu resets=%lu underrun=%lu "
+      "depth=%u frames preroll=%lums\n",
       (unsigned long)s.rx_packets, (unsigned long)s.rx_dropped,
       (unsigned long)s.seq_gaps, (unsigned long)s.lost_packets,
-      (unsigned long)s.underruns, s.buffer_depth_frames,
-      (unsigned long)mode_manager::last_preroll_ms());
+      (unsigned long)s.gap_resets, (unsigned long)s.underruns,
+      s.buffer_depth_frames, (unsigned long)mode_manager::last_preroll_ms());
   Serial.printf(
       "sync=%s offset=%lldus vbat=%umV pot=%.2f id=%u heap=%u astk=%u\n",
       timesync::valid() ? "ok" : "stale", (long long)timesync::offset_us(),
@@ -223,18 +223,38 @@ void print_events() {
   static uint32_t dropped_seen = 0;
   mode_manager::Event e;
   while (mode_manager::pop_event(e)) {
-    static const char* const kinds[] = {"mode", "stream-up", "first-play",
-                                        "underrun", "stream-lost"};
+    using mode_manager::EventKind;
+    static const char* const kinds[] = {"mode",     "stream-up",
+                                        "first-play", "underrun",
+                                        "stream-lost", "reset"};
     static const char* const modes[] = {"local", "network", "hybrid"};
     const unsigned k = (unsigned)e.kind;
-    const unsigned m = (unsigned)e.mode;
-    if (e.kind == mode_manager::EventKind::MODE) {
-      Serial.printf("[ev %lu] mode -> %s\n", (unsigned long)e.ms,
-                    e.arg < 3 ? modes[e.arg] : "?");
-    } else {
-      Serial.printf("[ev %lu] %s +%lums (%s)\n", (unsigned long)e.ms,
-                    k < 5 ? kinds[k] : "?", (unsigned long)e.arg,
-                    m < 3 ? modes[m] : "?");
+    const char* mode = (unsigned)e.mode < 3 ? modes[(unsigned)e.mode] : "?";
+    char lead[16] = "?";
+    if (e.arg2 != mode_manager::EV_NO_LEAD) {
+      snprintf(lead, sizeof(lead), "%ld", (long)e.arg2);
+    }
+    switch (e.kind) {
+      case EventKind::MODE:
+        Serial.printf("[ev %lu] mode -> %s\n", (unsigned long)e.ms,
+                      e.arg < 3 ? modes[e.arg] : "?");
+        break;
+      case EventKind::STREAM_UP:
+        Serial.printf("[ev %lu] stream-up +%lums lead=%sms (%s)\n",
+                      (unsigned long)e.ms, (unsigned long)e.arg, lead, mode);
+        break;
+      case EventKind::FIRST_PLAY:
+        Serial.printf("[ev %lu] first-play %lums after join (%s)\n",
+                      (unsigned long)e.ms, (unsigned long)e.arg, mode);
+        break;
+      case EventKind::RESET:
+        Serial.printf("[ev %lu] reset hole=%lums lead=%sms (%s)\n",
+                      (unsigned long)e.ms, (unsigned long)e.arg, lead, mode);
+        break;
+      default:
+        Serial.printf("[ev %lu] %s +%lums (%s)\n", (unsigned long)e.ms,
+                      k < 6 ? kinds[k] : "?", (unsigned long)e.arg, mode);
+        break;
     }
   }
   const uint32_t d = mode_manager::events_dropped();
