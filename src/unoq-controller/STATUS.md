@@ -924,3 +924,27 @@ each of the four artist entries and the logo pair was played from the show
 screen. 164 switched to the network and showed the names in order, then
 went back to the mic. Oracle Bones aired as `figure oracle-bones`, not the
 circle fallback. The switches were turned back off afterwards.
+
+**Transmission to one node (164, RSSI −35…−40), same day.** `live_test.py`
+passes with the new eight names, then the slave's own status packets were
+sampled at 5 Hz:
+
+| preset | rx/s | lost/s | drop | under | tx ok/s, full, err |
+|---|---|---|---|---|---|
+| HYPERWAVES | 190.2 | 6.0 (3.1%) | 0 | 0 | 198.3, 0, 0 |
+| Oracle Bones | 193.4 | 2.8 (1.4%) | 0 | 0 | 198.3, 0, 0 |
+| Nikos | 195.4 | 2.2 (1.1%) | 0 | 0 | 198.2, 0, 0 |
+| trillosta | 193.4 | 4.7 (2.4%) | 0 | 0 | 198.5, 0, 0 |
+| JEANS | 193.2 | 4.8 (2.4%) | 0 | 0 | 198.3, 0, 0 |
+| Mama Snake | 194.3 | 3.9 (2.0%) | 0 | 0 | 198.3, 0, 0 |
+| HyperLili | 193.1 | 5.1 (2.6%) | 0 | 0 | 198.5, 0, 0 |
+| S]NE | 193.5 | 7.1 (3.5%) | 0 | 0 | 198.2, 0, 0 |
+
+The table is from 11 s of steady streaming per preset, played from the
+panel. rx + lost ≈ 198 of 200, nothing went stale, the buffer never fell
+below 12240 frames, and the UNO-Q's own queue lost nothing. The loss is the
+same 1–3.5% for figures and text, which matches the residual
+air/AP-side loss noted in the lwIP-socket entry; it arrives as small gaps
+that hold-fill conceals. Played as cycle bursts, every name aired in order.
+Each burst logged one underrun as the stream started from an empty buffer
+(depth 0, start gate), then none.
