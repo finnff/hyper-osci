@@ -350,7 +350,8 @@ image, so a lost 5 ms block is nearly invisible.
   `timestamp_us` lands 1–20 ms past the buffer's tail deadline implies lost packets ahead of it —
   the hole is hold-filled (§5.2 table) so the buffer stays contiguous. The v1 buffer is
   append-only; a reordered packet arriving after its successor is dropped (already-covered time).
-- **Concealment ladder** (also applies to underrun, i.e. buffer empty at playout tick):
+- **Concealment ladder** (also applies to underrun, i.e. buffer empty at playout tick) — only once
+  a block has played in the current mode stint / stream (see *pre-roll* below):
   1. **0–20 ms of missing signal:** last-value hold — repeat the last played (X,Y) frame. The beam
      parks at its last position; at ≤ 20 ms this is imperceptible.
   2. **> 20 ms:** ramp X/Y to 0 over ~10 ms (beam glides to center dot — avoids leaving the beam
@@ -360,6 +361,15 @@ image, so a lost 5 ms block is nearly invisible.
 - **Recovery:** deadlines are absolute, so recovery is automatic — when AUDIO packets with
   in-window deadlines arrive again, the slave re-buffers (the "wait" rule §5.2 provides the ~60 ms
   refill) and switches source back to the network stream at a block boundary. No handshake.
+- **Pre-roll:** a slave that joins (mode change to NETWORK, or the stream returning after a
+  `STREAM_TIMEOUT_MS` loss) sees head blocks due `LEAD_US` (450 ms) in the future. Until the first
+  block plays it keeps drawing the local render, not the ladder — the ladder's centre dot is for
+  hiccups inside a playing stream, and ~0.45 s of it at every join was the visible burst-start
+  glitch (2026-10-14, `docs/stream-concealment-plan.md` §3.2).
+- **LOCAL gate:** a LOCAL slave discards AUDIO before any accounting (no buffering, no counters,
+  no liveness). Leaving LOCAL also flushes and forgets the last `seq`, so the jump across the
+  LOCAL stint is not counted as loss. The controller streams to a slave by its *commanded* mode
+  while a `set_mode` is unconfirmed, else by the mode its STATUS reports.
 - **Statistics:** every discard increments `rx_dropped`; every empty-buffer playout tick increments
   `underruns`; accepted packets increment `rx_packets`; packets that never arrived at all are
   inferred from unflagged `seq` gaps (§5.4) into `lost_packets`. All four are reported in STATUS

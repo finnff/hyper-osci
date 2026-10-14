@@ -189,10 +189,13 @@ void print_stat() {
   Serial.printf("wifi=%s ps=%s stream=%s rssi=%d ip=%s\n", wifi_txt,
                 net_rx::ps_mode(), s.stream_up ? "up" : "down", s.rssi_dbm,
                 WiFi.localIP().toString().c_str());
-  Serial.printf("rx=%lu drop=%lu gaps=%lu lost=%lu underrun=%lu depth=%u frames\n",
-                (unsigned long)s.rx_packets, (unsigned long)s.rx_dropped,
-                (unsigned long)s.seq_gaps, (unsigned long)s.lost_packets,
-                (unsigned long)s.underruns, s.buffer_depth_frames);
+  Serial.printf(
+      "rx=%lu drop=%lu gaps=%lu lost=%lu underrun=%lu depth=%u frames "
+      "preroll=%lums\n",
+      (unsigned long)s.rx_packets, (unsigned long)s.rx_dropped,
+      (unsigned long)s.seq_gaps, (unsigned long)s.lost_packets,
+      (unsigned long)s.underruns, s.buffer_depth_frames,
+      (unsigned long)mode_manager::last_preroll_ms());
   Serial.printf(
       "sync=%s offset=%lldus vbat=%umV pot=%.2f id=%u heap=%u astk=%u\n",
       timesync::valid() ? "ok" : "stale", (long long)timesync::offset_us(),
@@ -212,6 +215,33 @@ void print_stat() {
       audio_out::init_err_code(), mic_in::init_ok() ? "ok" : "FAILED",
       (unsigned long)audio_out::write_calls(),
       (unsigned long)audio_out::writes_done());
+}
+
+// Stream timeline (mode_manager events): one line each, always printed — a
+// handful per burst, and the only sub-second view of joins and underruns.
+void print_events() {
+  static uint32_t dropped_seen = 0;
+  mode_manager::Event e;
+  while (mode_manager::pop_event(e)) {
+    static const char* const kinds[] = {"mode", "stream-up", "first-play",
+                                        "underrun", "stream-lost"};
+    static const char* const modes[] = {"local", "network", "hybrid"};
+    const unsigned k = (unsigned)e.kind;
+    const unsigned m = (unsigned)e.mode;
+    if (e.kind == mode_manager::EventKind::MODE) {
+      Serial.printf("[ev %lu] mode -> %s\n", (unsigned long)e.ms,
+                    e.arg < 3 ? modes[e.arg] : "?");
+    } else {
+      Serial.printf("[ev %lu] %s +%lums (%s)\n", (unsigned long)e.ms,
+                    k < 5 ? kinds[k] : "?", (unsigned long)e.arg,
+                    m < 3 ? modes[m] : "?");
+    }
+  }
+  const uint32_t d = mode_manager::events_dropped();
+  if (d != dropped_seen) {
+    Serial.printf("[ev] %lu events dropped\n", (unsigned long)(d - dropped_seen));
+    dropped_seen = d;
+  }
 }
 
 void handle_line(char* line) {
@@ -333,6 +363,7 @@ void poll() {
   update_leds();
   battery_policy();
   console_poll();
+  print_events();
 
   if (g_log_periodic && millis() - last_log_ms >= 1000) {
     last_log_ms = millis();

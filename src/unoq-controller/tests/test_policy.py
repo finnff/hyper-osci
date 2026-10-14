@@ -211,6 +211,34 @@ hc.reconcile_modes(st, cmds)
 ok(cmds.modes() == {"10.0.0.1": "local"},
    "one command, to the one node whose switch moved", str(cmds.sent))
 
+print("\n[policy] the stream follows the command, not the beacon")
+st, cmds = fresh(), StubCmds()
+set_live(st, "figure")
+ok(hc.stream_targets(st) == [],
+   "three slaves reporting local, nothing commanded: no audio goes out",
+   str(hc.stream_targets(st)))
+hc.reconcile_modes(st, cmds)
+ok(sorted(hc.stream_targets(st)) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+   "told to play: the stream starts now, before their beacons agree",
+   str(hc.stream_targets(st)))
+for s in st.slaves.values():
+    s["mode"] = 1
+hc.reconcile_modes(st, cmds)                # settles: pending records drop
+st.cycle_mic = True                         # burst over, back to the mics
+hc.reconcile_modes(st, cmds)
+ok(hc.stream_targets(st) == [],
+   "told to go local: the stream stops now, though they still report network",
+   str(hc.stream_targets(st)))
+for s in st.slaves.values():
+    s["mode"] = 0
+hc.reconcile_modes(st, cmds)
+ok(hc.stream_targets(st) == [] and st.mode_sent == {},
+   "and stays stopped once their beacons agree", str(st.mode_sent))
+st.slaves["10.0.0.9"] = dict(st.slaves["10.0.0.1"], id=9, mode=2)
+ok(hc.stream_targets(st) == ["10.0.0.9"],
+   "a slave nobody has commanded streams by what it reports (hybrid)",
+   str(hc.stream_targets(st)))
+
 # ------------------------------------------------------------------ cycles
 print("\n[cycle] clamps and the seeded config")
 c = hc.clean_cycle({}, "artists")

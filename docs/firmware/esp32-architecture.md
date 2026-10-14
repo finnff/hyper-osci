@@ -61,15 +61,19 @@ Concurrency contracts:
             long press:  WiFi off/on — radio stopped, mode pinned LOCAL,
                          until the next boot (never persisted)
 
- NETWORK: pull_block ok ────────────▶ play stream       (source = network)
-          fail, stream live (<1 s) ─▶ concealment ladder (hold → center)
-          fail, stream dead (≥1 s) ─▶ renderer_local     (source = local)
- LOCAL:   renderer_local always
+ NETWORK: pull_block PLAYED ────────▶ play stream       (source = network)
+          not played, stream live,
+            a block played already ─▶ concealment ladder (hold → center)
+            pre-roll (none yet) ────▶ renderer_local     (source = local)
+          not played, stream dead ──▶ renderer_local     (source = local)
+ LOCAL:   renderer_local always; stream AUDIO discarded on arrival
  HYBRID:  stream + renderer_local × HYBRID_MIC_GAIN, saturating add
           (stream side falls back to full local render when dead)
 ```
 
 There is no explicit "fallback state" to enter or leave — the decision is re-made per 5 ms block, so recovery is automatic the moment the buffer refills; the 1 s liveness threshold plus the jitter-buffer start gate provide the hysteresis that keeps imagery from flapping. This satisfies the v3.1 hard requirement: power the unit on with no controller anywhere and it's a standalone mic visualizer within ~6 s (5 s WiFi timeout + 1 s stream timeout).
+
+**Pre-roll and the LOCAL gate.** `g_net_played` marks whether a block has played since the last real mode change or the last stream loss. Until it has, a live-but-early stream (the 450 ms lead of a fresh join) shows the local render — the ladder's centre dot is for hiccups *inside* a playing stream. `set_mode` calls `net_rx::set_accept_audio(m != LOCAL)` before the mode flips: closing the gate flushes, so a LOCAL slave buffers and counts nothing; reopening it flushes again and forgets the last seq. Joins, underruns and stream loss are recorded in a small event ring (`mode_manager::pop_event`) and printed by the loop task as `[ev <ms>] …` lines — always on, a handful per burst.
 
 **WiFi off (MODE long press / `wifi off`).** `mode_manager::set_wifi_enabled(false, reason)` is the only path that moves radio and mode together: `net_rx::set_radio(false)` → `net_task` sends one last STATUS (already carrying `mode=LOCAL`, so the controller's `mode != LOCAL` target filter drops this unit from the unicast fan-out in ~1 s instead of after its 30 s roster eviction), then `esp_wifi_stop` + deinit; mode goes LOCAL, the local pattern resets to `MIC`, and short presses stay pinned to LOCAL while the radio is down. **Nothing is persisted**: every boot starts with the radio on — the only exception is holding MODE *during* power-on, which is a deliberate act, not a state a power cut can restore. The low-battery cutout at 3.30 V takes the same path with `reason="battery"`, so a recharged unit comes back streaming simply because every boot does. `stat` reports the cause (`button` / `console` / `battery` / `boot-hold`), which is what distinguishes a deliberate silence from a flat cell.
 
@@ -77,8 +81,8 @@ There is no explicit "fallback state" to enter or leave — the decision is re-m
 
 - Packets carry a **playback deadline** (controller clock) for their first frame. `timesync` tracks the controller-clock offset from SYNC beacons (median of last 8, applied directly — protocol.md §4.2's slewing is a v2 refinement; flight time ignored — ~1–2 ms ≪ ±5 ms spec).
 - **Push side** (`async_udp` task): stale-on-arrival packets are dropped. Continuity is judged by **deadline against the buffer tail**, not seq numbers: a 1–20 ms hole (lost packets) is filled with last-value hold so the buffer stays contiguous; earlier-than-tail packets (dup/reorder) are dropped; >20 ms discontinuities (controller restart, outage) flush and re-anchor; `HYPE_FLAG_SYNC_PULSE` flushes unconditionally. The start gate opens at 60 ms depth. Stats and stream-liveness count *accepted* packets only.
-- **Pop side** (audio task): if the head frame is >5 ms early → conceal this block (see below); if >5 ms late → skip whole blocks to catch up; on underrun → close the start gate and rebuffer to 60 ms. `reset()` racing a pop/push across tasks is made safe by an epoch counter that aborts the in-flight commit.
-- **Concealment ladder** (NETWORK mode, protocol.md §6): on any block the network can't serve while the stream is still live (<1 s since last accepted packet) — hold the last played frame for ≤20 ms, ramp X/Y to center over ~10 ms, hold center. Only after `STREAM_TIMEOUT_MS` (1 s) does the source switch to the local mic renderer. This keeps a WiFi hiccup from flapping the scope between stream and mic imagery every 5 ms.
+- **Pop side** (audio task): `pull_block` returns `PLAYED` / `IDLE` (start gate closed) / `EARLY` (head >5 ms early — the pre-roll of a join) / `UNDERRUN`; if >5 ms late → skip whole blocks to catch up; on underrun → count it, close the start gate and rebuffer to 60 ms. `reset()` racing a pop/push across tasks is made safe by an epoch counter that aborts the in-flight commit.
+- **Concealment ladder** (NETWORK mode, protocol.md §6): on any block the network can't serve while the stream is still live (<1 s since last accepted packet) **and a block has already played** — hold the last played frame for ≤20 ms, ramp X/Y to center over ~10 ms, hold center. Only after `STREAM_TIMEOUT_MS` (1 s) does the source switch to the local mic renderer. This keeps a WiFi hiccup from flapping the scope between stream and mic imagery every 5 ms.
 - The guarantee (protocol.md §5.2): each slave plays frames within ±5 ms of deadline, quantized to 5 ms blocks (transiently ~7 ms after a stall); **slave-to-slave skew** stays at sync error (≤1–2 ms) + at most one block, because all slaves run identical policies over the identical stream.
 
 **Known v1 simplification:** no continuous drift servo (sample slip/insert). Each slave's I2S clock free-runs (±~0.3 % worst case, typically ≪ that); over minutes the deadline policy corrects by 5 ms block-skips rather than smoothly. If that's ever visible, the fix is a depth-servo that drops/duplicates 1 frame per N blocks — noted in `README.md` TODOs.

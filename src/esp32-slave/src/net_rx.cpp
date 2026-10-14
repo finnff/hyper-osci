@@ -44,8 +44,12 @@ volatile uint32_t st_rx_dropped = 0;
 volatile uint32_t st_underruns = 0;
 volatile uint32_t st_seq_gaps = 0;    // gap EVENTS (any seq discontinuity)
 volatile uint32_t st_lost_packets = 0;  // cumulative missing packets (gap sizes)
-uint32_t last_seq = 0;
-bool have_seq = false;
+// Written by the async_udp task, and cleared by set_accept_audio() from the
+// net/loop task while audio is not being accepted.
+volatile uint32_t last_seq = 0;
+volatile bool have_seq = false;
+// LOCAL mode gate (set_accept_audio); checked before any accounting.
+volatile bool g_accept_audio = true;
 
 IPAddress controller_ip;
 bool have_controller = false;
@@ -70,6 +74,7 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
   memcpy(&ap, buf + sizeof(h), sizeof(ap));
   if (h.magic != HYPE_MAGIC || h.version != HYPE_PROTO_VERSION) return;
   if (h.type != HYPE_AUDIO) return;
+  if (!g_accept_audio) return;  // LOCAL: not ours to buffer or count
   if (ap.sample_rate != SAMPLE_RATE) {
     st_rx_dropped++;
     return;
@@ -370,14 +375,14 @@ bool stream_active() {
          st_rx_packets > 0;
 }
 
-bool pull_block(int16_t* frames, size_t frame_count) {
-  if (!jb.started()) return false;
+Pull pull_block(int16_t* frames, size_t frame_count) {
+  if (!jb.started()) return Pull::IDLE;
 
   // Deadline policy (docs/protocol.md §4), only enforced with a valid clock.
   if (timesync::valid() && jb.depth_frames() >= frame_count) {
     if (jb.head_deadline_us() >
         timesync::master_now_us() + (uint64_t)DEADLINE_SLACK_US) {
-      return false;  // too early — caller renders local/silence this block
+      return Pull::EARLY;  // caller renders local/concealment this block
     }
     // Late: catch up in whole blocks, re-reading the head deadline as we skip.
     while (jb.depth_frames() > frame_count &&
@@ -390,12 +395,24 @@ bool pull_block(int16_t* frames, size_t frame_count) {
   if (!jb.pop(frames, (uint16_t)frame_count)) {
     st_underruns++;
     jb.set_started(false);  // rebuffer to target before resuming
-    return false;
+    return Pull::UNDERRUN;
   }
-  return true;
+  return Pull::PLAYED;
 }
 
-void flush() { jb.reset(); }
+void set_accept_audio(bool on) {
+  if (!on) {
+    g_accept_audio = false;  // gate first, so nothing lands after the flush
+    jb.reset();
+    return;
+  }
+  if (g_accept_audio) return;  // NETWORK <-> HYBRID: keep the stream
+  // A packet already past the gate when it closed may have landed after the
+  // flush; and the seq jump across the LOCAL stint is not loss.
+  jb.reset();
+  have_seq = false;
+  g_accept_audio = true;
+}
 
 Stats stats() {
   Stats s;

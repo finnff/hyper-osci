@@ -938,6 +938,25 @@ def reconcile_modes(state, cmds):
     return send
 
 
+def stream_targets(state):
+    """-> [ip], the slaves the audio stream goes to right now.
+
+    A slave that will play it: NETWORK / HYBRID. A pending set_mode command
+    beats the last 1 Hz beacon, so a burst starts streaming the moment the
+    node is told to play (not up to a second later, when its STATUS says so)
+    and stops the moment it is told to go local — the command and the audio
+    share the AP's queue to that node, so nothing is sent after it that the
+    node would have to flush. Caller holds state.lock.
+    """
+    out = []
+    for ip, s in state.slaves.items():
+        pending = state.mode_sent.get(ip)
+        mode = pending[0] if pending else s["mode"]
+        if mode != 0:
+            out.append(ip)
+    return out
+
+
 def _cycle_arm(state, group, now):
     """Put a group's next burst on the grid: one period out, plus its phase.
 
@@ -4003,11 +4022,9 @@ def stream_loop(state, iface_ip):
         with state.lock:
             streaming = state.stream_on
             # Only stream to slaves that will actually play it (NETWORK /
-            # HYBRID). A LOCAL slave ignores the stream — sending it 200 pkt/s
-            # just burns airtime and overflows its jitter buffer (which is
-            # what used to inflate the drop counter).
-            targets = [ip for ip, s in state.slaves.items()
-                       if s["mode"] != 0]
+            # HYBRID, or about to be). A LOCAL slave discards the stream —
+            # sending it 200 pkt/s just burns airtime.
+            targets = stream_targets(state)
 
         if streaming:
             # Send every due packet (catch-up burst after scheduler stalls,

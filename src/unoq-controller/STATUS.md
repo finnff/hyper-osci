@@ -948,3 +948,34 @@ air/AP-side loss noted in the lwIP-socket entry; it arrives as small gaps
 that hold-fill conceals. Played as cycle bursts, every name aired in order.
 Each burst logged one underrun as the stream started from an empty buffer
 (depth 0, start gate), then none.
+(Corrected below: that underrun was the post-burst refill, not the start
+gate.)
+
+## Clean burst start — stream-concealment plan Phase 1 (2026-10-14)
+
+Plan and reasoning: `docs/stream-concealment-plan.md` §3. Slave 164 is
+flashed over USB; 100 and 121 still run the old firmware, which works
+unchanged against the new controller.
+
+- **Controller:** `stream_targets()` — while a `set_mode` is unconfirmed,
+  the commanded mode decides whether a slave gets audio, not its last 1 Hz
+  beacon. A burst's stream starts when the node is told to play and stops
+  when it is told to go local. New checks in `test_policy.py`.
+- **Slave:** a LOCAL slave discards AUDIO before any accounting
+  (`net_rx::set_accept_audio`, which replaced `flush()`), and a join draws
+  the mic until its first block is due instead of ~0.42 s of centre dot
+  (`g_net_played`). Joins, underruns and stream loss print as `[ev <ms>]`
+  lines on the serial console; `stat` shows the last pre-roll.
+
+Bench, 164 on USB serial, bursts played from `/api/cycle`:
+
+| | old controller (4 bursts) | new controller (5 bursts) |
+|---|---|---|
+| mode change → first block played | 637–762 ms | 671–692 ms |
+| underruns | 0 (was 1 per burst) | 1, from a lost `local` command |
+| LOCAL depth after a burst | 0 (was 1440–13440) | 0 |
+
+The lost command is in the journal as sent; 164 stayed on the network with
+the stream stopped, drained, and showed ~0.55 s of centre dot before the
+mic. A shorter resend is the open fix (plan §9). Not yet looked at on a
+scope. Deployed `b8afdd63…`; backup in `~/pre-phase1-20261014-142936/`.

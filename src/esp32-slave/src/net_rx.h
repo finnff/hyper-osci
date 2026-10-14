@@ -32,14 +32,22 @@ const char* ps_mode();  // live WiFi power-save state: "none"|"min"|"max"|"?"
 bool stream_active();  // audio packets within STREAM_TIMEOUT_MS
 
 // Audio-task side: fill one block from the jitter buffer, honoring the
-// ±DEADLINE_SLACK_US policy. Returns false if the network source can't
-// provide the block (caller renders locally instead).
-bool pull_block(int16_t* frames, size_t frame_count);
+// ±DEADLINE_SLACK_US policy. Anything but PLAYED means the network source
+// can't provide this block and the caller renders something else.
+enum class Pull : uint8_t {
+  PLAYED,    // block filled from the stream
+  IDLE,      // buffering toward the start target (or nothing buffered)
+  EARLY,     // head block not due yet (pre-roll of a freshly joined stream)
+  UNDERRUN,  // buffer ran dry mid-play; rebuffering (counted in stats)
+};
+Pull pull_block(int16_t* frames, size_t frame_count);
 
-// Discard all buffered audio (race-safe). Called when the slave leaves the
-// stream (LOCAL mode) so re-joining doesn't start with a stale-frame drop
-// burst; the controller also stops sending to LOCAL slaves.
-void flush();
+// Whether stream audio is buffered at all (false = LOCAL mode). Both edges
+// discard the buffer: going off drops audio that would rot until the next
+// join; coming back on also drops anything that slipped in around the switch
+// and forgets the last seq, so a LOCAL stint doesn't count as packet loss.
+// Rejected packets touch no counters and don't keep stream_active() alive.
+void set_accept_audio(bool on);
 
 Stats stats();
 

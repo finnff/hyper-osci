@@ -1,13 +1,14 @@
 # Stream gaps on the scope: burst-start cleanup and loop-fill concealment
 
-**Status:** plan, nothing implemented (rev 2, 2026-10-14).
+**Status:** Phase 1 implemented and bench-run on 164 (2026-10-14, §3.6); scope check still
+open. Phases 2–3 not started (rev 3).
 - Measurements: `src/unoq-controller/STATUS.md`, "Transmission to one node (164)".
 - Normative wire spec stays `protocol.md` + `protocol.h`; this file says what will change in them
   and why.
 - Tracks `PLAN.md` risk 5 (WiFi jitter/loss).
 
 **Phases:**
-- **Phase 1 (A)** and **Phase 2 (B)** are ready to build.
+- **Phase 1 (A)** is built and deployed to 164 and the controller; **Phase 2 (B)** is ready to build.
 - **Phase 3** is gated on data that Phase 2 starts collecting.
 - The loss diagnosis (§6) runs alongside and blocks nothing.
 - Unresolved questions are in §9.
@@ -79,7 +80,7 @@ sequenceDiagram
 - **In the code:** `pull_block` has only "play / don't play"; `fill_block` conceals whenever
   `stream_active()`.
 
-### 2.3 One underrun per burst: observed, cause unpinned
+### 2.3 One underrun per burst: refill (resolved by Phase 1)
 
 - **Observed:** under +1 per burst, near the burst start, with `depth 0` and `src 0`, but only at
   1 Hz resolution.
@@ -87,7 +88,7 @@ sequenceDiagram
   (13440, 10800, 6240, 4080, 1440 frames). LOCAL mode is buffering stream audio, because
   `handle_audio_packet` has no mode check.
 
-**Candidate causes** (neither confirmed):
+**Candidate causes** (resolved 2026-10-14, §3.6: it was 1; 2 happens only on a lost command):
 1. **Post-burst refill.**
    - `set_mode(LOCAL)` flushes (`mode_manager.cpp:118`), but the controller keeps sending until
      the next STATUS reports mode 0 (`:4009-4010`), and the buffer refills.
@@ -98,15 +99,15 @@ sequenceDiagram
 2. **Burst-end drain.** The buffer empties while the slave is still in NETWORK, as the stream to
    it stops, and the next `pop` fails.
 
-Phase 1 adds the logging that tells these apart (§3.5).
+Phase 1 adds the logging that told these apart (§3.6).
 
 ## 3. Phase 1: clean burst start
 
 ### 3.1 Slave: a LOCAL slave never buffers stream audio
 
 - **New gate.** `net_rx::set_accept_audio(bool)`.
-  - `mode_manager::set_mode` calls it **before** the existing flush: accept off, then
-    `net_rx::flush()`. No packet can land between the flush and the gate.
+  - `mode_manager::set_mode` calls it **before** the mode flips. Closing the gate also flushes
+    (it replaced `net_rx::flush()`), in that order, so no packet can land after the flush.
   - On re-accept, also `jb.reset()` and clear `have_seq`. Otherwise the seq jump across a LOCAL
     stint under 5 s (< 1000 packets) counts as loss.
 - **Initialise it in `init()` too.** `init()` sets `g_mode` directly (`mode_manager.cpp:84`).
@@ -116,8 +117,7 @@ Phase 1 adds the logging that tells these apart (§3.5).
   `stream_active()` then describe only audio the slave would play.
 - **Threading:** the flag is a `volatile bool`. It is written by the net task (CMD) or the loop
   task (console/button) and read by `async_udp`.
-- **Status:** correct and safe on its own. It is **not yet proven** to remove the §2.3 underrun;
-  §3.5 checks that.
+- **Status:** removed the per-burst underrun on the bench (§3.6).
 
 ### 3.2 Slave: pre-roll draws the local render, not the ladder
 
@@ -147,8 +147,12 @@ Phase 1 adds the logging that tells these apart (§3.5).
   - The command and the audio share the AP's queue to that slave, so audio sent before the
     command arrives first and is then flushed.
   - No post-burst tail, even for unflashed slaves.
-- **If a command is lost:** the controller streams to a LOCAL slave for at most `MODE_RESEND_US`
-  (3 s). With 3.1 the slave discards it; the cost is 3 s of one slave's airtime.
+- **If a command is lost** (seen 1 in ~19 on the bench, §3.6):
+  - *lost `network`*: no audio is accepted (gate closed); the 3 s resend starts the burst late.
+  - *lost `local`*: the slave stays NETWORK while the stream to it has stopped. Its buffer
+    drains (one underrun), the ladder shows ~0.55 s of centre dot, then the mic after
+    `STREAM_TIMEOUT_MS`. Before 3.3 the same loss kept streaming the last pattern for up to 3 s.
+    Fix candidates in §9.
 
 ### 3.4 On-air timing (consequence, decision deferred)
 
@@ -168,10 +172,11 @@ depends on what follows:
 
 ### 3.5 Phase 1 bench acceptance
 
-- **Instrumentation** (stays in; it is how §2.3 gets pinned):
-  - the slave records `millis()` at NETWORK entry and when `g_net_played` first goes true;
-  - it also records each underrun with its mode and time;
-  - the loop task prints them (`log on`) and `stat` shows the last pre-roll time.
+- **Instrumentation** (stays in; it is how §2.3 got pinned):
+  - the slave records mode changes, stream-up, first block played and each underrun /
+    stream loss, with the ms since the mode change, in a 16-entry event ring;
+  - the loop task prints them as `[ev <ms>] …` lines, **always** (a handful per burst; no
+    `log on` needed), and `stat` shows the last pre-roll time.
   - Printing happens off the audio task, so I2S timing is untouched.
 - **Flash 164, 10 bursts each of names and logos:**
 
@@ -185,6 +190,29 @@ depends on what follows:
 
 - **`test_policy.py`:** `stream_targets` for pending-network, pending-local, settled and
   unknown-slave cases.
+
+### 3.6 Bench result (2026-10-14, 164 on USB serial)
+
+`/tmp/burst_probe.py`: turn 164's logos/artists on, play the artists pair 2 (trillosta → JEANS,
+10 s) and the logo pair (8 s) from the API in turn, read the slave's `[ev]` lines, restore.
+
+| | new slave, old controller (4 bursts) | new slave + new controller (5 bursts) |
+|---|---|---|
+| mode change → stream-up | 181–186 ms | 85–111 ms |
+| stream-up → first block played | 456–576 ms | 575–596 ms |
+| mode change → first block played | 637–762 ms | 671–692 ms |
+| underruns | 0 | 1 — burst-end drain after a lost `local` command (journal shows it sent) |
+| `depth` in LOCAL at the end | 0 | 0 |
+| `drop` | 0 | 0 |
+
+- **The per-burst underrun is gone** with only the slave gate in place: it was the post-burst
+  refill (§2.3 candidate 1).
+- **Stream-up → first play is ~580 ms, not the 450 ms lead.** Cause not pinned; [INFERENCE] a
+  ~130 ms error in the slave's clock offset or the controller running ahead of its epoch.
+- **Scope not checked yet.** The mic-not-dot pre-roll follows from the code path
+  (`g_net_played` false → `renderer_local::render`); the phone-video row of §3.5 is still open.
+- Pending command → stream: `mode change → stream-up` halved; the remaining ~100 ms is
+  between the slave's mode change and its first accepted audio, cause not pinned.
 
 ## 4. Phase 2: loop-fill concealment
 
@@ -434,7 +462,10 @@ This blocks no phase; it decides whether the loss itself can be cut.
 
 | Item | Status | How it closes |
 |---|---|---|
-| Cause of the one underrun per burst (§2.3) | observed; refill vs burst-end drain unpinned | Phase 1 serial log |
+| Cause of the one underrun per burst (§2.3) | **closed**: post-burst refill; fixed by the LOCAL gate (§3.6) | — |
+| Lost `local` command → ~0.55 s centre dot (§3.3) | seen 1 in ~19 commands | your call: resend unconfirmed `set_mode` every ~250 ms instead of 3 s (≤ 4 extra packets per transition), or keep streaming to a node until it confirms `local` (old behaviour: shows the last pattern instead of the dot) |
+| Stream-up → first play ≈ 580 ms vs 450 ms lead (§3.6) | measured, unexplained | compare `stat` sync offset against a controller-side timestamp |
+| Scope check of Phase 1 pre-roll (§3.5) | open | phone video of a burst start |
 | Air vs ESP32 loss (§6) | open | laptop comparison |
 | STATUS 2026-08-04 "zero tx retries, zero tx failed" | rests on counters ath10k likely leaves at 0; the 1139 pkt/s receiver-side result stands | mark that line "not populated by ath10k", not "clean link", once §6 confirms |
 | Phase 3 limit | needs Phase 2 histogram at show node count | §5 |
