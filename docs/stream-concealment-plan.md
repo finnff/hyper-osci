@@ -9,8 +9,8 @@ pass (`STATUS.md`, "Phase 2"); its scope check is open too. Phase 3 not started 
 - Tracks `PLAN.md` risk 5 (WiFi jitter/loss).
 
 **Phases:**
-- **Phase 1 (A)** and **Phase 2 (B)** are built and deployed to 164 and the controller; 100 and
-  121 still run pre-Phase-1 firmware.
+- **Phase 1 (A)** and **Phase 2 (B)** are built and deployed to the controller and all three
+  slaves (164, 100, 121; 100 and 121 flashed 2026-10-17).
 - **Phase 3** is gated on data that Phase 2 starts collecting.
 - The loss diagnosis (§6) runs alongside and blocks nothing.
 - Unresolved questions are in §9.

@@ -1090,3 +1090,14 @@ HyperLili, 10 s) alternating every minute. 164 alone on the stream (100 and
 - **Controller**: no re-anchor or TX-drop lines in the journal; 130
   `set_mode` for 120 transitions.
 - **Node**: RSSI −23…−26 dBm; battery 3558 → 3536 mV over the hour.
+
+### 100 and 121 flashed (2026-10-17)
+
+Both over USB, battery switch OFF, from `5037692`. After boot each joined
+(100: 192.168.50.202, RSSI −26; 121: 192.168.50.228, RSSI −57 at the bench
+spot), `stat` shows the `fill: mode=loop` line and the controller parses the
+95 B STATUS (counters 0, no stream yet). vbat on USB read 28 / 10 mV, the
+usual USB artefact (below 2000 mV the battery policy ignores it); check
+again on battery. 100 dropped off USB once, 10 s after its first plug-in:
+seating, not the deep-sleep rule (it read 5008 mV on the re-plug and stayed
+up).
