@@ -25,7 +25,8 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 COUNTERS = ("rx", "lost", "drop", "under", "loop_fills", "hold_fills", "gap_resets", "reanchor")
-NODE_KEYS = COUNTERS + ("hist", "mode", "source", "rssi", "vbat_mv", "uptime", "depth", "ip")
+NODE_KEYS = COUNTERS + ("hist", "mode", "source", "rssi", "vbat_mv", "uptime", "depth", "ip",
+                        "age_ms", "gone")
 
 
 def get_state(api):
@@ -38,7 +39,7 @@ def run(a):
     xiao = bool(glob.glob("/dev/serial/by-id/*XIAO_RA4M1*")) and not a.no_capture
     log = open(os.path.join(a.out, "state.jsonl"), "a")
     end = time.time() + a.minutes * 60
-    cap, n_burst, armed = None, 0, {}
+    cap, n_burst, armed, last_group = None, 0, {}, None
     print(f"soak: node {a.node}, {a.minutes} min, capture={'on' if xiao else 'off'} -> {a.out}",
           flush=True)
     while time.time() < end:
@@ -59,12 +60,19 @@ def run(a):
         if cap is not None and cap.poll() is not None:
             cap = None
         # Arm a capture ~3 s before each burst: the tool needs ~1.5 s to start, and the
-        # name airs LEAD (450 ms) after the step.
+        # name airs LEAD (450 ms) after the step. Never the same group twice in a row while
+        # the other is enabled: at a short period one group's capture always overlaps the
+        # other's arming window, and the data would be one group only (2026-10-17: 63 of 66).
+        both = sum(1 for c in st["cycles"].values() if c.get("enabled")) > 1
         for g, c in st["cycles"].items():
             ni = c.get("next_in")
             if xiao and cap is None and c.get("enabled") and ni is not None and ni <= 3 \
                     and armed.get(g) != c.get("phase"):
                 armed[g] = c.get("phase")
+                if both and g == last_group:
+                    last_group = None  # skip this one; the other group goes next
+                    continue
+                last_group = g
                 n_burst += 1
                 prefix = os.path.join(a.out, f"burst_{n_burst:03d}_{g}")
                 secs = (c.get("burst_s") or 10) + ni + 4

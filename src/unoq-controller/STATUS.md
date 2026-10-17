@@ -1134,7 +1134,8 @@ captures, 0 sequence gaps, but only every other burst has one: captures run
   against 0.7 for one node. Holes after the bounce (all nodes): 8373 × 1,
   1943 × 2, 775 × 3–4, **1702 × 5–30**, 96 × > 30. So 94.7 % of resets are
   holes of 25–150 ms.
-- **What a reset costs on the scope** (121, 55 captured bursts): near-centre
+- **What a reset costs on the scope** (121, 55 captured bursts, all but three of them
+  artists bursts, so these are artists-pattern numbers): near-centre
   still runs of 4–8 ms, 2.3 % of stream time on average (max 6.7 %), 39 ms per
   reset. Correlation with the per-burst reset count 0.81. Also 61 off-centre
   parked runs ≤ 7.9 ms in 31 bursts. `[INFERENCE]` The ladder after a
@@ -1146,7 +1147,69 @@ captures, 0 sequence gaps, but only every other burst has one: captures run
   strikes and keeps no rx sample. A bounce needs three consecutive ticks
   inside bursts, with the 8–10 s bursts every 60 s. This run's denser cycle
   is what let it fire. On the show cycles the 16:58 wedge would have stayed
-  `[INFERENCE]`. It must be fixed before the show.
+  `[INFERENCE]`. Fixed the same evening (next entry). In the old check,
+  121 flickering onto the stream also reset the strikes on every in-burst
+  tick.
 - **Battery readings**: 100 read 5756 mV for the whole run (impossible for a
   LiPo, so its sense is broken and its low-battery cutout can't act). 121 sat
   at 3678 mV. 164 read 3886 → 4000 mV.
+
+### Netwatch: wedge check that works on the show cycles (2026-10-17)
+
+`deploy/hyperosci-netwatch` (deployed, backup `/tmp/hyperosci-netwatch.pre-txcheck`
+on the UNO-Q), `tests/test_netwatch.py` 29 checks:
+
+- **A check is now wedge / healthy / no evidence.** No slave on the stream
+  (mic time between bursts, muted, controller unreachable, first sample) is
+  no evidence: strikes stand and the last in-burst rx sample is kept.
+  Before, it counted as healthy and zeroed both.
+- **Second signal: the controller's per-slave AP-queue refusals**
+  (`/api/state` `net.tx` ok/full). Any slave with ≥ 1000 sends since its
+  last sample and ≥ 50 % refused strikes, even if another slave is still
+  playing and wherever the check lands: the counters only move while
+  streaming. Healthy three-node runs: 3.5 % (worst burst ~10 %). The wedge:
+  91–93 %.
+- **Replay of the stress soak's 1 Hz state at 30 s ticks, every tick phase**:
+  first strike on the first wedged tick (98 % refused to 164). The bounce
+  would have come ~75 s in, not 4.5 min. One strike just after the real
+  bounce (that window still held wedged sends), then none in the 25
+  healthy minutes.
+- **On the 120 s show cycles**: a burst every ~60 s, so three wedged bursts
+  ≈ 2–3 min to the bounce (test "wedge on 120 s cycles").
+- **Only slaves that are reporting count** (amended after the second stress
+  run). Sends to a slave that has gone quiet are refused as well: 164,
+  switched off for a minute at 18:04 UTC, drew two strikes, "AP refused
+  68 % / 73 % of sends". A slave whose STATUS is ≥ 5 s old, or that is marked
+  `gone`, now gets a fresh tx sample instead of a verdict. That is the same
+  5 s at which the controller marks it lost; in the wedge nobody was ever
+  marked. Without this, a node dying on stage would leave strikes standing.
+
+### Second three-node stress soak (2026-10-17, 19:47–20:17 CEST)
+
+Same setup as the first (28 s cycles, all three on battery, XIAO on 121),
+new netwatch deployed. `/tmp/soak3`. Cycles restored byte-identical. 164 was
+switched off by hand around 20:04. All bursts 20:03:30–20:05:40 are left
+out (23 node-bursts). Captures now alternate groups: 19 logos, 21 artists.
+
+| node | bursts | loss | refused at controller | loop / hold fills | resets | underruns |
+|---|---|---|---|---|---|---|
+| 100 | 118 | 5.96 % (1.7–12.5) | 2.62 % | 3604 / 444 | 513 | 0 |
+| 121 | 118 | 6.24 % (3.1–10.5) | 2.41 % | 5043 / 455 | 525 | 0 |
+| 164 | 118 | 7.58 % (3.1–12.3) | 2.76 % | 5535 / 585 | 555 | 1 |
+
+- **No wedge in 30 min.** Loss stayed 6.3–6.9 % in every 5-minute window,
+  refusals 2.0–3.4 %. No netwatch strikes outside the outage, 0 re-anchors.
+  The underrun is one 164 burst at 20:01:49 with a > 30-packet hole.
+- **Holes**: 11787 × 1, 2775 × 2, 1104 × 3–4, 1494 × 5–30, 99 × > 30. That
+  is 4.5 resets per burst per node, 93.8 % of them 25–150 ms holes. It
+  confirms the first run's Phase 3 numbers.
+- **On the scope (121)**: logos 19 bursts, 16 parked runs ≤ 5.4 ms, still
+  near centre for 1.8 % of stream time (max 4.2 %), 31 ms per reset. Artists
+  21 bursts, 24 parked runs ≤ 5.9 ms, 2.0 % (max 5.4 %), 37 ms per reset.
+- **Side effect of the outage, worth fixing**: while 164 was gone, 100 and
+  121 lost 41–90 % for ~30 s (bursts 20:04:09–20:04:37). The controller
+  kept streaming to 164: its `ok` count still rose for ~10 s after it went
+  quiet, then 98 % refused, until the 30 s delete. `[INFERENCE]` The AP
+  queued those packets for an absent station and the shared airtime and
+  queue starved the other two. One node dying on stage would cost every
+  other scope ~30 s of heavy loss.

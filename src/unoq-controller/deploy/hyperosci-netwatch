@@ -7,11 +7,11 @@ dashboard, because both of them are the phone's own path to the box:
   1. `hyperosci-ap` is not up at all, so nothing holds 192.168.50.1 and no
      slave can associate. NetworkManager autoconnect handles the ordinary
      case; this catches the rest.
-  2. The ath10k AP wedges its per-station rate control (STATUS.md, 2026-07-18).
-     Slaves stay associated and keep sending STATUS, so nothing looks
-     disconnected, but every audio packet arrives too late to play and all of
-     them sit on their local mic forever. The documented manual fix is
-     `nmcli c down hyperosci-ap && nmcli c up hyperosci-ap`.
+  2. The ath10k AP wedges its per-station rate control (STATUS.md, 2026-07-18
+     and 2026-10-17). Slaves stay associated and keep sending STATUS, so
+     nothing looks disconnected, but the AP queue refuses most audio packets
+     and what gets through arrives too late to play. The documented manual
+     fix is `nmcli c down hyperosci-ap && nmcli c up hyperosci-ap`.
 
 Deliberately a separate process on a systemd timer, NOT a thread in
 hype_controller.py: that process paces 48 kHz audio in 5 ms blocks and must
@@ -62,16 +62,16 @@ def load():
         with open(STATE) as f:
             d = json.load(f)
         return (int(d.get("strikes", 0)), float(d.get("last_bounce", -1e9)),
-                dict(d.get("rx", {})))
+                dict(d.get("rx", {})), dict(d.get("tx", {})))
     except (OSError, ValueError, TypeError):
-        return 0, -1e9, {}
+        return 0, -1e9, {}, {}
 
 
-def save(strikes, last_bounce, rx=None):
+def save(strikes, last_bounce, rx=None, tx=None):
     try:
         with open(STATE, "w") as f:
             json.dump({"strikes": strikes, "last_bounce": last_bounce,
-                       "rx": rx or {}}, f)
+                       "rx": rx or {}, "tx": tx or {}}, f)
     except OSError:
         pass  # /run not writable: we simply forget, and re-strike next tick
 
@@ -94,14 +94,58 @@ def ap_bounce():
 
 
 RX_FLOOR = 200   # packets in a ~30 s tick; healthy is ~5700, a wedge is ~0
+TX_MIN = 1000    # sends to one slave since the last sample before its share counts
+TX_DEAD = 0.5    # share of those sends the AP queue refused (EAGAIN)
+TX_FRESH_MS = 5000  # STATUS age the controller marks a slave gone at
 
 
-def audio_is_dead(prev_rx):
-    """(dead?, rx-by-ip). Dead means the controller is streaming, at least one
-    slave wants that stream, and for every one of them BOTH:
+def tx_check(st, prev_tx):
+    """(worst (ip, share) refused at or above TX_DEAD or None, any slave had
+    TX_MIN sends, new tx sample).
+
+    The controller's per-slave counters only move while it streams to that
+    slave, so mic time between bursts cannot dilute them: whatever went out
+    since the last sample is judged, wherever the check lands. A slave's
+    sample is kept until TX_MIN sends have piled up, so one 8 s burst
+    (~1600 sends) is judged whole even if a check lands in the middle of it.
+    Measured 2026-10-17, three slaves: healthy 3.5 % refused (worst burst
+    ~10 %), the wedge 91-93 % for two of them and 37 % for the third.
+
+    Only slaves that are reporting count. Sends to a slave that has gone
+    quiet (switched off, flat battery, out of range) are refused too, and
+    that is not the AP: such a slave gets a fresh sample instead, so its
+    silence is never judged, not even when it comes back. In the wedge the
+    uplink keeps working; the slaves were never marked gone.
+    """
+    fresh = {s.get("ip") for s in st.get("slaves", [])
+             if not s.get("gone") and (s.get("age_ms") or 0) < TX_FRESH_MS}
+    now = {ip: (int(v.get("ok") or 0), int(v.get("full") or 0))
+           for ip, v in ((st.get("net") or {}).get("tx") or {}).items()}
+    bad, seen, tx = None, False, dict(prev_tx)
+    for ip, (ok, full) in now.items():
+        was = prev_tx.get(ip)
+        if ip not in fresh or was is None or ok < was[0] or full < was[1]:
+            tx[ip] = [ok, full]  # quiet slave, first sight, or controller restarted
+            continue
+        n = ok - was[0] + full - was[1]
+        if n < TX_MIN:
+            continue            # too few yet: keep accumulating on the old sample
+        tx[ip] = [ok, full]
+        seen = True
+        share = (full - was[1]) / n
+        if share >= TX_DEAD and (bad is None or share > bad[1]):
+            bad = (ip, share)
+    return bad, seen, tx
+
+
+def rx_check(st, prev_rx):
+    """(True wedge / False healthy / None no evidence, new rx sample).
+
+    Wedge means the controller is streaming, at least one slave wants that
+    stream, and for every one of them BOTH:
 
       * it is playing its own mic rather than the stream, and
-      * its rx counter has barely moved since the last tick.
+      * its rx counter has barely moved since its last sample.
 
     The second test is what makes this safe to act on. `source` alone flickers
     to 0 several times a minute in normal operation -- measured 2026-07-22:
@@ -109,65 +153,97 @@ def audio_is_dead(prev_rx):
     and the slave conceals through it, with ZERO underruns. Striking on
     `source` alone would have bounced a perfectly healthy AP mid-show. In the
     real ath10k wedge the rx counter freezes, and that does not flicker.
+
+    No slave on the stream (muted, or mic time between show bursts) is no
+    evidence either way: the samples are kept, so the next check inside a
+    burst compares against the last one that saw the stream.
+    """
+    # mode 0 = LOCAL, it ignores the stream by design; source truthy = playing
+    # the network stream rather than its own mic.
+    want = [s for s in st.get("slaves", []) if s.get("mode") != 0]
+    if not st.get("stream_on") or not want:
+        return None, prev_rx
+    rx = dict(prev_rx)
+    verdict = True
+    for s in want:
+        ip, n = s.get("ip"), int(s.get("rx") or 0)
+        was, rx[ip] = prev_rx.get(ip), n
+        if s.get("source"):
+            verdict = False     # someone is playing the stream
+        elif n - (was or 0) < 0:
+            # the slave rebooted and zeroed its counter -- precisely when it
+            # is reconnecting and must be left alone.
+            verdict = False
+        elif was is None:
+            if verdict:
+                verdict = None  # first sight of it: never act on one reading
+        elif n - was >= RX_FLOOR:
+            verdict = False     # packets still arriving
+    return verdict, rx
+
+
+def check(prev_rx, prev_tx):
+    """(True wedge / False healthy / None no evidence, why, rx, tx).
+
+    Either signal can strike. The AP refusing most of what is sent to any
+    slave is a wedge even while another slave still plays (2026-10-17: two of
+    three nodes at 2-6 Mbit/s, the third at MCS7 and flickering onto the
+    stream, which kept the rx test from ever striking).
     """
     try:
         with urllib.request.urlopen(API, timeout=4) as r:
             st = json.load(r)
     except Exception:
-        return False, prev_rx  # controller restarting or busy; not our problem
-    # mode 0 = LOCAL, it ignores the stream by design; source truthy = playing
-    # the network stream rather than its own mic.
-    want = [s for s in st.get("slaves", []) if s.get("mode") != 0]
-    rx = {s.get("ip"): int(s.get("rx") or 0) for s in want}
-    if not st.get("stream_on") or not want:
-        return False, rx       # muted on purpose, or nothing to feed
-    for s in want:
-        if s.get("source"):
-            return False, rx   # someone is playing the stream: not the AP
-        was = prev_rx.get(s.get("ip"))
-        if was is None:
-            return False, rx   # first sight of it: never act on one reading
-        delta = rx[s.get("ip")] - was
-        if delta >= RX_FLOOR or delta < 0:
-            # delta < 0 means the slave rebooted and zeroed its counter --
-            # precisely when it is reconnecting and must be left alone.
-            return False, rx   # packets still arriving: not a wedge
-    return True, rx
+        return None, "controller unreachable", prev_rx, prev_tx
+    if not isinstance(st, dict):
+        return None, "no state", prev_rx, prev_tx
+    bad, tx_seen, tx = tx_check(st, prev_tx)
+    rx_v, rx = rx_check(st, prev_rx)
+    if bad is not None:
+        return True, f"AP refused {bad[1]:.0%} of sends to {bad[0]}", rx, tx
+    if rx_v:
+        return True, "no slave is receiving audio", rx, tx
+    if rx_v is False or tx_seen:
+        return False, "audio flowing", rx, tx
+    return None, "no stream to judge", rx, tx
 
 
 def main():
-    strikes, last_bounce, prev_rx = load()
+    strikes, last_bounce, prev_rx, prev_tx = load()
     now = uptime_s()
 
     if not ap_is_up():
         log(f"{AP_ADDR} is not on {AP_IFACE} — reactivating {AP_CONN}")
         ap_up()
-        save(0, now, {})
+        save(0, now)
         return
 
-    dead, rx = audio_is_dead(prev_rx)
+    dead, why, rx, tx = check(prev_rx, prev_tx)
+    if dead is None:
+        save(strikes, last_bounce, rx, tx)  # no evidence: strikes stand
+        return
     if not dead:
         if strikes:
             log(f"audio recovered after {strikes} strike(s)")
-        save(0, last_bounce, rx)
+        save(0, last_bounce, rx, tx)
         return
 
     strikes += 1
     if strikes < STRIKES:
-        log(f"no slave is receiving audio ({strikes}/{STRIKES})")
-        save(strikes, last_bounce, rx)
+        log(f"{why} ({strikes}/{STRIKES})")
+        save(strikes, last_bounce, rx, tx)
         return
 
     if now - last_bounce < COOLDOWN_S:
-        log(f"still silent, but bounced {now - last_bounce:.0f}s ago "
+        log(f"{why}, but bounced {now - last_bounce:.0f}s ago "
             f"(cooldown {COOLDOWN_S:.0f}s) — leaving it alone")
-        save(strikes, last_bounce, rx)
+        save(strikes, last_bounce, rx, tx)
         return
 
-    log(f"no slave has received audio for {STRIKES} checks — "
+    log(f"{why}, {STRIKES} checks running — "
         f"bouncing {AP_CONN} (suspected AP rate-control wedge)")
     ap_bounce()
-    save(0, now, {})
+    save(0, now)
 
 
 if __name__ == "__main__":
