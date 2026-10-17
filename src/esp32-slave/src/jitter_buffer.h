@@ -83,9 +83,7 @@ class JitterBuffer {
 
   // Loss concealment: append `count` copies of the last pushed frame
   // (last-value hold for a gap in the stream). No-op when empty. Returns the
-  // number of frames actually appended. The held frames restart the loop
-  // history: a later push_loop() copying them would park the dot for its
-  // whole hole, so it waits for a full loop of real audio after the hold.
+  // number of frames actually appended.
   uint16_t push_hold(uint16_t count) {
     portENTER_CRITICAL(&mux_);
     const uint32_t epoch = epoch_;
@@ -104,7 +102,7 @@ class JitterBuffer {
     const bool ok = (epoch == epoch_);
     if (ok) {
       tail_ = (tail + count) % JB_CAPACITY_FRAMES;
-      pushed_since_reset_ = 0;
+      add_pushed(count);
     }
     portEXIT_CRITICAL(&mux_);
     return ok ? count : 0;
@@ -215,9 +213,9 @@ class JitterBuffer {
   }
 
   // Called with mux_ held: saturating high-water mark of frames committed
-  // since the last reset(), empty re-anchor or hold. push_loop() refuses to
-  // fill while it is below the loop length (older content belongs to another
-  // stream, to the timeline before an underrun, or is a held dot).
+  // since the last reset() or empty re-anchor. push_loop() refuses to fill
+  // while it is below the loop length (older content belongs to another
+  // stream, or to the timeline before an underrun).
   void add_pushed(uint32_t count) {
     if (pushed_since_reset_ >= JB_CAPACITY_FRAMES) return;
     const uint32_t room = (uint32_t)JB_CAPACITY_FRAMES - pushed_since_reset_;
@@ -230,7 +228,7 @@ class JitterBuffer {
   uint64_t head_deadline_us_ = 0;
   uint32_t epoch_ = 0;  // bumped by reset(); aborts in-flight push/pop commits
   uint32_t pushed_since_reset_ = 0;  // frames committed since the last
-                                     // reset() / empty re-anchor / hold: the
+                                     // reset() / empty re-anchor: the
                                      // push_loop() source guard
   int16_t last_l_ = 0, last_r_ = 0;  // producer-owned (concealment source)
   volatile bool started_ = false;

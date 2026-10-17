@@ -1404,3 +1404,7 @@ battery, `/tmp/soak6`) against soak5 (before the hold fix):
 - **Net: the hold fix costs more than it saves.** It removes a partial dot
   of ≤ 20 ms per copied loop for ≤ 150 ms. In exchange, about one hole per
   logos burst becomes a ~0.4 s reset to the mic.
+- **Reverted** (2026-10-18): `jitter_buffer.h`, host test case 8 and the
+  plan/architecture wording are back to `163ee2c`. The host test passes 7/7,
+  and the build is 1025021 B, the same as `163ee2c`. The netwatch change
+  stays.

@@ -389,10 +389,11 @@ Definitions:
   - zeroed inside `reset()`'s critical section, and by a `push` onto an empty buffer (added
     2026-10-17 after review): after an underrun the next packet re-anchors without `reset()`,
     and the ring still holds the stream from before the stall;
-  - zeroed by `push_hold` too (second review): the held dot must never be a loop source, or a
-    later fill would repeat it for its whole hole;
-  - incremented inside the **same** critical section that commits the tail, for `push` and
-    `push_loop`.
+  - incremented inside the **same** critical section that commits the tail, for `push`,
+    `push_hold` and `push_loop`. Held frames count on purpose: a later fill may copy a few ms
+    of held dot into each loop. Zeroing the counter on a hold was tried on 2026-10-18 and
+    reverted: it nearly doubled resets on the logos (`STATUS.md`, "Second review of the
+    fixes").
   - `reset()` is reachable from another task (`set_mode` → `flush`). A counter held anywhere
     else could race a flush and report a stale count, and the fill would copy invalid data.
 - **Validity, checked before choosing loop over hold:**
