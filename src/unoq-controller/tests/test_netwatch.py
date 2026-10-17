@@ -79,6 +79,16 @@ ok(d is None and tx == {"a": [1144, 1456]},
    "91% refused to a slave marked gone -> no verdict, fresh sample")
 serve(gone(age_ms=6000))
 ok(nw.check(P, {"a": [1000, 0]})[0] is None, "silent 6 s, not yet marked -> no verdict")
+serve(gone(age_ms=2500))
+ok(nw.check(P, {"a": [1000, 0]})[0] is None,
+   "tx: silent 2.5 s, still being sent to (3 s cut) -> no verdict")
+ok(check(on(S(source=0, rx=4300, age_ms=2500)), P) is None,
+   "rx: NETWORK slave silent 2.5 s, frozen on mic -> no evidence, not a wedge")
+ok(check(on(S(source=0, rx=4300, age_ms=20000, gone=True)), P) is None,
+   "rx: switched off showing the mic (show end) -> no evidence, not a wedge")
+ok(check(on(S(source=0, rx=4300, age_ms=20000, gone=True),
+            S(ip="b", source=0, rx=3000)), {"a": 4300, "b": 2950}) is True,
+   "rx: the reporting slave alone still decides -> WEDGE")
 ok(check(local({"a": T(2600, 1456)}), P, {"a": [1144, 1456]}) is False,
    "back and reporting: only the sends since its return are judged -> healthy")
 ok(check(on(S(rx=9000), S(ip="b", source=0, rx=3000)) | {"net": {"tx": {}}},

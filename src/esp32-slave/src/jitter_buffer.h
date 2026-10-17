@@ -28,6 +28,15 @@ class JitterBuffer {
     portEXIT_CRITICAL(&mux_);
   }
 
+  // Number of reset() calls so far (wraps). Another task compares it with
+  // its last reading to notice a flush it did not cause.
+  uint32_t flushes() const {
+    portENTER_CRITICAL(&mux_);
+    const uint32_t e = epoch_;
+    portEXIT_CRITICAL(&mux_);
+    return e;
+  }
+
   // Deadline of the next frame a push would append. Only meaningful while
   // depth > 0 (caller checks).
   uint64_t tail_deadline_us() const {
@@ -46,7 +55,13 @@ class JitterBuffer {
     if (count > free_frames()) return false;
     portENTER_CRITICAL(&mux_);
     const uint32_t epoch = epoch_;
-    if (head_ == tail_) head_deadline_us_ = deadline_us;
+    // Empty: this frame re-anchors the head. If the buffer played dry (an
+    // underrun, no reset()), the ring still holds the stream from before
+    // the stall — count it out as a loop source, as reset() does.
+    if (head_ == tail_) {
+      head_deadline_us_ = deadline_us;
+      pushed_since_reset_ = 0;
+    }
     const uint32_t tail = tail_;
     portEXIT_CRITICAL(&mux_);
     for (uint16_t i = 0; i < count; i++) {
@@ -198,8 +213,9 @@ class JitterBuffer {
   }
 
   // Called with mux_ held: saturating high-water mark of frames committed
-  // since the last reset(). push_loop() refuses to fill while it is below
-  // the loop length (pre-reset content belongs to an older stream).
+  // since the last reset() or empty re-anchor. push_loop() refuses to fill
+  // while it is below the loop length (older content belongs to another
+  // stream, or to the timeline before an underrun).
   void add_pushed(uint32_t count) {
     if (pushed_since_reset_ >= JB_CAPACITY_FRAMES) return;
     const uint32_t room = (uint32_t)JB_CAPACITY_FRAMES - pushed_since_reset_;
@@ -212,7 +228,8 @@ class JitterBuffer {
   uint64_t head_deadline_us_ = 0;
   uint32_t epoch_ = 0;  // bumped by reset(); aborts in-flight push/pop commits
   uint32_t pushed_since_reset_ = 0;  // frames committed since the last
-                                     // reset(): the push_loop() source guard
+                                     // reset() / empty re-anchor: the
+                                     // push_loop() source guard
   int16_t last_l_ = 0, last_r_ = 0;  // producer-owned (concealment source)
   volatile bool started_ = false;
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;

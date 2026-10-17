@@ -96,7 +96,20 @@ def ap_bounce():
 RX_FLOOR = 200   # packets in a ~30 s tick; healthy is ~5700, a wedge is ~0
 TX_MIN = 1000    # sends to one slave since the last sample before its share counts
 TX_DEAD = 0.5    # share of those sends the AP queue refused (EAGAIN)
-TX_FRESH_MS = 5000  # STATUS age the controller marks a slave gone at
+# STATUS age past which a slave's counters are no evidence: under the
+# controller's 3 s stream cut (STREAM_STALE_US), so a slave that just went
+# quiet is out of both checks before its sends stop. Healthy is <= ~1 s at
+# 1 Hz (max 1.02 s over 2088 samples, 2026-10-17).
+TX_FRESH_MS = 2000
+
+
+def fresh_ips(st):
+    """IPs of slaves that are still reporting (not gone, STATUS < TX_FRESH_MS
+    old). A slave that went quiet (switched off, flat battery, out of range)
+    keeps its last counters in the roster for up to 30 s; neither check may
+    read those as the AP's doing."""
+    return {s.get("ip") for s in st.get("slaves", [])
+            if not s.get("gone") and (s.get("age_ms") or 0) < TX_FRESH_MS}
 
 
 def tx_check(st, prev_tx):
@@ -111,14 +124,13 @@ def tx_check(st, prev_tx):
     Measured 2026-10-17, three slaves: healthy 3.5 % refused (worst burst
     ~10 %), the wedge 91-93 % for two of them and 37 % for the third.
 
-    Only slaves that are reporting count. Sends to a slave that has gone
-    quiet (switched off, flat battery, out of range) are refused too, and
-    that is not the AP: such a slave gets a fresh sample instead, so its
-    silence is never judged, not even when it comes back. In the wedge the
-    uplink keeps working; the slaves were never marked gone.
+    Only slaves that are reporting count (fresh_ips). Sends to a slave that
+    has gone quiet are refused too, and that is not the AP: such a slave
+    gets a fresh sample instead, so its silence is never judged, not even
+    when it comes back. In the wedge the uplink keeps working; the slaves
+    were never marked gone.
     """
-    fresh = {s.get("ip") for s in st.get("slaves", [])
-             if not s.get("gone") and (s.get("age_ms") or 0) < TX_FRESH_MS}
+    fresh = fresh_ips(st)
     now = {ip: (int(v.get("ok") or 0), int(v.get("full") or 0))
            for ip, v in ((st.get("net") or {}).get("tx") or {}).items()}
     bad, seen, tx = None, False, dict(prev_tx)
@@ -156,11 +168,15 @@ def rx_check(st, prev_rx):
 
     No slave on the stream (muted, or mic time between show bursts) is no
     evidence either way: the samples are kept, so the next check inside a
-    burst compares against the last one that saw the stream.
+    burst compares against the last one that saw the stream. Nor is a slave
+    that stopped reporting (fresh_ips): its rx and source are frozen where it
+    died, so a node switched off while showing the mic would read as a wedge.
     """
     # mode 0 = LOCAL, it ignores the stream by design; source truthy = playing
     # the network stream rather than its own mic.
-    want = [s for s in st.get("slaves", []) if s.get("mode") != 0]
+    fresh = fresh_ips(st)
+    want = [s for s in st.get("slaves", [])
+            if s.get("mode") != 0 and s.get("ip") in fresh]
     if not st.get("stream_on") or not want:
         return None, prev_rx
     rx = dict(prev_rx)

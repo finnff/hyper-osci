@@ -921,6 +921,13 @@ REANCHOR_US = 100_000
 STREAM_STALE_US = 3_000_000
 
 
+def stream_stale(s, now):
+    """True when slave `s` has been silent too long to be sent audio
+    (STREAM_STALE_US). The one test stream_targets() and the stream loop's
+    paused/resumed log both use."""
+    return now - s["last_us"] > STREAM_STALE_US
+
+
 def node_flags(state, sid):
     """Slave id -> its three switches (defaults for a node nobody has set).
 
@@ -993,7 +1000,7 @@ def stream_targets(state, now):
     """
     out = []
     for ip, s in state.slaves.items():
-        if now - s["last_us"] > STREAM_STALE_US:
+        if stream_stale(s, now):
             continue
         pending = state.mode_sent.get(ip)
         mode = pending[0] if pending else s["mode"]
@@ -4181,7 +4188,7 @@ def stream_loop(state, iface_ip):
             # sending it 200 pkt/s just burns airtime.
             targets = stream_targets(state, now)
             stale_now = {ip for ip, s in state.slaves.items()
-                         if now - s["last_us"] > STREAM_STALE_US}
+                         if stream_stale(s, now)}
             back = {ip for ip in stale - stale_now if ip in state.slaves}
         for ip in stale_now - stale:
             print(f"[stream] {ip} paused: no STATUS for "

@@ -66,8 +66,9 @@ g++ -std=c++17 -Wall -Wextra -I test/host/shim -I include -I src \
 ## Status / TODO
 
 - [x] Compiling skeleton with all modules and the full mode state machine
-- [x] Packet-loss concealment (deadline-continuity buffer: ≤20 ms holes
-      hold-filled; hold → ramp-to-center → 1 s mic fallback ladder)
+- [x] Packet-loss concealment (deadline-continuity buffer: holes ≤150 ms
+      loop-filled, ≤20 ms hold-filled without a loop, longer ones flush and
+      pre-roll on the mic; hold → ramp-to-center → 1 s mic fallback ladder)
 - [ ] Bench bring-up: I2S output on a real scope (circle, then `pat` → ramp for
       the DC go/no-go test, square for filter ringing)
 - [ ] Bench bring-up: mic path + pot filter (compare with old sigma-delta unit)

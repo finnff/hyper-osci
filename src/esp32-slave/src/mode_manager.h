@@ -43,7 +43,7 @@ enum class EventKind : uint8_t {
                 //   last underrun); arg = ms since that join
   UNDERRUN,     // buffer ran dry mid-play; arg = ms since mode entry
   STREAM_LOST,  // no audio for STREAM_TIMEOUT_MS; arg = ms since mode entry
-  RESET,        // > 20 ms deadline hole flushed the buffer; arg = hole ms,
+  RESET,        // deadline hole too long to conceal flushed the buffer; arg = hole ms,
                 //   arg2 = the restarting packet's lead, ms
 };
 // arg2 when the clock was not synced (no lead to measure).

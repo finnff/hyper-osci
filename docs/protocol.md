@@ -205,9 +205,9 @@ directions compatible).
 | 50 | 4 | `clock_offset_us` | `int32_t` | current smoothed sync offset, saturated to int32 range |
 | 54 | 1 | `local_pattern` | `uint8_t` | local-render pattern (drawn whenever `source=0`): 0 = mic, 1 = circle, 2 = lissajous, 3 = ramp, 4 = square |
 | 55 | 4 | `lost_packets` | `uint32_t` | cumulative missing AUDIO packets inferred from `seq` gaps (§2.3) — counts loss the slave never saw arrive (e.g. dropped below the socket layer), which `rx_dropped` cannot |
-| 59 | 4 | `loop_fills` | `uint32_t` | small holes (1 ms – `HYPE_LOOP_FILL_MAX_MS`) filled by copying one loop back (§6) |
-| 63 | 4 | `hold_fills` | `uint32_t` | small holes filled by last-value hold (`loop_frames` = 0, too little history since the last flush, or `fill hold` forced) |
-| 67 | 4 | `gap_resets` | `uint32_t` | holes over the limit that flushed the buffer and rebuffered (§5.2) |
+| 59 | 4 | `loop_fills` | `uint32_t` | holes (1 ms – `HYPE_LOOP_FILL_MAX_MS`, 150 ms) filled by copying one loop back (§6) |
+| 63 | 4 | `hold_fills` | `uint32_t` | holes (1 ms – `HOLD_FILL_MAX_MS`, 20 ms) filled by last-value hold (`loop_frames` = 0, too little history since the buffer last started from empty, or `fill hold` forced) |
+| 67 | 4 | `gap_resets` | `uint32_t` | holes too long to conceal (over 150 ms, or over 20 ms with no loop to copy) that flushed the buffer and rebuffered (§5.2) |
 | 71 | 4 | `reanchor_gaps` | `uint32_t` | deadline holes (fill or reset) with **contiguous** `seq`: a controller re-anchor, nothing lost |
 | 75 | 20 | `gap_hist` | `uint32_t[5]` | `seq` holes by missing-packet count: 1, 2, 3–4, 5–30, > 30 (same ≤ 1000 cap as `lost_packets`) |
 
@@ -304,8 +304,8 @@ On packet receive (after §2.2 validation and the `sample_rate`/`frame_count` ch
 | clock never locked (no SYNC yet) | **buffer and play depth-gated** (deadline policy suspended). Deliberate: a slave that can hear audio but not sync still puts pictures on its scope — degraded, never dark. Sync engages retroactively at first lock via the continuity check. |
 | `D < t − DEADLINE_SLACK_US` (5000 µs) — too late (clock locked) | drop, `rx_dropped++` |
 | earlier than the buffer's current tail deadline (duplicate/reordered) | drop, `rx_dropped++` |
-| 1–20 ms past the tail deadline (packets lost ahead of this one) | fill the gap, then append: **loop-fill** (copy from `loop_frames` back in the ring) when this packet's `loop_frames` ≠ 0 and the buffer holds at least one loop since its last flush, else **hold-fill** with the last frame (§6) |
-| > 20 ms past the tail deadline (epoch jump / long outage) | flush, re-anchor on this packet, rebuffer |
+| 1–150 ms past the tail deadline (packets lost ahead of this one) | fill the gap, then append: **loop-fill** (copy from `loop_frames` back in the ring) when this packet's `loop_frames` ≠ 0 and the buffer holds at least one loop since it last started from empty, up to `HYPE_LOOP_FILL_MAX_MS` = 150 ms; else **hold-fill** with the last frame, only up to `HOLD_FILL_MAX_MS` = 20 ms (§6) |
+| > 150 ms past the tail deadline (epoch jump / long outage), or > 20 ms with no loop to copy | flush, re-anchor on this packet, rebuffer |
 | buffer full (`JB_CAPACITY_FRAMES` = 24576 ≈ 512 ms) — overflow | drop, `rx_dropped++` |
 | otherwise (deadline-contiguous with the tail, ±1 ms rounding tolerance) | append |
 
@@ -355,19 +355,25 @@ arrive after its deadline anyway; concealment is cheaper and the content is a re
 image, so a lost 5 ms block is nearly invisible.
 
 - **Gap detection:** by **deadline continuity**, not `seq` (which is stats-only): a packet whose
-  `timestamp_us` lands 1–20 ms past the buffer's tail deadline implies lost packets ahead of it —
+  `timestamp_us` lands 1–150 ms past the buffer's tail deadline implies lost packets ahead of it —
   the hole is filled (§5.2 table) so the buffer stays contiguous. The v1 buffer is append-only; a
   reordered packet arriving after its successor is dropped (already-covered time).
 - **Loop-fill:** every pattern the controller streams repeats exactly every `loop_frames` frames,
   so the samples a lost packet carried were already sent one loop earlier. The slave copies the
   hole from `loop_frames` back in its own ring, frame by frame (a hole longer than a loop re-reads
-  frames it just filled), using the `loop_frames` of the packet **after** the hole. It falls back
-  to last-value hold when the field is 0, when the buffer has received fewer than `loop_frames`
-  frames since its last flush (older data belongs to another stream), or when the source would
-  overlap the fill. The controller zeroes the field whenever the source could predate a pattern
-  change (§10), so a fill never draws the previous pattern.
-- **Concealment ladder** — for blocks the buffer can't serve while it still holds audio (rebuffer
-  after a reset, a head not yet due), and only once a block has played since the join (see
+  frames it just filled), using the `loop_frames` of the packet **after** the hole, for holes up
+  to `HYPE_LOOP_FILL_MAX_MS` (150 ms). Without a usable loop — the field is 0, the buffer has
+  received fewer than `loop_frames` frames since it last started from empty (a flush, or playing
+  dry: older data belongs to another stream or to before the stall), or the source would overlap
+  the fill — it falls back to last-value hold, but only for holes up to `HOLD_FILL_MAX_MS`
+  (20 ms); a longer parked dot is worse than a flush. The controller zeroes the field whenever
+  the source could predate a pattern change (§10), so a fill never draws the previous pattern.
+- **Flush mid-stream:** a hole too long to conceal flushes the buffer, and the restarting packet
+  is due `LEAD_US` out, so the scope waits ~0.45 s exactly as at a join. That wait is a pre-roll
+  (below): the slave draws the local render, not the ladder. The same holds for every flush
+  (SYNC_PULSE, WiFi reconnect).
+- **Concealment ladder** — for blocks the buffer can't serve while it still holds audio of the
+  playing stream (a head not yet due), and only once a block has played since the join (see
   *pre-roll* below). An **underrun** (buffer empty at a playout tick) is not a hiccup: with a
   450 ms lead it takes ~0.45 s without packets, so the stream has stopped (lost `local` command,
   SILENT, controller crash). It ends the stint's playing state, and the slave shows the local
@@ -381,8 +387,8 @@ image, so a lost 5 ms block is nearly invisible.
 - **Recovery:** deadlines are absolute, so recovery is automatic — when AUDIO packets with
   in-window deadlines arrive again, the slave re-buffers (the "wait" rule §5.2 provides the ~60 ms
   refill) and switches source back to the network stream at a block boundary. No handshake.
-- **Pre-roll:** a slave that joins (mode change to NETWORK, an underrun, or the stream returning
-  after a `STREAM_TIMEOUT_MS` loss) sees head blocks due `LEAD_US` (450 ms) in the future. Until the first
+- **Pre-roll:** a slave that joins (mode change to NETWORK, an underrun, a flush, or the stream
+  returning after a `STREAM_TIMEOUT_MS` loss) sees head blocks due `LEAD_US` (450 ms) in the future. Until the first
   block plays it keeps drawing the local render, not the ladder — the ladder's centre dot is for
   hiccups inside a playing stream, and ~0.45 s of it at every join was the visible burst-start
   glitch (2026-10-14, `docs/stream-concealment-plan.md` §3.2).
@@ -441,7 +447,7 @@ sequenceDiagram
     Note over C: stream restored
     C->>S: SYNC (beacons kept running the whole time)
     C->>S: AUDIO seq m, flags = 0, deadline now + 450 ms
-    Note over S: buffer empty -> anchor on this packet's deadline<br/>(a non-empty buffer flushes on the > 20 ms hole instead)
+    Note over S: buffer empty -> anchor on this packet's deadline<br/>(a non-empty buffer flushes on the hole instead: > 150 ms, far past any fill)
     Note over S: local render (pre-roll) until the head is due,<br/>then network source at a block boundary, NET LED solid
     S->>C: STATUS (source = 1)
 ```
@@ -547,8 +553,8 @@ from one loop back — spin off, integer ratios, `1 ≤ L ≤ 8192`, rounding dr
 `pulse_depth · π · pulse_rate / freq ≤ 5 %`; else 0. After **any** change of the pattern
 parameters the controller sends 0 for `L + F` frames, so a slave's copy source always post-dates
 the change. `F` = `LOOP_FILL_CEIL_MS` (150 ms): the controller's settle window MUST cover the
-longest fill any slave makes (`HYPE_LOOP_FILL_MAX_MS`, 20 ms today); if that limit ever rises the
-controller deploys first.
+longest fill any slave makes (`HYPE_LOOP_FILL_MAX_MS`, 150 ms since Phase 3); if that limit ever
+rises the controller deploys first.
 
 **Fan-out.** One UDP socket for all TX. Per tick, loop `sendto(sock, pkt, 988, 0, slave[i], …)`
 over the roster — same bytes, same `seq`, to each slave's `IP:5000`. (`sendmmsg()` batches the 4
@@ -592,7 +598,8 @@ Values are law — see those files.
 | `HYPE_PROTO_VERSION` | 1 | P | protocol version |
 | `HYPE_AUDIO_FRAMES` | 240 | P | frames per audio packet (5 ms) → 988 B datagram |
 | `HYPE_FLAG_SYNC_PULSE` | `0x0001` | P | audio resync-point flag |
-| `HYPE_LOOP_FILL_MAX_MS` | 20 | P | longest hole a slave fills (loop or hold); longer holes flush |
+| `HYPE_LOOP_FILL_MAX_MS` | 150 | P | longest hole a slave loop-fills; longer holes flush |
+| `HOLD_FILL_MAX_MS` | 20 | C | longest hole a slave hold-fills (no usable loop); longer holes flush |
 | `HYPE_LOOP_MAX_FRAMES` | 8192 | P | largest `loop_frames` a slave copies from (≈ 5.9 Hz) |
 | `LOOP_FILL_CEIL_MS` | 150 | ctrl | settle window after a pattern change; must be ≥ `HYPE_LOOP_FILL_MAX_MS` |
 | `SAMPLE_RATE` | 48000 | C | output rate, 16-bit stereo, L=X R=Y |

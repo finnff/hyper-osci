@@ -44,16 +44,21 @@ constexpr uint32_t CONCEAL_RAMP_BLOCKS = 2;  // 10 ms
 // the local render, not the concealment ladder (whose centre dot is for
 // hiccups inside a playing stream). Cleared on a real mode change, when the
 // stream goes away (WiFi reconnect, unmute after silence, controller restart
-// all rejoin like a fresh start), and on underrun: with a 450 ms lead the
-// buffer only runs dry after ~0.45 s without packets — a stopped stream
-// (lost `local` command, SILENT mid-burst, controller crash), not a hiccup.
+// all rejoin like a fresh start), on underrun (with a 450 ms lead the buffer
+// only runs dry after ~0.45 s without packets — a stopped stream: lost
+// `local` command, SILENT mid-burst, controller crash — not a hiccup), and on
+// a jitter-buffer flush (a hole too long to conceal, SYNC_PULSE): the refill
+// is due LEAD_US out, exactly a fresh join's wait.
 volatile bool g_net_played = false;
 // Audio task's view of stream_active(), to catch its edges. Reset on mode
 // change so each stint logs its own STREAM_UP.
 volatile bool g_stream_seen = false;
 volatile uint32_t g_entry_ms = 0;  // millis() of the last mode change
-volatile uint32_t g_join_ms = 0;   // millis() of the last stream-up / underrun
+// millis() of the last join: mode change, stream-up, underrun, or a flush
+// while playing.
+volatile uint32_t g_join_ms = 0;
 volatile uint32_t g_last_preroll_ms = 0;
+uint32_t g_seen_flushes = 0;  // audio task only: last net_rx::flush_count()
 
 // Event ring: any task produces, loop task consumes (ui.cpp prints).
 constexpr uint32_t EV_RING = 16;
@@ -75,6 +80,14 @@ void log_event(mode_manager::EventKind kind, uint32_t arg,
 }
 
 uint32_t since_entry() { return millis() - g_entry_ms; }
+
+// Audio task: the stream is up for this stint (pre-roll starts here).
+void note_stream_up() {
+  g_stream_seen = true;
+  g_join_ms = millis();
+  log_event(mode_manager::EventKind::STREAM_UP, since_entry(),
+            net_rx::start_lead_ms());
+}
 
 inline int16_t sat_add(int16_t a, int16_t b) {
   int32_t v = (int32_t)a + (int32_t)b;
@@ -162,6 +175,7 @@ void set_mode(Mode m) {
   g_net_played = false;
   g_stream_seen = false;
   g_entry_ms = millis();
+  g_join_ms = g_entry_ms;  // a stint whose stream is already up joins here
   g_mode = m;
   log_event(EventKind::MODE, (uint32_t)m);
 }
@@ -208,16 +222,29 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
       break;
 
     case Mode::NETWORK: {
+      // A flush discards what was playing; the refill is due LEAD_US out.
+      // Read here, in the task that owns g_net_played (a flag cleared from
+      // the network task could be set again by a block already in flight).
+      const uint32_t flushes = net_rx::flush_count();
+      if (flushes != g_seen_flushes) {
+        g_seen_flushes = flushes;
+        if (g_net_played) {
+          g_net_played = false;
+          g_join_ms = millis();
+        }
+      }
       const net_rx::Pull r = net_rx::pull_block(frames, frame_count);
       if (r == net_rx::Pull::PLAYED) {
         source = 1;
         g_last_net_ms = millis();
+        // Entered with the stream already playing (HYBRID -> NETWORK keeps
+        // the buffer): this block is the stream-up too.
+        if (!g_stream_seen) note_stream_up();
         if (!g_net_played) {
           g_net_played = true;
           g_last_preroll_ms = millis() - g_join_ms;
           log_event(EventKind::FIRST_PLAY, g_last_preroll_ms);
         }
-        g_stream_seen = true;
         conceal_blocks = 0;
         conceal_l = frames[(frame_count - 1) * 2];
         conceal_r = frames[(frame_count - 1) * 2 + 1];
@@ -232,12 +259,7 @@ uint8_t fill_block(int16_t* frames, size_t frame_count) {
         log_event(EventKind::UNDERRUN, since_entry());
       }
       if (net_rx::stream_active()) {
-        if (!g_stream_seen) {
-          g_stream_seen = true;
-          g_join_ms = millis();
-          log_event(EventKind::STREAM_UP, since_entry(),
-                    net_rx::start_lead_ms());
-        }
+        if (!g_stream_seen) note_stream_up();
         if (g_net_played) {
           // Brief hiccup inside a playing stream (rebuffer / lost packets):
           // conceal instead of flapping to the mic for 5 ms at a time.

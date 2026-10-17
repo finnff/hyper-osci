@@ -44,7 +44,7 @@ volatile uint32_t st_rx_dropped = 0;
 volatile uint32_t st_underruns = 0;
 volatile uint32_t st_seq_gaps = 0;    // gap EVENTS (any seq discontinuity)
 volatile uint32_t st_lost_packets = 0;  // cumulative missing packets (gap sizes)
-volatile uint32_t st_gap_resets = 0;  // > 20 ms deadline holes that flushed
+volatile uint32_t st_gap_resets = 0;  // deadline holes too long to conceal
 // Lead (deadline - master now, ms) of the packet that last started an empty
 // buffer: ~LEAD_US when it arrived promptly, less if it sat in transit.
 volatile int32_t g_start_lead_ms = mode_manager::EV_NO_LEAD;
@@ -122,15 +122,6 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
     return;
   }
 
-  // Phase 2: remember the controller's loop marker (protocol.h loop_frames).
-  // 0 = no usable loop (pattern has none, or sits in its settle window); its
-  // arrival time anchors the fill log (ms since the last 0 field).
-  g_last_loop_frames = ap.loop_frames;
-  if (ap.loop_frames == 0) {
-    g_have_zero_ms = true;
-    g_last_zero_ms = millis();
-  }
-
   // Bench tooling (RAM only): drop `run` consecutive AUDIO packets at the
   // head of every `every`-packet cycle, BEFORE the seq accounting so the
   // holes count as real loss.
@@ -183,8 +174,10 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
   if (h.flags & HYPE_FLAG_SYNC_PULSE) jb.reset();
 
   // Continuity is judged by deadlines, not sequence numbers: a lost packet is
-  // a small hole we conceal (loop-copy when the field allows, else last-value
-  // hold — Phase 2); only large discontinuities rebuffer (docs/protocol.md §6).
+  // a hole we conceal; only a hole we can't conceal rebuffers (docs/
+  // protocol.md §6). Loop-copy covers up to HYPE_LOOP_FILL_MAX_MS when the
+  // field allows; without a loop, last-value hold covers only up to
+  // HOLD_FILL_MAX_MS — a longer parked dot is worse than a reset (Phase 3).
   // ±1 ms tolerance absorbs timestamp rounding.
   const int16_t* samples =
       (const int16_t*)(buf + sizeof(HypeHeader) + sizeof(HypeAudioPayload));
@@ -195,22 +188,30 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
   } else {
     const int64_t delta =
         (int64_t)(h.timestamp_us - jb.tail_deadline_us());
-    const int64_t fill_max_us = (int64_t)HYPE_LOOP_FILL_MAX_MS * 1000;
-    if (delta > 1000 && delta <= fill_max_us) {
-      // Small gap (lost packet(s), <= HYPE_LOOP_FILL_MAX_MS): fill so the
-      // buffer stays deadline-contiguous, then append the new packet. The
-      // fill uses THIS packet's loop_frames — it describes the content
-      // around the hole, and the controller zeroes it whenever the source
-      // would be stale (pattern change, settle window).
+    const int64_t hold_max_us = (int64_t)HOLD_FILL_MAX_MS * 1000;
+    bool fill_tried = false;
+    uint16_t filled = 0;
+    bool used_loop = false;
+    if (delta > 1000 && delta <= (int64_t)HYPE_LOOP_FILL_MAX_MS * 1000) {
+      // Fill so the buffer stays deadline-contiguous, then append the new
+      // packet. The fill uses THIS packet's loop_frames — it describes the
+      // content around the hole, and the controller zeroes it whenever the
+      // source would be stale (pattern change, settle window).
+      fill_tried = true;
       const uint16_t n = (uint16_t)((delta * SAMPLE_RATE) / 1000000);
-      uint16_t filled = 0;
-      bool used_loop = false;
       if (g_fill_mode == net_rx::FillMode::kLoop && ap.loop_frames != 0 &&
           ap.loop_frames <= HYPE_LOOP_MAX_FRAMES) {
         filled = jb.push_loop(n, ap.loop_frames);
         used_loop = (filled > 0);
       }
-      if (filled == 0) filled = jb.push_hold(n);  // forced hold / no usable loop
+      // Forced hold / no usable loop: hold only a short hole.
+      if (filled == 0 && delta <= hold_max_us) filled = jb.push_hold(n);
+    }
+    if (delta < -1000) {
+      // Duplicate / reordered / overlapping packet: already have that time.
+      st_rx_dropped++;
+      return;
+    } else if (fill_tried && (filled > 0 || delta <= hold_max_us)) {
       if (filled > 0) {
         if (used_loop) st_loop_fills++;
         else st_hold_fills++;
@@ -224,8 +225,9 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
                                            : net_rx::FillMode::kHold);
             e.frames = filled;
             e.pkts = missing_pkts;
-            e.since0_ms =
-                g_have_zero_ms ? millis() - g_last_zero_ms : UINT32_MAX;
+            e.since0_ms = (ap.loop_frames == 0) ? 0
+                          : g_have_zero_ms     ? millis() - g_last_zero_ms
+                                               : UINT32_MAX;
             fill_log_head = hpos + 1;
           } else {
             fill_log_dropped_n++;
@@ -234,12 +236,9 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
       }
       if (seq_contiguous) st_reanchor_gaps++;  // a re-anchor, nothing lost
       ok = jb.push(samples, ap.frame_count, h.timestamp_us);
-    } else if (delta < -1000) {
-      // Duplicate / reordered / overlapping packet: already have that time.
-      st_rx_dropped++;
-      return;
-    } else if (delta > fill_max_us) {
-      // Large discontinuity (epoch jump, long outage): rebuffer from here.
+    } else if (delta > 1000) {
+      // A hole we can't conceal: past the loop-fill limit (epoch jump, long
+      // outage), or past the hold limit with no loop to copy. Rebuffer.
       jb.reset();
       st_gap_resets++;
       if (seq_contiguous) st_reanchor_gaps++;  // a re-anchor, nothing lost
@@ -256,10 +255,16 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
   }
 
   // Liveness/stats reflect *accepted* audio only, so a desynced or overflowing
-  // stream doesn't hold stream_active() true while nothing can play.
+  // stream doesn't hold stream_active() true while nothing can play. The
+  // loop marker too: `stat` shows the field of audio that was buffered, and
+  // its last 0 anchors the fill log (ms since the last pattern change seen).
   st_rx_packets++;
   g_last_audio_ms = millis();
-
+  g_last_loop_frames = ap.loop_frames;
+  if (ap.loop_frames == 0) {
+    g_have_zero_ms = true;
+    g_last_zero_ms = millis();
+  }
   if (!jb.started() && jb.depth_frames() >= JB_TARGET_FRAMES) {
     jb.set_started(true);
   }
@@ -520,6 +525,8 @@ Pull pull_block(int16_t* frames, size_t frame_count) {
   }
   return Pull::PLAYED;
 }
+
+uint32_t flush_count() { return jb.flushes(); }
 
 void set_accept_audio(bool on) {
   if (!on) {

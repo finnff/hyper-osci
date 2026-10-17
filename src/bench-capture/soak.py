@@ -95,26 +95,40 @@ def run(a):
     print("soak: done", flush=True)
 
 
-def parked_runs(codes, rate, win_ms=4, tol=150, centre=(5550, 250)):
-    """Stretches where both channels sit still for >= win_ms while the stream plays.
+def stream_span(c, rate):
+    """(t0, t1) sample bounds of the burst's stream in a capture, or None.
 
-    Returns (stream_span_s, [(t_s, dur_ms, at_centre)]). "Plays" = 50 ms blocks with X
-    std > 300 codes; the span is the first stretch of them lasting >= 1 s with no pause of
-    1 s or more (a short cycle period puts the next burst's start in the same capture, and the
-    mic between them is no part of this one). The span's first and last block are skipped
-    (the mic -> name and name -> mic hand-offs sit near centre for a few ms).
+    "Plays" = 50 ms blocks with X std > 300 codes; the span is the first stretch of them lasting
+    >= 1 s with no pause of 1 s or more (a short cycle period puts the next burst's start in the
+    same capture, and the mic between them is no part of this one).
     """
     import numpy as np
-    from numpy.lib.stride_tricks import sliding_window_view as sw
-    c = codes.astype(np.int32)
     blk = rate // 20
     n = len(c) // blk
     act = np.flatnonzero(c[:n * blk, 0].reshape(n, blk).std(1) > 300)
     if not len(act):
-        return (0.0, 0.0), []
+        return None
     segs = np.split(act, np.flatnonzero(np.diff(act) >= 20) + 1)
     seg = next((s for s in segs if s[-1] - s[0] >= 20), segs[0])
-    t0, t1 = seg[0] * blk, (seg[-1] + 1) * blk
+    return seg[0] * blk, (seg[-1] + 1) * blk
+
+
+def parked_runs(codes, rate, win_ms=4, tol=150, centre=(5550, 250)):
+    """Stretches where both channels sit still for >= win_ms while the stream plays.
+
+    Returns (stream_span_s, [(t_s, dur_ms, at_centre)]), within stream_span(). The span's first
+    and last 50 ms are skipped (the mic -> name and name -> mic hand-offs sit near centre for a
+    few ms). `tol` is about the capture's noise floor (a still beam spans ~150 codes over a few
+    ms), so this catches short parks and can miss long ones; dark_gaps() measures those.
+    """
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view as sw
+    c = codes.astype(np.int32)
+    span = stream_span(c, rate)
+    if span is None:
+        return (0.0, 0.0), []
+    t0, t1 = span
+    blk = rate // 20
     w = rate * win_ms // 1000
     flat = np.ones(len(c) - w + 1, bool)
     for ch in range(2):
@@ -128,6 +142,26 @@ def parked_runs(codes, rate, win_ms=4, tol=150, centre=(5550, 250)):
             runs.append((s / rate, float((e - s + w) / rate * 1000),
                          bool(abs(x - centre[0]) < centre[1] and abs(y - centre[0]) < centre[1])))
     return (t0 / rate, t1 / rate), runs
+
+
+def dark_gaps(codes, rate, blk_ms=25, min_ms=50):
+    """Stretches of >= min_ms inside stream_span() where the figure stops moving (X std <= 300
+    codes in every blk_ms block): what a flushed buffer costs on the scope. On the bench they
+    look alike whichever fills them: the concealment ladder (20 ms hold, 10 ms ramp, centre dot;
+    Phase 2 firmware) or a quiet mic (the pre-roll). Returns [(t_s, dur_ms)].
+    """
+    import numpy as np
+    c = codes.astype(np.int32)
+    span = stream_span(c, rate)
+    if span is None:
+        return []
+    t0, t1 = span
+    blk = rate * blk_ms // 1000
+    n = (t1 - t0) // blk
+    still = c[t0:t0 + n * blk, 0].reshape(n, blk).std(1) <= 300
+    edges = np.flatnonzero(np.diff(np.r_[0, still.astype(np.int8), 0]))
+    return [((t0 + s * blk) / rate, float((e - s) * blk_ms))
+            for s, e in zip(edges[::2], edges[1::2]) if (e - s) * blk_ms >= min_ms]
 
 
 def node_bursts(recs, nid):
@@ -194,17 +228,22 @@ def analyze(a):
             if cap is not None:
                 z = np.load(cap[1])
                 span, runs = parked_runs(z["codes"], int(z["rate"]))
-                row.update(cap=os.path.basename(cap[1]), stream_s=round(span[1] - span[0], 2),
+                dark = dark_gaps(z["codes"], int(z["rate"]))
+                stream_s = span[1] - span[0]
+                row.update(cap=os.path.basename(cap[1]), stream_s=round(stream_s, 2),
                            parked=len([r for r in runs if not r[2]]),
                            parked_ms=[round(r[1], 1) for r in runs if not r[2]],
                            centre=len([r for r in runs if r[2]]),
-                           centre_ms=[round(r[1], 1) for r in runs if r[2]])
+                           centre_ms=[round(r[1], 1) for r in runs if r[2]],
+                           dark=len(dark), dark_ms=[d[1] for d in dark],
+                           dark_pct=(round(100.0 * sum(d[1] for d in dark) / 1000 / stream_s, 1)
+                                     if stream_s else None))
             rows.append(row)
     json.dump({"capture_node": cap_node, "bursts": rows},
               open(os.path.join(a.dir, "summary.json"), "w"), indent=1)
     hdr = ("node", "time", "s", "presets", "tx full%", "rx", "lost", "loss%", "loop", "hold",
-           "reset", "under", "re-anc", "holes 1/2/3-4/5-30/>30", "parked", "centre", "rssi",
-           "vbat")
+           "reset", "under", "re-anc", "holes 1/2/3-4/5-30/>30", "parked", "centre", "dark",
+           "rssi", "vbat")
     print(" | ".join(hdr))
     for r in sorted(rows, key=lambda r: (r["t"], r["node"])):
         print(" | ".join(str(x) for x in (
@@ -213,7 +252,14 @@ def analyze(a):
             r["loop_fills"], r["hold_fills"], r["gap_resets"], r["under"], r["reanchor"],
             "/".join(map(str, r["hist"] or [])), r.get("parked", "-"),
             (f"{r['centre']} {r['centre_ms']}" if r.get("centre") else r.get("centre", "-")),
+            (f"{r['dark']} {r['dark_pct']}%" if r.get("dark") else r.get("dark", "-")),
             r["rssi"], r["vbat_mv"])))
+    capped = [r for r in rows if r.get("cap")]
+    if capped:
+        pct = sorted(r["dark_pct"] or 0 for r in capped)
+        print(f"capture node {cap_node}: {len(capped)} bursts, {sum(r['dark'] for r in capped)} "
+              f"dark gaps for {sum(r['gap_resets'] or 0 for r in capped)} resets; dark time "
+              f"median {pct[len(pct) // 2]}%, max {pct[-1]}%")
 
 
 def main():

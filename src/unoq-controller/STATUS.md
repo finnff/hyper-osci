@@ -1134,20 +1134,20 @@ captures, 0 sequence gaps, but only every other burst has one: captures run
   against 0.7 for one node. Holes after the bounce (all nodes): 8373 × 1,
   1943 × 2, 775 × 3–4, **1702 × 5–30**, 96 × > 30. So 94.7 % of resets are
   holes of 25–150 ms.
-- **What a reset costs on the scope** (121, 55 captured bursts, all but three of them
-  artists bursts, so these are artists-pattern numbers): near-centre
-  still runs of 4–8 ms, 2.3 % of stream time on average (max 6.7 %), 39 ms per
-  reset. Correlation with the per-burst reset count 0.81. Also 61 off-centre
-  parked runs ≤ 7.9 ms in 31 bursts. `[INFERENCE]` The ladder after a
-  mid-stream reset lasts about as long as the hole, not the ~0.45 s the plan
-  §5 assumed: the restarting packet keeps its own deadline.
+- **What a reset costs on the scope** (121): **~0.4 s of centre dot per
+  mid-stream reset**, 12.3 % of stream time per burst (median, max 30 %).
+  Corrected in "Review fixes and Phase 3" below. The figure first written
+  here (near-centre still runs of 4–8 ms, 39 ms per reset) came from
+  `parked_runs`, whose 150-code stillness tolerance is about the capture's
+  noise floor, so it caught the edges of each dot and missed the rest. The
+  plan's ~0.45 s was right.
 - **Netwatch cannot see a wedge on the show cycles.** `audio_is_dead`
   (`deploy/hyperosci-netwatch:120-129`) only counts slaves in NETWORK. A
   30 s tick that lands in mic time returns "not dead", which zeroes the
   strikes and keeps no rx sample. A bounce needs three consecutive ticks
   inside bursts, with the 8–10 s bursts every 60 s. This run's denser cycle
-  is what let it fire. On the show cycles the 16:58 wedge would have stayed
-  `[INFERENCE]`. Fixed the same evening (next entry). In the old check,
+  is what let it fire. On the show cycles the 18:58 CEST (16:58 UTC) wedge
+  would have stayed `[INFERENCE]`. Fixed the same evening (next entry). In the old check,
   121 flickering onto the stream also reset the strikes on every in-burst
   tick.
 - **Battery readings**: 100 read 5756 mV for the whole run (impossible for a
@@ -1179,10 +1179,10 @@ on the UNO-Q), `tests/test_netwatch.py` 29 checks:
 - **Only slaves that are reporting count** (amended after the second stress
   run). Sends to a slave that has gone quiet are refused as well: 164,
   switched off for a minute at 18:04 UTC, drew two strikes, "AP refused
-  68 % / 73 % of sends". A slave whose STATUS is ≥ 5 s old, or that is marked
-  `gone`, now gets a fresh tx sample instead of a verdict. That is the same
-  5 s at which the controller marks it lost; in the wedge nobody was ever
-  marked. Without this, a node dying on stage would leave strikes standing.
+  68 % / 73 % of sends". A slave whose STATUS is ≥ 5 s old (2 s since the
+  review fixes below), or that is marked `gone`, now gets a fresh tx sample
+  instead of a verdict. In the wedge nobody was ever marked. Without this, a
+  node dying on stage would leave strikes standing.
 
 ### Second three-node stress soak (2026-10-17, 19:47–20:17 CEST)
 
@@ -1203,9 +1203,10 @@ out (23 node-bursts). Captures now alternate groups: 19 logos, 21 artists.
 - **Holes**: 11787 × 1, 2775 × 2, 1104 × 3–4, 1494 × 5–30, 99 × > 30. That
   is 4.5 resets per burst per node, 93.8 % of them 25–150 ms holes. It
   confirms the first run's Phase 3 numbers.
-- **On the scope (121)**: logos 19 bursts, 16 parked runs ≤ 5.4 ms, still
-  near centre for 1.8 % of stream time (max 4.2 %), 31 ms per reset. Artists
-  21 bursts, 24 parked runs ≤ 5.9 ms, 2.0 % (max 5.4 %), 37 ms per reset.
+- **On the scope (121)**: ~0.4 s of centre dot per mid-stream reset, 15.9 %
+  of stream time per burst (median, max 31 %), corrected as above (first
+  written as 31–37 ms per reset from `parked_runs`). 16 + 24 short parked
+  runs ≤ 5.9 ms in the 19 logos and 21 artists bursts.
 - **Side effect of the outage, worth fixing**: while 164 was gone, 100 and
   121 lost 41–90 % for ~30 s (bursts 20:04:09–20:04:37). The controller
   kept streaming to 164: its `ok` count still rose for ~10 s after it went
@@ -1230,7 +1231,7 @@ node): 100 was switched off by hand at ~20:28:40 and back on at ~20:29:40.
 
 - `[stream] 192.168.50.202 paused` came 3 s after 100's last STATUS. 2 s
   later it was marked lost, deleted 20:29:10, rediscovered 20:29:43.
-- **121 and 164 while 100 was off** (5 bursts each): loss 3.8–7.6 %, AP
+- **121 and 164 while 100 was off** (4 bursts each): loss 3.8–7.6 %, AP
   refusals 0.6–1.7 %, 0 underruns. Last time the same event cost them
   41–90 % for ~30 s. With two nodes the refusals fell below the three-node
   4.6–7.9 % before and after.
@@ -1243,3 +1244,97 @@ node): 100 was switched off by hand at ~20:28:40 and back on at ~20:29:40.
   This is link variation, not the change: the change adds one set
   comprehension over three slaves per loop pass, and the two-node stretch
   in the middle of the same run was at ~1 %. A longer run would settle it.
+
+### Review fixes and Phase 3 (2026-10-17)
+
+An outside review of the `stream-concealment` work raised eight findings.
+Checking finding 2 turned up a bigger, mismeasured cost.
+
+**Each mid-stream reset costs ~0.4 s of centre dot, not ~39 ms.** `soak.py`
+now has a `dark` column: stills of ≥ 50 ms inside the stream (25 ms blocks,
+X std ≤ 300 codes). On 121:
+
+| run | nodes | captured bursts | dark gaps / resets | dark time per burst, median (max) |
+|---|---|---|---|---|
+| soak1 (1 h) | 1 | 60 | 1 / 43 | 0 % (6.8 %) |
+| first stress soak | 3 | 65 | 205 / 302 | 12.3 % (30.3 %) |
+| second stress soak | 3 | 42 | 136 / 197 | 15.9 % (30.9 %) |
+| stale-slave check | 3 | 24 | 107 / 167 | 25.9 % (30.5 %) |
+
+- The second stress soak leaves out its outage burst (154 resets, no stream
+  to measure).
+- Gaps last 375–425 ms. Their count per burst tracks the resets (correlation
+  0.83–0.94).
+- At 1 ms resolution each gap is the ladder: 20 ms parked on the last point,
+  a 10 ms linear ramp, then centre.
+- One node's resets were join holes in the pre-roll, which is already on the
+  mic, so they were invisible.
+- **Why `parked_runs` missed them:** its 150-code stillness tolerance is
+  about the capture's noise floor (~150 codes over 1 ms). It caught the edges
+  of each dot and missed the rest.
+
+**The findings:**
+
+| # | finding | verdict | done |
+|---|---|---|---|
+| 1 | an underrun leaves `pushed_since_reset_` saturated, so `push_loop` can copy pre-stall audio | real | `push()` onto an empty buffer zeroes it (`jitter_buffer.h`); host test case 7 fails before, passes after |
+| 2 | a flush leaves `g_net_played` set, so the refill wait runs the ladder | real, the gaps above | the audio task watches `net_rx::flush_count()` and pre-rolls on the mic; Phase 3 removes most flushes |
+| 3 | `g_join_ms` stale on HYBRID → NETWORK; no STREAM_UP | real, logs only | `set_mode` stamps the join; the played branch logs STREAM_UP |
+| 4 | loop marker updated before the drop checks | real, `stat`/log only | updated after accept; the fill log reads this packet's field |
+| 5 | `loop_frames_for` rejects non-integer ratios for every kind | can't happen: API and `clean_preset` both `int()` the ratios | none |
+| 6 | `stale_now` duplicates the `stream_targets` test | real, tidiness | `stream_stale(s, now)` used by both |
+| 7 | `rx_check` lacks the quiet-slave filter | real, show-end only: one healthy slave forces "healthy", and between bursts `tx_seen` clears strikes | `fresh_ips()` filters both checks |
+| 8 | `TX_FRESH_MS` 5 s > the 3 s stream cut | real, narrow | 2 s |
+
+- Finding 1 is reachable: `net_rx.cpp` pushes a packet onto an empty buffer
+  without the delta check. Packets and blocks are both 240 frames, so an
+  underrun always leaves the depth at exactly 0.
+
+**Phase 3 (plan §5):**
+- `HYPE_LOOP_FILL_MAX_MS` 20 → 150 ms. That equals the controller's
+  `LOOP_FILL_CEIL`, so the controller needs no change.
+- Hold stays ≤ 20 ms (`HOLD_FILL_MAX_MS`, `config.h`). A hole over 20 ms
+  with no usable loop still flushes.
+- The pulse step over a long fill is accepted. At HyperLili it is ≤ 26 %.
+
+**Deployed:**
+- Controller md5 `b6605350…`, backup `~/hype_controller.py.pre-review`. All
+  six board test files pass.
+- Netwatch md5 `6e196613…`, backup `/tmp/hyperosci-netwatch.pre-review`
+  (tmpfs). `test_netwatch.py` has 33 checks; the old script fails the new 2.5 s
+  case.
+- Firmware flashed over USB with the battery switch OFF, in the order 164,
+  100, 121.
+- When 164 was plugged in, the XIAO's `/dev/serial/by-id` entry disappeared.
+  This is more evidence for the open USB-coexistence item.
+
+**Bench, 164 on USB, steady Mama Snake, `droptest 200 30` (one 150 ms hole
+per second):**
+- Every 30-packet hole was loop-filled (`[fill] loop 7200f 30pkt`).
+- 4 resets in 20 s, all from holes over 150 ms (31–33 packets: natural loss
+  next to the drop).
+- With `fill hold`: 20 resets in 15 s, including a 75 ms hole. This confirms
+  the hold cap.
+- After every reset, `first-play` came ~445 ms later: the flush clears
+  `g_net_played`, so the wait is drawn as pre-roll.
+
+**Three-node soak on the new firmware** (21:53–22:05 CEST, 28 s cycles,
+XIAO on 121, all on battery, `/tmp/soak5`):
+
+| node | bursts | loss | refused | resets per burst (before) | loop / hold fills | holes 5–30 / > 30 |
+|---|---|---|---|---|---|---|
+| 100 | 49 | 5.97 % | 4.33 % | 0.55 (7.69) | 1069 / 44 | 288 / 17 |
+| 121 | 50 | 6.17 % | 3.99 % | 0.34 (7.83) | 1410 / 111 | 307 / 9 |
+| 164 | 49 | 8.40 % | 4.13 % | 0.65 (7.52) | 2226 / 109 | 309 / 21 |
+
+- "Before" is the stale-slave check run, outage left out. Its loss and hole
+  sizes were the same.
+- Dark time per burst on 121: median 0 %, max 4.3 %. That is 4 gaps of
+  300–325 ms in 20 bursts, now on the mic.
+- 0 underruns, 0 re-anchors.
+- No `[stream] paused` lines during the soak. The only ones were from the
+  flashing.
+- 0 netwatch strikes.
+- Cycles restored: `hype_cycles/nodes/state.json` are byte-identical to the
+  `p3.bak` backups.
+- Still open: the phone-video scope checks of Phases 1, 2 and 3.

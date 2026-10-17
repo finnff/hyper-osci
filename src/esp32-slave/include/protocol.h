@@ -43,10 +43,12 @@ typedef struct __attribute__((packed)) {
 
 #define HYPE_AUDIO_FRAMES 240 // 5 ms at 48 kHz -> 20+8+960 = 988 B/packet
 
-// Loop-fill concealment (Phase 2, docs/stream-concealment-plan.md §4):
-// the controller's pattern repeats every loop_frames, so the slave fills
-// small holes by copying from one loop back in its ring.
-#define HYPE_LOOP_FILL_MAX_MS 20     // slave fill limit (Phase 2); controller LOOP_FILL_CEIL_MS must be >= this
+// Loop-fill concealment (docs/stream-concealment-plan.md §4-§5): the
+// controller's pattern repeats every loop_frames, so the slave fills holes by
+// copying from one loop back in its ring. Phase 3: up to 150 ms when the
+// loop is usable; without one, last-value hold only up to HOLD_FILL_MAX_MS
+// (config.h) and a reset beyond it.
+#define HYPE_LOOP_FILL_MAX_MS 150    // slave loop-fill limit; controller LOOP_FILL_CEIL_MS must be >= this
 #define HYPE_LOOP_MAX_FRAMES 8192    // largest loop_frames a slave accepts
 
 // --- HYPE_SYNC payload ------------------------------------------------------

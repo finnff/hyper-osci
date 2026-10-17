@@ -38,9 +38,9 @@ struct Stats {
   uint32_t underruns;
   uint32_t seq_gaps;      // gap events (any seq discontinuity)
   uint32_t lost_packets;  // cumulative missing packets inferred from gap sizes
-  uint32_t gap_resets;    // > HYPE_LOOP_FILL_MAX_MS deadline holes that flushed
-  uint32_t loop_fills;    // small-gap fill events, loop-copy (Phase 2)
-  uint32_t hold_fills;    // small-gap fill events, last-value hold
+  uint32_t gap_resets;    // deadline holes too long to conceal, that flushed
+  uint32_t loop_fills;    // hole fill events, loop-copy (<= HYPE_LOOP_FILL_MAX_MS)
+  uint32_t hold_fills;    // hole fill events, last-value hold (<= HOLD_FILL_MAX_MS)
   uint32_t reanchor_gaps; // deadline holes with contiguous seq (re-anchors)
   uint32_t gap_hist[5];   // seq holes by packets missing: 1, 2, 3-4, 5-30, >30
   FillMode fill_mode;     // current small-gap fill method
@@ -78,6 +78,10 @@ enum class Pull : uint8_t {
   UNDERRUN,  // buffer ran dry mid-play; rebuffering (counted in stats)
 };
 Pull pull_block(int16_t* frames, size_t frame_count);
+// Jitter-buffer flushes so far (gap resets, SYNC_PULSE, WiFi drop, mode
+// gate; wraps). The audio task compares readings to notice that what it was
+// playing is gone and the next block is a fresh start.
+uint32_t flush_count();
 
 // Whether stream audio is buffered at all (false = LOCAL mode). Both edges
 // discard the buffer: going off drops audio that would rot until the next

@@ -263,7 +263,9 @@ Limits, measured 2026-10-14:
   TX-queue refusals) and records show bursts of one slave (`--node`) on the XIAO, alternating
   between the two groups while both are enabled;
   `analyze` turns that into one row per burst and slave (loss, EAGAIN %, loop/hold fills,
-  resets, underruns, and parked-beam runs for the captured slave).
+  resets, underruns, and for the captured slave: short parked-beam runs, plus `dark` = stills of
+  ≥ 50 ms inside the stream, the ~0.4 s a flushed buffer costs, as count and % of stream time).
+  The last line sums the dark gaps against the resets of the captured bursts.
 - **Toolchain:** `arduino-cli` with the Seeed core `Seeeduino:renesas_uno` 1.2.0 (board index
   `https://files.seeedstudio.com/arduino/package_renesas_1.2.0_index.json`). Uploads need a udev
   rule for Seeed's vendor ID; the core's `post_install.sh` only covers Arduino's `2341`:

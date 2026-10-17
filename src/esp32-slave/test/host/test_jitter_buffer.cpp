@@ -13,6 +13,9 @@
 //   5. the loop + count <= CAP - 1 bound
 //   6. last_l_/last_r_ continuity: a following push_hold repeats the last
 //      filled frame
+//   7. drained dry, then restarted without reset() (an underrun: the next
+//      packet lands on depth 0 and re-anchors) -> the pre-drain ring content
+//      is not a loop source until a full loop has been pushed again
 // Plain asserts; exit code 0 = pass.
 
 #include <assert.h>
@@ -165,6 +168,26 @@ void test_last_value_continuity() {
   }
 }
 
+// 7. Underrun restart: the buffer plays dry and the next packet lands on an
+//    empty buffer (net_rx pushes it without reset(), re-anchoring the head
+//    deadline). The ring still physically holds the pre-stall stream; a fill
+//    right after the restart must not copy it.
+void test_drain_restart() {
+  static JitterBuffer jb;
+  jb.reset();
+  push_periodic(jb, 64, 0);          // the stream before the stall
+  expect_pattern(jb, 64, 0);         // played dry: depth 0, no reset()
+  static int16_t fresh[4 * 2];
+  for (int i = 0; i < 4 * 2; i++) fresh[i] = -7;
+  assert(jb.push(fresh, 4, 0));      // the restart packet
+  assert(jb.push_loop(4, P) == 0);   // 4 < loop 8 since the restart: hold
+  assert(jb.push(fresh, 4, 0));
+  assert(jb.push_loop(4, P) == 4);   // a full loop of fresh content: loop
+  static int16_t scratch[16 * 2];
+  assert(jb.pop(scratch, 12));
+  for (int i = 0; i < 12 * 2; i++) assert(scratch[i] == -7);
+}
+
 }  // namespace
 
 int main() {
@@ -174,6 +197,7 @@ int main() {
   test_reset_race();
   test_loop_count_bound();
   test_last_value_continuity();
-  printf("push_loop: 6/6 cases passed\n");
+  test_drain_restart();
+  printf("push_loop: 7/7 cases passed\n");
   return 0;
 }

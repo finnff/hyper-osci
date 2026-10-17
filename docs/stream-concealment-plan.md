@@ -2,7 +2,8 @@
 
 **Status:** Phase 1 and 1b implemented and bench-run on 164 (2026-10-14, §3.6–3.8); scope check
 still open. Phase 2 implemented 2026-10-17: controller deployed, 164 flashed, §4.5 counter checks
-pass (`STATUS.md`, "Phase 2"); its scope check is open too. Phase 3 not started (rev 5).
+pass (`STATUS.md`, "Phase 2"); its scope check is open too. Phase 3 implemented 2026-10-17 (§5):
+150 ms loop-fill, and a flush mid-stream pre-rolls on the mic instead of the ladder (rev 6).
 - Measurements: `src/unoq-controller/STATUS.md`, "Transmission to one node (164)".
 - Normative wire spec stays `protocol.md` + `protocol.h`; this file says what will change in them
   and why.
@@ -11,7 +12,8 @@ pass (`STATUS.md`, "Phase 2"); its scope check is open too. Phase 3 not started 
 **Phases:**
 - **Phase 1 (A)** and **Phase 2 (B)** are built and deployed to the controller and all three
   slaves (164, 100, 121; 100 and 121 flashed 2026-10-17).
-- **Phase 3** is gated on data that Phase 2 starts collecting.
+- **Phase 3 (C)**: the gate data came in at three nodes (§9); built 2026-10-17, see `STATUS.md`
+  "Review fixes and Phase 3" for what is flashed and measured.
 - The loss diagnosis (§6) runs alongside and blocks nothing.
 - Unresolved questions are in §9.
 
@@ -23,6 +25,7 @@ Two artefacts, with different causes and different fixes:
 |---|---|---|---|
 | **A. Burst-start centre dot** | every logo/name burst, deterministic | **pre-roll**: the slave joins a stream whose blocks are due 450 ms after they are sent, and the "too early" path runs the concealment ladder | ≤ 20 ms on a stale point, a 10 ms glide, then a **centre dot for ~0.42 s** before the name |
 | **B. Mid-figure sparkle** | ~2–7 times/s during play (1–3.5 % packet loss on 164, same for logos and names) | lost packet → 5 ms hole filled with copies of the last point | beam **parks on one spot for 5 ms** (bright dot) and that 5 ms slice of the drawing is skipped: 25–35 % of one redraw at 50–70 Hz |
+| **C. Mid-burst centre dot** | 4.5–5.6 times per burst per node at three nodes, ~0.7 at one (2026-10-17) | a hole of 25–150 ms (AP queue refusals) is over the 20 ms fill limit, so the buffer flushes and the restart is due 450 ms out; the ladder runs meanwhile | 20 ms hold, 10 ms glide, then a **centre dot for ~0.4 s** mid-name: 12–26 % of stream time per burst (median) on 121 |
 
 - **Not the cause:** the buffer running dry. Steady-state underruns were 0 and the controller's
   send queue lost nothing (`txfull`/`txerr` 0).
@@ -383,7 +386,9 @@ Definitions:
     960), the copy reads frames it wrote earlier in the same call, like LZ77.
     `memcpy`/`memmove` would read stale ring contents.
 - **`pushed_since_reset_` is a `JitterBuffer` member:**
-  - zeroed inside `reset()`'s critical section;
+  - zeroed inside `reset()`'s critical section, and by a `push` onto an empty buffer (added
+    2026-10-17 after review): after an underrun the next packet re-anchors without `reset()`,
+    and the ring still holds the stream from before the stall;
   - incremented inside the **same** critical section that commits the tail, for `push`,
     `push_hold` and `push_loop`.
   - `reset()` is reachable from another task (`set_mode` → `flush`). A counter held anywhere
@@ -445,31 +450,40 @@ no test infrastructure.
 | no-loop patterns | `rot ≠ 0`, or pulse 10 Hz / 100 % | field 0, hold only |
 | rig | 164, all eight presets, normal loss | same counters; lost/s unchanged (this conceals, it does not cut loss) |
 
-## 5. Phase 3: raise the reset limit (gated)
+## 5. Phase 3: raise the reset limit (implemented 2026-10-17)
 
-- **Today:** any gap over 20 ms resets the buffer, followed by ~0.45 s of the ladder for
+- **Before:** any gap over 20 ms reset the buffer, followed by ~0.45 s of the ladder for
   mid-stream gaps. Hold-fill made 20 ms the right limit, because a longer parked dot is worse
   than a reset. Loop-fill removes that reason.
-- **Not decided yet; it waits for data:**
-  - **Is it needed?** It needs the `gap_resets` count and the histogram from Phase 2, collected
-    at the **show's node count**.
-  - **Why the node count matters:** the one-node numbers here don't carry over. On 2026-08-09,
-    with three nodes, the controller lost 1–29 % of packets before they reached the air, in bursts
-    timed with the deaf-stall clusters. Holes at the show could be far longer than at one node.
-  - **Which limit?** Read it off the histogram.
+- **The gate data** (three nodes, 2026-10-17, `STATUS.md` "Three-node stress soak" and the
+  second one): 4.5–5.6 resets per burst per node, 94 % of them holes of 5–30 packets (25–150 ms),
+  each ~0.4 s of centre dot on the scope (artefact C, §1). One node: 0.7 per burst, mostly join
+  holes during the pre-roll, invisible.
+  - **Why the node count mattered:** on 2026-08-09, with three nodes, the controller lost
+    1–29 % of packets before they reached the air, in bursts timed with the deaf-stall clusters.
   - **A deaf window delays packets; it doesn't lose them.** Its length (~103 ms, STATUS
     2026-08-04) is not by itself an argument for any limit.
-- **Constraints when it is set:**
-  - `HYPE_LOOP_FILL_MAX_MS` ≤ the controller's `LOOP_FILL_CEIL` (§4.2). Raise the controller
-    first if it must go above 150 ms.
-  - **Pulse step over a long fill:** at HyperLili, a 150 ms fill ends with up to a 26 % size step
-    at the steepest point of the pulse. Cap the fill length by pulse rate, or accept that one step
-    as better than a reset.
+- **What was built:**
+  - `HYPE_LOOP_FILL_MAX_MS` = 150 ms (`protocol.h`) = the controller's `LOOP_FILL_CEIL` (§4.2),
+    so no controller change; `test_loop.py` still asserts ceiling ≥ slave limit.
+  - **Hold stays at 20 ms** (`HOLD_FILL_MAX_MS`, `config.h`): with no usable loop (field 0 in a
+    settle window, too little history, `fill hold`), a 25–150 ms hole still flushes.
+  - **A flush mid-stream pre-rolls on the mic**, not the ladder (`mode_manager.cpp`, the audio
+    task watches `net_rx::flush_count()`): the restart is due 450 ms out, the same wait as a
+    join (§3.2). Covers SYNC_PULSE and WiFi-reconnect flushes too.
+- **Decisions on the constraints:**
+  - **Pulse step over a long fill: accepted.** At HyperLili a 150 ms fill ends with up to a 26 %
+    size step at the steepest point of the pulse; one step beats 0.4 s of dot. The slave can't
+    cap by pulse rate (it never sees the pulse), and zeroing the field for HyperLili would turn
+    its 25–150 ms holes back into resets and its ≤ 20 ms ones into holds.
   - **Re-anchors:** with seq contiguous, nothing is missing, so loop-fill **inserts** drawing.
     The next packet resumes out of phase by (drift mod loop). That is one visible jump, much
     better than a 0.45 s reset. `reanchor_gaps` counts them.
-- **Acceptance:** `droptest <every> <run>` sized from the histogram's worst bucket → `gap_resets`
-  stays 0, and the figure stays intact on the scope.
+  - **Ring room:** a hole of H ms arrives with the buffer at ~(450 − H) ms deep, leaving
+    ~62 + H ms free in the 512 ms ring, so a fill of H always fits.
+- **Acceptance:** `droptest 200 30` (the 5–30 bucket's worst, 150 ms) on a steady preset →
+  `gap_resets` stays 0, `loop_fills` climbs, and the figure stays intact on the scope; a
+  three-node soak shows the dark time per burst (`soak.py analyze`, `dark`) near the one-node 0 %.
 
 ## 6. Alongside: where is the loss?
 
@@ -528,11 +542,11 @@ This blocks no phase; it decides whether the loss itself can be cut.
 | Lost `local` command → ~0.55 s centre dot (§3.3) | **fixed in Phase 1b** (§3.7): 200 ms resend, STATUS reply per CMD, underrun → mic | scope check below |
 | Stream-up → first play ≈ 580 ms vs 450 ms lead (§3.6) | **explained** (§3.8): a pre-roll reset at every join | — |
 | Late + lost start of every new flow (§3.8) | measured, cause not pinned | log arrival time, seq and lead of each packet in a join's first 300 ms on the slave; check `async_udp` queue overflow vs AP release |
-| Do these joins need concealment? | open, now part of Phase 3 | the join holes (90–180 ms) are over Phase 2's 20 ms fill limit, so they still reset (logos: ~1 reset per burst in the 2026-10-17 soak). Still invisible (pre-roll shows the mic); a Phase 3 limit of ≥ 150 ms would loop-fill most of them and bring first play ~130 ms earlier |
+| Do these joins need concealment? | Phase 3 built (§5) | join holes of 90–180 ms now loop-fill when this packet's field is set; a hole inside the settle window after the burst's pattern change (field 0) still resets, invisibly (pre-roll shows the mic). Check `preroll=` and the `[ev]` resets on one flashed node |
 | Scope check of Phase 1 / 1b (§3.5) | open | phone video of a burst start (mic → name, no dot) and of SILENT pressed mid-burst (mic, no dot) |
 | Scope check of Phase 2 (§4.5) | counters pass on 164 (2026-10-17, `STATUS.md`); scope open | `droptest 20` with `fill loop` vs `fill hold` on the scope or the XIAO capture: no dots vs dots |
 | Air vs ESP32 loss (§6) | open | laptop comparison |
 | STATUS 2026-08-04 "zero tx retries, zero tx failed" | rests on counters ath10k likely leaves at 0; the 1139 pkt/s receiver-side result stands | mark that line "not populated by ath10k", not "clean link", once §6 confirms |
-| Phase 3 limit | **data in** (2026-10-17, `STATUS.md` "Three-node stress soak"): at three nodes 5.6 resets per burst per node, 94.7 % of them holes of 5–30 packets (25–150 ms); one node: 0.7 per burst, half of them 5–30. A 150 ms limit covers almost all; each reset costs ~39 ms of centre dot on the scope, not ~0.45 s | §5 |
+| Phase 3 limit | **set to 150 ms** (§5). Data (2026-10-17, `STATUS.md` "Three-node stress soak"): at three nodes 5.6 resets per burst per node, 94.7 % of them holes of 5–30 packets (25–150 ms); one node: 0.7 per burst, half of them 5–30. Each mid-stream reset cost ~0.4 s of centre dot (first misread as ~39 ms; corrected in `STATUS.md` "Review fixes and Phase 3") | three-node soak on the new firmware: `gap_resets` and `dark` per burst |
 | Exact on-air timing (§3.4) | deferred | decide after seeing Phase 1 on stage |
 | Move off the onboard AP to a router? | **decided 2026-10-14: no.** The show stays on the UNO-Q's onboard AP (`hyperosci-ap`); loss work targets that AP and the ESP32 | closed |
