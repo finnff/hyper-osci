@@ -1101,3 +1101,52 @@ usual USB artefact (below 2000 mV the battery policy ignores it); check
 again on battery. 100 dropped off USB once, 10 s after its first plug-in:
 seating, not the deep-sleep rule (it read 5008 mV on the re-plug and stayed
 up).
+
+### Three-node stress soak (2026-10-17, 19:04–19:35 CEST)
+
+All three slaves on battery with every switch on; XIAO on 121. Both cycles
+set to `every_s` 28 (show: 120), which the scheduler phased as artists 0–10 s,
+logos 15–23 s: about 5 s of mic between bursts, 4× the show's burst rate.
+`soak.py run --minutes 30 --node 121 --out /tmp/soak2`, plus a 7 s
+`iw station dump` + ping log on the UNO-Q. Cycles were restored afterwards
+(`hype_cycles/nodes/state.json` byte-identical to the backups).
+
+**The AP was wedged when the run started.** That began when 100 and 164
+rejoined at 16:58 UTC, on the 120 s show cycles, about 6 min before the soak.
+Netwatch bounced `hyperosci-ap` at 17:09:28 UTC, 4.5 min into the soak. 66
+captures, 0 sequence gaps, but only every other burst has one: captures run
+~17 s and bursts start every ~14 s.
+
+| per node, bursts | wedged, 19 each | after the bounce, 107 each |
+|---|---|---|
+| loss | 88–95 % (per burst 33–99) | 6.4 / 6.8 / 7.0 % (100 / 121 / 164; per burst 0.2–13) |
+| refused at the controller (EAGAIN) | 91 / 37 / 93 % | 3.5 / 3.3 / 3.7 % |
+| ping RTT avg (max) | 205 (521) / 686 (1272) / 133 (489) ms | 50 / 47 / 52 (≤ 141) ms |
+| underruns | 8 / 18 / 14 | 0 |
+| resets | 587 / 2 / 221 | 582 / 591 / 625 |
+| loop / hold fills | — | 2871 / 359, 4129 / 436, 2919 / 377 |
+
+- **Three nodes fit in a good phase**: 6.7 % loss across 321 node-bursts,
+  about half of it refused by the AP queue before the air, 0 underruns, 0
+  re-anchors. The wedged phase matches the 2026-07-18 writeup: station rates
+  of 2–6 Mbit/s for 100 and 164, RTT up to 1.3 s.
+- **Resets are the visible cost at three nodes**: 5.6 per burst per node,
+  against 0.7 for one node. Holes after the bounce (all nodes): 8373 × 1,
+  1943 × 2, 775 × 3–4, **1702 × 5–30**, 96 × > 30. So 94.7 % of resets are
+  holes of 25–150 ms.
+- **What a reset costs on the scope** (121, 55 captured bursts): near-centre
+  still runs of 4–8 ms, 2.3 % of stream time on average (max 6.7 %), 39 ms per
+  reset. Correlation with the per-burst reset count 0.81. Also 61 off-centre
+  parked runs ≤ 7.9 ms in 31 bursts. `[INFERENCE]` The ladder after a
+  mid-stream reset lasts about as long as the hole, not the ~0.45 s the plan
+  §5 assumed: the restarting packet keeps its own deadline.
+- **Netwatch cannot see a wedge on the show cycles.** `audio_is_dead`
+  (`deploy/hyperosci-netwatch:120-129`) only counts slaves in NETWORK. A
+  30 s tick that lands in mic time returns "not dead", which zeroes the
+  strikes and keeps no rx sample. A bounce needs three consecutive ticks
+  inside bursts, with the 8–10 s bursts every 60 s. This run's denser cycle
+  is what let it fire. On the show cycles the 16:58 wedge would have stayed
+  `[INFERENCE]`. It must be fixed before the show.
+- **Battery readings**: 100 read 5756 mV for the whole run (impossible for a
+  LiPo, so its sense is broken and its low-battery cutout can't act). 121 sat
+  at 3678 mV. 164 read 3886 → 4000 mV.

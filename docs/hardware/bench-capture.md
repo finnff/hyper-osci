@@ -259,9 +259,10 @@ Limits, measured 2026-10-14:
   sequence continuity, saves the 14-bit codes to `.npz`, prints per-channel stats and optionally
   renders an X/Y + time-strip PNG.
 - **Soak:** [`src/bench-capture/soak.py`](../../src/bench-capture/soak.py) `run` polls the
-  controller's `/api/state` at 1 Hz and records every show burst on the XIAO; `analyze` turns
-  that into one row per burst (loss, loop/hold fills, resets, underruns, parked-beam runs in the
-  capture).
+  controller's `/api/state` at 1 Hz (every slave's counters and the controller's per-slave
+  TX-queue refusals) and records every show burst of one slave (`--node`) on the XIAO;
+  `analyze` turns that into one row per burst and slave (loss, EAGAIN %, loop/hold fills,
+  resets, underruns, and parked-beam runs for the captured slave).
 - **Toolchain:** `arduino-cli` with the Seeed core `Seeeduino:renesas_uno` 1.2.0 (board index
   `https://files.seeedstudio.com/arduino/package_renesas_1.2.0_index.json`). Uploads need a udev
   rule for Seeed's vendor ID; the core's `post_install.sh` only covers Arduino's `2341`:

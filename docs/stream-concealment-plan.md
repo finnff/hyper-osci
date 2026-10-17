@@ -533,6 +533,6 @@ This blocks no phase; it decides whether the loss itself can be cut.
 | Scope check of Phase 2 (§4.5) | counters pass on 164 (2026-10-17, `STATUS.md`); scope open | `droptest 20` with `fill loop` vs `fill hold` on the scope or the XIAO capture: no dots vs dots |
 | Air vs ESP32 loss (§6) | open | laptop comparison |
 | STATUS 2026-08-04 "zero tx retries, zero tx failed" | rests on counters ath10k likely leaves at 0; the 1139 pkt/s receiver-side result stands | mark that line "not populated by ath10k", not "clean link", once §6 confirms |
-| Phase 3 limit | needs Phase 2 histogram at show node count. One node, 1 h (2026-10-17, `STATUS.md` "One-hour soak"): 43 resets = 21 holes of 5–30 packets + 22 of > 30, so a 150 ms limit would turn about half of them into fills | §5 |
+| Phase 3 limit | **data in** (2026-10-17, `STATUS.md` "Three-node stress soak"): at three nodes 5.6 resets per burst per node, 94.7 % of them holes of 5–30 packets (25–150 ms); one node: 0.7 per burst, half of them 5–30. A 150 ms limit covers almost all; each reset costs ~39 ms of centre dot on the scope, not ~0.45 s | §5 |
 | Exact on-air timing (§3.4) | deferred | decide after seeing Phase 1 on stage |
 | Move off the onboard AP to a router? | **decided 2026-10-14: no.** The show stays on the UNO-Q's onboard AP (`hyperosci-ap`); loss work targets that AP and the ESP32 | closed |
