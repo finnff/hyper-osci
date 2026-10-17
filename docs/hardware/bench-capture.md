@@ -258,6 +258,10 @@ Limits, measured 2026-10-14:
 - **Host:** [`src/bench-capture/xiao_capture.py`](../../src/bench-capture/xiao_capture.py) checks
   sequence continuity, saves the 14-bit codes to `.npz`, prints per-channel stats and optionally
   renders an X/Y + time-strip PNG.
+- **Soak:** [`src/bench-capture/soak.py`](../../src/bench-capture/soak.py) `run` polls the
+  controller's `/api/state` at 1 Hz and records every show burst on the XIAO; `analyze` turns
+  that into one row per burst (loss, loop/hold fills, resets, underruns, parked-beam runs in the
+  capture).
 - **Toolchain:** `arduino-cli` with the Seeed core `Seeeduino:renesas_uno` 1.2.0 (board index
   `https://files.seeedstudio.com/arduino/package_renesas_1.2.0_index.json`). Uploads need a udev
   rule for Seeed's vendor ID; the core's `post_install.sh` only covers Arduino's `2341`:
@@ -274,6 +278,8 @@ src/bench-capture/flash.sh                                                # comp
 python3 src/bench-capture/xiao_capture.py --pins 2,3 --seconds 5 --png   # slave B: X = D2, Y = D3
 python3 src/bench-capture/xiao_capture.py --blast 5 [--load]              # USB CDC throughput
 python3 src/bench-capture/xiao_capture.py --cmd info --cmd "ledtest 40 0 0"
+python3 src/bench-capture/soak.py run --minutes 60 --out /tmp/soak1        # one node vs the show cycles
+python3 src/bench-capture/soak.py analyze /tmp/soak1
 ```
 
 ## 5. Option C: ESP32-S3 as an I2S sniffer (long captures)

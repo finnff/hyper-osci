@@ -40,8 +40,8 @@ MCAST_GROUP = "239.0.0.1"
 PORT_AUDIO, PORT_CTRL, PORT_STATUS = 5000, 5001, 5002
 
 HDR = struct.Struct("<IBBHIQ")  # magic, ver, type, flags, seq, timestamp_us
-AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, reserved
-STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")  # + pattern byte + lost uint32
+AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, loop_frames
+STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")  # + pattern byte + lost uint32 + 9 fill counters
 
 SAMPLE_RATE = 48000
 FRAMES = 240  # 5 ms
@@ -64,6 +64,27 @@ TXSTAT_INTERVAL_US = 1_000_000
 # exactly how a night of EAGAIN got written up as ENOBUFS. Both mean the one
 # thing that matters: the packet died in this box and never reached the air.
 TX_QUEUE_FULL = frozenset((errno.EAGAIN, errno.EWOULDBLOCK, errno.ENOBUFS))
+
+# Phase 2 loop-fill (docs/stream-concealment-plan.md §4.2): every AUDIO
+# packet carries the pattern's repeat length so a slave that loses
+# packets can fill the hole by copying one loop back in its ring instead
+# of holding the last frame. 0 = no usable loop -> the old hold.
+#
+# The ceiling is deliberately longer than any slave's fill limit
+# (HYPE_LOOP_FILL_MAX_MS in its protocol.h): the settle window must
+# assume the longest fill any slave could ever run, and test_loop.py
+# asserts this stays >= the slave's limit.
+LOOP_FILL_CEIL_MS = 150
+LOOP_FILL_CEIL_FRAMES = LOOP_FILL_CEIL_MS * SAMPLE_RATE // 1000
+# Largest loop a slave may copy from: 8192 frames (170 ms) leaves the
+# rest of the 512 ms ring for the fill window and the playhead.
+LOOP_MAX_FRAMES = 8192
+# Rounding the loop to whole frames drifts copy by copy across a fill;
+# 4 frames is invisible at every frequency the show uses.
+LOOP_DRIFT_MAX_FRAMES = 4
+# The pulse LFO must not change the drawing's size by more than this
+# fraction across one loop, or a filled hole lands one size off.
+LOOP_PULSE_MAX = 0.05
 
 MODE_NAMES = {0: "local", 1: "network", 2: "hybrid"}
 PATTERN_NAMES = {0: "mic", 1: "circle", 2: "lissajous", 3: "ramp", 4: "square"}
@@ -1233,6 +1254,10 @@ class State:
         # snapshot() can read it without taking a lock the audio path would
         # then have to contend for.
         self.net_tx = {}
+        # The loop_frames field stream_loop puts on the wire right now
+        # (0 = hold). Written once per packet outside the lock, read by
+        # snapshot() -- same deal as net_tx.
+        self.loop_frames = 0
         # Per-node switches, and the pair cycles that drive the set. Both are
         # read every policy tick and written by the HTTP threads, so both are
         # under self.lock.
@@ -1295,6 +1320,7 @@ class State:
                 "figures": figures,
                 "presets": [p["name"] for p in self.presets],
                 "stream_on": self.stream_on,
+                "loop_frames": self.loop_frames,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
                            for s in self.slaves.values()],
                 "net": {"iface": self.net_iface, "egress": self.net_egress,
@@ -1408,6 +1434,86 @@ class PatternGen:
         # Wrap only between blocks: ratios stay integer-coherent within one.
         self.phase = p % two_pi
         return out.tobytes()
+
+
+# ---------------------------------------------------------------------------
+# Loop-fill field (Phase 2, docs/stream-concealment-plan.md §4.2).
+# ---------------------------------------------------------------------------
+
+def loop_frames_for(params):
+    """The loop_frames field for one pattern: the repeat length in whole
+    48 kHz frames, or 0 -> the slave falls back to the last-value hold.
+
+    Every kind repeats exactly at 1/freq (block() advances phase or table
+    position by a freq multiple per sample), so the samples a lost packet
+    carried were already sent one loop earlier -- provided the pattern is
+    periodic enough for that copy to be indistinguishable:
+      * spin moves the figure, so it never repeats;
+      * a non-integer ratio never closes (lissajous/rose);
+      * whole-frame rounding drifts copy by copy, bounded by the longest
+        fill this controller will ever ask for;
+      * the pulse LFO must not move the size more than a sliver per loop.
+    """
+    (kind, freq, amp, a, b, tbl, rmax,
+     pulse_rate, pulse_depth, rot_speed, flip_x, flip_y) = params
+    if freq <= 0 or rot_speed != 0:
+        return 0
+    if a != int(a) or b != int(b):
+        return 0
+    P = SAMPLE_RATE / freq
+    L = round(P)
+    if not 1 <= L <= LOOP_MAX_FRAMES:
+        return 0
+    if math.ceil(LOOP_FILL_CEIL_FRAMES / L) * abs(L - P) > LOOP_DRIFT_MAX_FRAMES:
+        return 0
+    if pulse_depth * math.pi * pulse_rate / freq > LOOP_PULSE_MAX:
+        return 0
+    return L
+
+
+def _params_differ(a, b):
+    """Element-wise compare of two pattern_params() tuples.
+
+    The table (index 5) compares by identity, not ==: it is a big list, so
+    a per-packet deep compare would burn the 5 ms budget -- and a rebuilt
+    table with identical content IS a change (the walk restarts), which is
+    exactly what `is` reports.
+    """
+    for i, (x, y) in enumerate(zip(a, b)):
+        if i == 5:
+            if x is not y:
+                return True
+        elif x != y:
+            return True
+    return False
+
+
+class LoopField:
+    """Decides loop_frames per packet, with the settle window after changes.
+
+    The slave cannot see a pattern change (the controller never sets
+    SYNC_PULSE), so the field must stay 0 for L + F frames after any
+    change: a packet arriving after a hole of up to F frames copies from
+    up to L + F frames back, and that source must post-date the change.
+    Cost per packet: one tuple compare plus a few float ops.
+    """
+
+    def __init__(self):
+        self._last = None
+        self._L = 0
+        self._settle_left = 0  # frames left in the settle window
+
+    def next(self, params):
+        """The field for this packet; call once per stream packet."""
+        if self._last is None or _params_differ(self._last, params):
+            self._last = params
+            self._L = loop_frames_for(params)
+            self._settle_left = (self._L + LOOP_FILL_CEIL_FRAMES
+                                 if self._L else 0)
+        if self._settle_left > 0:
+            self._settle_left -= FRAMES
+            return 0
+        return self._L
 
 
 class CmdSender:
@@ -2770,6 +2876,9 @@ function openSlaveSheet(id) {
           '<div class="stat"><label>tx-drop</label><value>' + txDropPct + '%</value></div>' +
           '<div class="stat"><label>tx full</label><value>' + fmtN(txDropFull) + '</value></div>' +
         '</div>' +
+        (slave.loop_fills != null
+         ? '<p style="color:var(--dim);font-size:11px;margin:4px 0">' + fillLine(slave) + '</p>'
+         : '') +
         '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">POWER</p>' +
         '<div class="stats-grid">' +
           '<div class="stat"><label>vbat</label><value>' + slave.vbat_mv + ' mV</value></div>' +
@@ -2809,6 +2918,18 @@ function rates(s) {
   }
   rateHistory[s.ip] = {rx: s.rx, drop: s.drop, under: s.under, lost: s.lost, t: now};
   return r;
+}
+
+/* Phase-2 fill counters, one line per slave. Omitted entirely while the
+   slave still runs pre-Phase-2 firmware (the fields are null). */
+function fillLine(s) {
+  var h = s.hist || [0, 0, 0, 0, 0];
+  return 'fill loop ' + s.loop_fills
+    + ' · hold ' + s.hold_fills
+    + ' · resets ' + s.gap_resets
+    + ' · re-anchor ' + s.reanchor
+    + ' · holes 1:' + h[0] + ' 2:' + h[1] + ' 3–4:' + h[2]
+    + ' 5–30:' + h[3] + ' >30:' + h[4];
 }
 
 /* === RENDER === */
@@ -3437,6 +3558,10 @@ function renderDiagnostics() {
     html += '<div class="stat"><label>drop</label><value>' + fmtN(s.drop) + '</value></div>';
     html += '<div class="stat"><label>lost</label><value>' + (s.lost == null ? '—' : fmtN(s.lost)) + '</value></div>';
     html += '<div class="stat"><label>under</label><value>' + fmtN(s.under) + '</value></div>';
+    /* Phase-2 fill counters; null on pre-Phase-2 slaves -> omit the line */
+    if (s.loop_fills != null) {
+      html += '<p style="color:var(--dim);font-size:11px;margin:4px 0 0">' + fillLine(s) + '</p>';
+    }
 
     /* POWER group */
     html += '<div class="stat"><label style="grid-column:1/4;color:var(--dim);border-bottom:1px solid var(--line);margin-top:4px">POWER</label></div>';
@@ -3456,6 +3581,10 @@ function renderDiagnostics() {
   } else {
     html += '<div style="color:var(--ph)">AP is UP — stream can reach slaves</div>';
   }
+  /* What the controller puts in the AUDIO loop_frames field right now;
+     0 means the slaves hold the last value instead of loop-filling. */
+  html += '<div style="color:var(--dim);font-size:12px;margin-top:4px">loop field: '
+    + ((S.loop_frames || 0) > 0 ? S.loop_frames + ' frames' : '0 — hold') + '</div>';
 
   container.innerHTML = html;
 }
@@ -3966,6 +4095,7 @@ def stream_loop(state, iface_ip):
     status.setblocking(False)
 
     gen = PatternGen()
+    loop = LoopField()  # settle window on the loop_frames field (§4.2)
     seq_sync = 0
     seq_audio = 0
     frames_sent = 0
@@ -4054,10 +4184,13 @@ def stream_loop(state, iface_ip):
                     next_audio = now
                     print(f"[re-anchor] drift={drift/1000:.1f}ms", flush=True)
                 deadline = epoch + frames_sent * 1_000_000 // SAMPLE_RATE
-                payload = gen.block(FRAMES, state.pattern_params())
+                params = state.pattern_params()
+                loop_frames = loop.next(params)
+                state.loop_frames = loop_frames
+                payload = gen.block(FRAMES, params)
                 pkt = (HDR.pack(HYPE_MAGIC, HYPE_VERSION, HYPE_AUDIO, 0,
                                 seq_audio, deadline) +
-                       AUDIO_HDR.pack(SAMPLE_RATE, FRAMES, 0) + payload)
+                       AUDIO_HDR.pack(SAMPLE_RATE, FRAMES, loop_frames) + payload)
                 for ip in targets:
                     try:
                         audio.sendto(pkt, (ip, PORT_AUDIO))
@@ -4126,6 +4259,13 @@ def stream_loop(state, iface_ip):
                     # None until the slave runs the new firmware.
                     lost = (struct.unpack_from("<I", data, lp_off + 1)[0]
                             if len(data) >= lp_off + 5 else None)
+                    # Phase-2 fill counters appended after lost_packets
+                    # (stream-concealment-plan.md §4.4): loop_fills,
+                    # hold_fills, gap_resets, reanchor_gaps, then the
+                    # 5-bucket seq-gap histogram. None until the slave
+                    # runs the Phase-2 firmware.
+                    fills = (struct.unpack_from("<9I", data, lp_off + 5)
+                             if len(data) >= lp_off + 5 + 36 else None)
                     with state.lock:
                         if src_ip not in state.slaves:
                             print(f"[discovered] slave id={sid} at {src_ip} "
@@ -4136,6 +4276,11 @@ def stream_loop(state, iface_ip):
                             "vbat_mv": vbat, "depth": depth, "rx": rx,
                             "drop": dropped, "under": underruns,
                             "lost": lost,
+                            "loop_fills": fills[0] if fills else None,
+                            "hold_fills": fills[1] if fills else None,
+                            "gap_resets": fills[2] if fills else None,
+                            "reanchor": fills[3] if fills else None,
+                            "hist": list(fills[4:9]) if fills else None,
                             "uptime": uptime, "offs": offset,
                             "lpat": lpat, "last_us": mono_us(),
                         }

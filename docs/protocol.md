@@ -76,7 +76,7 @@ UNO-Q 192.168.50.1
   ├── :5000 AUDIO ──unicast──▶ slave1:5000 … slave4:5000   (200 pps each, 988 B)
   ├── :5001 SYNC ──multicast─▶ 239.0.0.1:5001              (every 500 ms, 20 B — discovery beacon)
   ├── :5001 CMD ────unicast──▶ slaveN:5001                 (on demand, JSON)
-  └── :5002 ◀──────────────── slaveN → STATUS              (1 Hz + one per CMD, 59 B, starts after first SYNC)
+  └── :5002 ◀──────────────── slaveN → STATUS              (1 Hz + one per CMD, 95 B, starts after first SYNC)
 ```
 
 ---
@@ -146,7 +146,7 @@ detection (§6); SYNC/CMD gaps are not tracked.
 | 0 | 20 | header | `HypeHeader` | `type` = `0x01` |
 | 20 | 4 | `sample_rate` | `uint32_t` | **48000** in v1. Slaves drop packets with any other rate (counted in `rx_dropped`) |
 | 24 | 2 | `frame_count` | `uint16_t` | stereo frames that follow. **240** in v1 (`HYPE_AUDIO_FRAMES`) |
-| 26 | 2 | `reserved` | `uint16_t` | send 0, ignore on receive |
+| 26 | 2 | `loop_frames` | `uint16_t` | the pattern's repeat length in **whole frames at 48 kHz**; **0 = no usable loop** (the slave hold-fills a hole instead of loop-filling, §6). Only `hype_controller.py` sets it (§10); test senders (`hype_sender.py`, `mcast_probe.py`) send 0. Receivers that predate it ignore it (§9) |
 | 28 | `frame_count`×4 | `samples` | `int16_t[]` | interleaved **L,R** per frame; **L = scope X, R = scope Y**; full-scale ±32767 |
 
 Datagram length MUST equal `28 + 4 × frame_count`. The v1 controller MUST send
@@ -183,9 +183,10 @@ unconfirmed (§10).
 ### 3.4 HYPE_STATUS — port 5002, slave → controller, every 1 s
 
 `timestamp_us` = slave's local µs clock (informational; the controller must not mix it with its
-own clock). Datagram length is **59** (20 + 39). Receivers MUST accept any length ≥ 55 and treat
-fields beyond the received length as absent (`lost_packets` was appended after the initial v1
-deployment; the trailing-bytes rule of §2.2 makes both directions compatible).
+own clock). Datagram length is **95** (20 + 75). Receivers MUST accept any length ≥ 55 and treat
+fields beyond the received length as absent (`lost_packets` and the concealment counters at 59–94
+were appended after the initial v1 deployment; the trailing-bytes rule of §2.2 makes both
+directions compatible).
 
 | Offset | Size | Field | Type | Description |
 |--------|------|-------|------|-------------|
@@ -204,6 +205,11 @@ deployment; the trailing-bytes rule of §2.2 makes both directions compatible).
 | 50 | 4 | `clock_offset_us` | `int32_t` | current smoothed sync offset, saturated to int32 range |
 | 54 | 1 | `local_pattern` | `uint8_t` | local-render pattern (drawn whenever `source=0`): 0 = mic, 1 = circle, 2 = lissajous, 3 = ramp, 4 = square |
 | 55 | 4 | `lost_packets` | `uint32_t` | cumulative missing AUDIO packets inferred from `seq` gaps (§2.3) — counts loss the slave never saw arrive (e.g. dropped below the socket layer), which `rx_dropped` cannot |
+| 59 | 4 | `loop_fills` | `uint32_t` | small holes (1 ms – `HYPE_LOOP_FILL_MAX_MS`) filled by copying one loop back (§6) |
+| 63 | 4 | `hold_fills` | `uint32_t` | small holes filled by last-value hold (`loop_frames` = 0, too little history since the last flush, or `fill hold` forced) |
+| 67 | 4 | `gap_resets` | `uint32_t` | holes over the limit that flushed the buffer and rebuffered (§5.2) |
+| 71 | 4 | `reanchor_gaps` | `uint32_t` | deadline holes (fill or reset) with **contiguous** `seq`: a controller re-anchor, nothing lost |
+| 75 | 20 | `gap_hist` | `uint32_t[5]` | `seq` holes by missing-packet count: 1, 2, 3–4, 5–30, > 30 (same ≤ 1000 cap as `lost_packets`) |
 
 `mode` vs `source` distinction matters for the UI: a slave in NETWORK mode with a lost stream
 reports `mode=1, source=0` (fallback active — NET LED blinking 5 Hz). `source` is smoothed on
@@ -298,7 +304,7 @@ On packet receive (after §2.2 validation and the `sample_rate`/`frame_count` ch
 | clock never locked (no SYNC yet) | **buffer and play depth-gated** (deadline policy suspended). Deliberate: a slave that can hear audio but not sync still puts pictures on its scope — degraded, never dark. Sync engages retroactively at first lock via the continuity check. |
 | `D < t − DEADLINE_SLACK_US` (5000 µs) — too late (clock locked) | drop, `rx_dropped++` |
 | earlier than the buffer's current tail deadline (duplicate/reordered) | drop, `rx_dropped++` |
-| 1–20 ms past the tail deadline (packets lost ahead of this one) | hold-fill the gap with the last frame, then append |
+| 1–20 ms past the tail deadline (packets lost ahead of this one) | fill the gap, then append: **loop-fill** (copy from `loop_frames` back in the ring) when this packet's `loop_frames` ≠ 0 and the buffer holds at least one loop since its last flush, else **hold-fill** with the last frame (§6) |
 | > 20 ms past the tail deadline (epoch jump / long outage) | flush, re-anchor on this packet, rebuffer |
 | buffer full (`JB_CAPACITY_FRAMES` = 24576 ≈ 512 ms) — overflow | drop, `rx_dropped++` |
 | otherwise (deadline-contiguous with the tail, ±1 ms rounding tolerance) | append |
@@ -332,11 +338,13 @@ long sets.)*
 
 ### 5.4 `HYPE_FLAG_SYNC_PULSE` (header flags bit 0)
 
-Set by the controller on the first AUDIO packet of a new stream segment (stream start, preset
-change that resets its pacing epoch, seek). Meaning to the slave: *the discontinuity in `seq`
-and/or `timestamp_us` at this packet is intentional* — flush the jitter buffer, re-anchor on this
-packet's deadline, and do not count the gap in loss statistics. Slaves must tolerate never seeing
-it (pure cold-join works without it, §7.1).
+**Not sent.** The controller never sets this flag: every AUDIO packet carries `flags = 0`. A
+receiver that sees it flushes the jitter buffer, re-anchors on this packet's deadline, and does not
+count the `seq` gap as loss. A controller re-anchor (forward deadline jump after a scheduling stall,
+§10) MUST NOT set it: the jump is already absorbed by the deadline rules of §5.2 (a fill or a
+rebuffer), and setting it would turn every re-anchor back into a flush. Pattern changes don't set it
+either; the controller signals them through `loop_frames` = 0 (§10). Slaves must tolerate never
+seeing it (pure cold-join works without it, §7.1).
 
 ---
 
@@ -348,8 +356,16 @@ image, so a lost 5 ms block is nearly invisible.
 
 - **Gap detection:** by **deadline continuity**, not `seq` (which is stats-only): a packet whose
   `timestamp_us` lands 1–20 ms past the buffer's tail deadline implies lost packets ahead of it —
-  the hole is hold-filled (§5.2 table) so the buffer stays contiguous. The v1 buffer is
-  append-only; a reordered packet arriving after its successor is dropped (already-covered time).
+  the hole is filled (§5.2 table) so the buffer stays contiguous. The v1 buffer is append-only; a
+  reordered packet arriving after its successor is dropped (already-covered time).
+- **Loop-fill:** every pattern the controller streams repeats exactly every `loop_frames` frames,
+  so the samples a lost packet carried were already sent one loop earlier. The slave copies the
+  hole from `loop_frames` back in its own ring, frame by frame (a hole longer than a loop re-reads
+  frames it just filled), using the `loop_frames` of the packet **after** the hole. It falls back
+  to last-value hold when the field is 0, when the buffer has received fewer than `loop_frames`
+  frames since its last flush (older data belongs to another stream), or when the source would
+  overlap the fill. The controller zeroes the field whenever the source could predate a pattern
+  change (§10), so a fill never draws the previous pattern.
 - **Concealment ladder** — for blocks the buffer can't serve while it still holds audio (rebuffer
   after a reset, a head not yet due), and only once a block has played since the join (see
   *pre-roll* below). An **underrun** (buffer empty at a playout tick) is not a hiccup: with a
@@ -380,6 +396,8 @@ image, so a lost 5 ms block is nearly invisible.
   (§3.4) — `lost_packets` exists because loss below the socket layer is invisible to `rx_dropped`.
   Since the controller knows how many packets it sent, per-slave delivery rate ≈
   `Δrx_packets / Δsent` — the §12 WiFi-robustness checklist item reads exactly these counters.
+  Fill and reset events are counted by method (`loop_fills`, `hold_fills`, `gap_resets`), deadline
+  holes with contiguous `seq` as `reanchor_gaps`, and `seq` holes by size in `gap_hist` (§3.4).
 
 ---
 
@@ -422,9 +440,9 @@ sequenceDiagram
     S->>C: STATUS (mode = 1 NETWORK, source = 0 local)
     Note over C: stream restored
     C->>S: SYNC (beacons kept running the whole time)
-    C->>S: AUDIO seq m, flags = SYNC_PULSE, deadline now + 60 ms
-    Note over S: flush buffer, re-anchor, buffer ~60 ms
-    Note over S: head deadline reached -> switch back to network source<br/>at block boundary, NET LED solid
+    C->>S: AUDIO seq m, flags = 0, deadline now + 450 ms
+    Note over S: buffer empty -> anchor on this packet's deadline<br/>(a non-empty buffer flushes on the > 20 ms hole instead)
+    Note over S: local render (pre-roll) until the head is due,<br/>then network source at a block boundary, NET LED solid
     S->>C: STATUS (source = 1)
 ```
 
@@ -518,8 +536,19 @@ up to ~300 ms with margin; the original 60 ms design predated that discovery). P
 its send time. Drive the tick with `timerfd` or an absolute
 `clock_nanosleep`, not relative sleeps (they accumulate error). If the loop oversleeps, send the
 backlog as a small burst (cap ~10 packets ≈ 50 ms; the slave ring absorbs 512 ms) — deadlines are
-absolute, so bursts are harmless. Set `HYPE_FLAG_SYNC_PULSE` on packet 0 of every new `epoch`.
+absolute, so bursts are harmless. Never set `HYPE_FLAG_SYNC_PULSE` (§5.4): a stall too long to
+catch up re-anchors `epoch` forward and the slaves absorb the jump by their deadline rules.
 Render ahead of the send tick; never let rendering block the sender.
+
+**`loop_frames`.** Per packet, from the same pattern parameters that rendered it: `L =
+round(48000 / freq)`, sent only when the pattern repeats every `L` frames closely enough to copy
+from one loop back — spin off, integer ratios, `1 ≤ L ≤ 8192`, rounding drift
+`ceil(F / L) · |L − 48000/freq| ≤ 4` frames, and pulse size change per loop
+`pulse_depth · π · pulse_rate / freq ≤ 5 %`; else 0. After **any** change of the pattern
+parameters the controller sends 0 for `L + F` frames, so a slave's copy source always post-dates
+the change. `F` = `LOOP_FILL_CEIL_MS` (150 ms): the controller's settle window MUST cover the
+longest fill any slave makes (`HYPE_LOOP_FILL_MAX_MS`, 20 ms today); if that limit ever rises the
+controller deploys first.
 
 **Fan-out.** One UDP socket for all TX. Per tick, loop `sendto(sock, pkt, 988, 0, slave[i], …)`
 over the roster — same bytes, same `seq`, to each slave's `IP:5000`. (`sendmmsg()` batches the 4
@@ -532,7 +561,8 @@ write `timestamp_us = now_us()` immediately before `sendto()` (minimize stamp-to
 own `seq` counter.
 
 **STATUS RX / discovery.** Bind `:5002`, `recvfrom()` loop. Validate per §2.2 + length ≥ 55
-(59 with `lost_packets`; parse trailing fields only when present, §3.4). Key
+(59 with `lost_packets`, 95 with the concealment counters; parse trailing fields only when
+present, §3.4). Key
 the roster by `mac`; store `slave_id`, the source **IP** (unicast destination for this slave), all
 telemetry, and last-seen time. Mark offline after ~3 s silence. Watch `rx_dropped`/`underruns`
 deltas per interval — nonzero deltas during a show mean RF trouble (§8) or pacing bugs.
@@ -560,6 +590,9 @@ Values are law — see those files.
 | `HYPE_PROTO_VERSION` | 1 | P | protocol version |
 | `HYPE_AUDIO_FRAMES` | 240 | P | frames per audio packet (5 ms) → 988 B datagram |
 | `HYPE_FLAG_SYNC_PULSE` | `0x0001` | P | audio resync-point flag |
+| `HYPE_LOOP_FILL_MAX_MS` | 20 | P | longest hole a slave fills (loop or hold); longer holes flush |
+| `HYPE_LOOP_MAX_FRAMES` | 8192 | P | largest `loop_frames` a slave copies from (≈ 5.9 Hz) |
+| `LOOP_FILL_CEIL_MS` | 150 | ctrl | settle window after a pattern change; must be ≥ `HYPE_LOOP_FILL_MAX_MS` |
 | `SAMPLE_RATE` | 48000 | C | output rate, 16-bit stereo, L=X R=Y |
 | `PORT_AUDIO` / `PORT_CTRL` / `PORT_STATUS` | 5000 / 5001 / 5002 | C | see §1.1 |
 | `MCAST_GROUP` | 239.0.0.1 | C | optional multicast transport |

@@ -1,14 +1,16 @@
 # Stream gaps on the scope: burst-start cleanup and loop-fill concealment
 
 **Status:** Phase 1 and 1b implemented and bench-run on 164 (2026-10-14, §3.6–3.8); scope check
-still open. Phases 2–3 not started (rev 4).
+still open. Phase 2 implemented 2026-10-17: controller deployed, 164 flashed, §4.5 counter checks
+pass (`STATUS.md`, "Phase 2"); its scope check is open too. Phase 3 not started (rev 5).
 - Measurements: `src/unoq-controller/STATUS.md`, "Transmission to one node (164)".
 - Normative wire spec stays `protocol.md` + `protocol.h`; this file says what will change in them
   and why.
 - Tracks `PLAN.md` risk 5 (WiFi jitter/loss).
 
 **Phases:**
-- **Phase 1 (A)** is built and deployed to 164 and the controller; **Phase 2 (B)** is ready to build.
+- **Phase 1 (A)** and **Phase 2 (B)** are built and deployed to 164 and the controller; 100 and
+  121 still run pre-Phase-1 firmware.
 - **Phase 3** is gated on data that Phase 2 starts collecting.
 - The loss diagnosis (§6) runs alongside and blocks nothing.
 - Unresolved questions are in §9.
@@ -526,10 +528,11 @@ This blocks no phase; it decides whether the loss itself can be cut.
 | Lost `local` command → ~0.55 s centre dot (§3.3) | **fixed in Phase 1b** (§3.7): 200 ms resend, STATUS reply per CMD, underrun → mic | scope check below |
 | Stream-up → first play ≈ 580 ms vs 450 ms lead (§3.6) | **explained** (§3.8): a pre-roll reset at every join | — |
 | Late + lost start of every new flow (§3.8) | measured, cause not pinned | log arrival time, seq and lead of each packet in a join's first 300 ms on the slave; check `async_udp` queue overflow vs AP release |
-| Do these joins need concealment? | open | the reset is invisible today (pre-roll); Phase 2's loop-fill (≤ 150 ms) would cover most of the 90–180 ms holes and bring first play ~130 ms earlier — decide once Phase 2 runs |
+| Do these joins need concealment? | open, now part of Phase 3 | the join holes (90–180 ms) are over Phase 2's 20 ms fill limit, so they still reset (logos: ~1 reset per burst in the 2026-10-17 soak). Still invisible (pre-roll shows the mic); a Phase 3 limit of ≥ 150 ms would loop-fill most of them and bring first play ~130 ms earlier |
 | Scope check of Phase 1 / 1b (§3.5) | open | phone video of a burst start (mic → name, no dot) and of SILENT pressed mid-burst (mic, no dot) |
+| Scope check of Phase 2 (§4.5) | counters pass on 164 (2026-10-17, `STATUS.md`); scope open | `droptest 20` with `fill loop` vs `fill hold` on the scope or the XIAO capture: no dots vs dots |
 | Air vs ESP32 loss (§6) | open | laptop comparison |
 | STATUS 2026-08-04 "zero tx retries, zero tx failed" | rests on counters ath10k likely leaves at 0; the 1139 pkt/s receiver-side result stands | mark that line "not populated by ath10k", not "clean link", once §6 confirms |
-| Phase 3 limit | needs Phase 2 histogram at show node count | §5 |
+| Phase 3 limit | needs Phase 2 histogram at show node count. One node, 1 h (2026-10-17, `STATUS.md` "One-hour soak"): 43 resets = 21 holes of 5–30 packets + 22 of > 30, so a 150 ms limit would turn about half of them into fills | §5 |
 | Exact on-air timing (§3.4) | deferred | decide after seeing Phase 1 on stage |
 | Move off the onboard AP to a router? | **decided 2026-10-14: no.** The show stays on the UNO-Q's onboard AP (`hyperosci-ap`); loss work targets that AP and the ESP32 | closed |

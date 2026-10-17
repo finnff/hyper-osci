@@ -7,13 +7,46 @@
 
 namespace net_rx {
 
+// --- Phase 2: loop-fill concealment (docs/stream-concealment-plan.md §4) ---
+
+// Small-gap fill method. kLoop: loop-copy when the packet's loop_frames is
+// usable, else last-value hold; kHold: always last-value hold.
+enum class FillMode : uint8_t { kLoop = 0, kHold = 1 };
+void set_fill_mode(FillMode m);
+
+// Bench drop pattern (RAM only, console `droptest`): drop `run` consecutive
+// AUDIO packets at the head of every `every`-packet cycle, BEFORE seq
+// accounting, so the holes count as real loss. every == 0: off.
+void set_droptest(uint32_t every, uint32_t run);
+
+// One line per small-gap fill event, enqueued only while the fill log is on
+// (console `log on`); drained by the UI loop.
+struct FillEvent {
+  uint8_t method;     // FillMode: 0 = loop, 1 = hold
+  uint16_t frames;    // frames appended to the jitter buffer
+  uint16_t pkts;      // missing packets in the hole (0 = none / unknown)
+  uint32_t since0_ms; // ms since the last loop_frames == 0 packet;
+                      // UINT32_MAX = never seen
+};
+void set_fill_log(bool on);
+size_t drain_fill_events(FillEvent* out, size_t cap);  // FIFO, returns count
+uint32_t fill_log_dropped();  // events lost to a full ring (cumulative)
+
 struct Stats {
   uint32_t rx_packets;
   uint32_t rx_dropped;  // stale / overflow / bad packets
   uint32_t underruns;
   uint32_t seq_gaps;      // gap events (any seq discontinuity)
   uint32_t lost_packets;  // cumulative missing packets inferred from gap sizes
-  uint32_t gap_resets;    // > 20 ms deadline holes that flushed the buffer
+  uint32_t gap_resets;    // > HYPE_LOOP_FILL_MAX_MS deadline holes that flushed
+  uint32_t loop_fills;    // small-gap fill events, loop-copy (Phase 2)
+  uint32_t hold_fills;    // small-gap fill events, last-value hold
+  uint32_t reanchor_gaps; // deadline holes with contiguous seq (re-anchors)
+  uint32_t gap_hist[5];   // seq holes by packets missing: 1, 2, 3-4, 5-30, >30
+  FillMode fill_mode;     // current small-gap fill method
+  uint16_t last_loop_frames;  // last loop_frames field seen (0 = no usable loop)
+  uint32_t droptest_every;  // bench drop pattern (0 = off)
+  uint32_t droptest_run;
   int8_t rssi_dbm;
   bool wifi_up;
   bool stream_up;

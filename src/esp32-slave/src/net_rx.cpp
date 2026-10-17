@@ -55,6 +55,32 @@ volatile bool have_seq = false;
 // LOCAL mode gate (set_accept_audio); checked before any accounting.
 volatile bool g_accept_audio = true;
 
+// Phase 2 (loop-fill concealment): fill method, bench drop pattern, the
+// loop_frames markers, the fill counters and the per-fill-event ring.
+// Same volatile note as above (async_udp task writes; loop/net tasks read).
+volatile net_rx::FillMode g_fill_mode = net_rx::FillMode::kLoop;
+volatile uint32_t g_drop_every = 0;  // 0 = off
+volatile uint32_t g_drop_run = 0;
+uint32_t g_drop_pkt = 0;  // position in the drop cycle (async_udp task only)
+volatile uint16_t g_last_loop_frames = 0;  // last loop_frames field seen
+volatile uint32_t g_last_zero_ms = 0;      // millis() when it was last 0
+volatile bool g_have_zero_ms = false;
+volatile bool g_fill_log = false;  // `log on` — one line per fill event
+
+volatile uint32_t st_loop_fills = 0;
+volatile uint32_t st_hold_fills = 0;
+volatile uint32_t st_reanchor_gaps = 0;
+volatile uint32_t st_gap_hist[5] = {0};
+
+// Per-fill-event SPSC ring: producer = the async_udp task (handle_audio_
+// packet), consumer = the UI loop (drain_fill_events). Never blocks; a full
+// ring drops the newest event and counts it.
+constexpr size_t FILL_LOG_SLOTS = 16;
+net_rx::FillEvent fill_log[FILL_LOG_SLOTS];
+volatile uint32_t fill_log_head = 0;  // next slot the producer writes
+volatile uint32_t fill_log_tail = 0;  // next slot the consumer reads
+volatile uint32_t fill_log_dropped_n = 0;  // events lost to a full ring
+
 IPAddress controller_ip;
 bool have_controller = false;
 
@@ -96,17 +122,51 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
     return;
   }
 
+  // Phase 2: remember the controller's loop marker (protocol.h loop_frames).
+  // 0 = no usable loop (pattern has none, or sits in its settle window); its
+  // arrival time anchors the fill log (ms since the last 0 field).
+  g_last_loop_frames = ap.loop_frames;
+  if (ap.loop_frames == 0) {
+    g_have_zero_ms = true;
+    g_last_zero_ms = millis();
+  }
+
+  // Bench tooling (RAM only): drop `run` consecutive AUDIO packets at the
+  // head of every `every`-packet cycle, BEFORE the seq accounting so the
+  // holes count as real loss.
+  if (g_drop_every > 0) {
+    const bool drop = (g_drop_pkt < g_drop_run);
+    g_drop_pkt = (g_drop_pkt + 1) % g_drop_every;
+    if (drop) return;
+  }
+
   // SYNC_PULSE marks the seq/timestamp discontinuity as intentional — it must
   // not count in loss statistics (protocol.md §5.4).
+  uint32_t seq_delta = 0;
+  bool seq_contiguous = false;  // have_seq && delta == 1: a deadline hole with
+                                // nothing missing (a controller re-anchor)
+  uint16_t missing_pkts = 0;  // for the fill-event log (capped like st_lost)
   if (have_seq && !(h.flags & HYPE_FLAG_SYNC_PULSE)) {
-    const uint32_t delta = h.seq - last_seq;  // unsigned: wrap-safe
-    if (delta != 1) {
-      st_seq_gaps++;  // gap events (stats only)
-      // Cumulative loss inferred from gap sizes — this is the only place
-      // lwIP-level (pre-socket) drops become visible. Cap per-event so an
-      // unflagged controller restart / seq re-anchor doesn't poison the
-      // counter; delta==0 is a duplicate, not loss.
-      if (delta > 1 && delta - 1 <= 1000) st_lost_packets += delta - 1;
+    seq_delta = h.seq - last_seq;  // unsigned: wrap-safe
+    if (seq_delta == 1) {
+      seq_contiguous = true;
+    } else {
+      st_seq_gaps++;  // gap events (stats only; a delta==0 duplicate counts)
+      if (seq_delta > 1) {
+        // Cumulative loss inferred from gap sizes — this is the only place
+        // lwIP-level (pre-socket) drops become visible. Cap per-event so an
+        // unflagged controller restart / seq re-anchor doesn't poison the
+        // counter.
+        const uint32_t missing = seq_delta - 1;
+        if (missing <= 1000) st_lost_packets += missing;
+        missing_pkts = (uint16_t)(missing <= 1000 ? missing : 1000);
+        // Hole-size histogram (packets missing): 1, 2, 3-4, 5-30, >30.
+        if (missing == 1) st_gap_hist[0]++;
+        else if (missing == 2) st_gap_hist[1]++;
+        else if (missing <= 4) st_gap_hist[2]++;
+        else if (missing <= 30) st_gap_hist[3]++;
+        else st_gap_hist[4]++;
+      }
     }
   }
   last_seq = h.seq;
@@ -123,8 +183,9 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
   if (h.flags & HYPE_FLAG_SYNC_PULSE) jb.reset();
 
   // Continuity is judged by deadlines, not sequence numbers: a lost packet is
-  // a small hole we conceal with last-value hold; only large discontinuities
-  // rebuffer (docs/protocol.md §6). ±1 ms tolerance absorbs timestamp rounding.
+  // a small hole we conceal (loop-copy when the field allows, else last-value
+  // hold — Phase 2); only large discontinuities rebuffer (docs/protocol.md §6).
+  // ±1 ms tolerance absorbs timestamp rounding.
   const int16_t* samples =
       (const int16_t*)(buf + sizeof(HypeHeader) + sizeof(HypeAudioPayload));
   bool ok;
@@ -134,19 +195,54 @@ void handle_audio_packet(const uint8_t* buf, size_t len) {
   } else {
     const int64_t delta =
         (int64_t)(h.timestamp_us - jb.tail_deadline_us());
-    if (delta > 1000 && delta <= 20000) {
-      // Small gap (lost packet(s), ≤20 ms): fill with last-value hold so the
-      // buffer stays deadline-contiguous, then append the new packet.
-      jb.push_hold((uint16_t)((delta * SAMPLE_RATE) / 1000000));
+    const int64_t fill_max_us = (int64_t)HYPE_LOOP_FILL_MAX_MS * 1000;
+    if (delta > 1000 && delta <= fill_max_us) {
+      // Small gap (lost packet(s), <= HYPE_LOOP_FILL_MAX_MS): fill so the
+      // buffer stays deadline-contiguous, then append the new packet. The
+      // fill uses THIS packet's loop_frames — it describes the content
+      // around the hole, and the controller zeroes it whenever the source
+      // would be stale (pattern change, settle window).
+      const uint16_t n = (uint16_t)((delta * SAMPLE_RATE) / 1000000);
+      uint16_t filled = 0;
+      bool used_loop = false;
+      if (g_fill_mode == net_rx::FillMode::kLoop && ap.loop_frames != 0 &&
+          ap.loop_frames <= HYPE_LOOP_MAX_FRAMES) {
+        filled = jb.push_loop(n, ap.loop_frames);
+        used_loop = (filled > 0);
+      }
+      if (filled == 0) filled = jb.push_hold(n);  // forced hold / no usable loop
+      if (filled > 0) {
+        if (used_loop) st_loop_fills++;
+        else st_hold_fills++;
+        // One line per fill (printed by the UI loop — the async_udp task must
+        // never Serial.print: hot path, shared UART).
+        if (g_fill_log) {
+          const uint32_t hpos = fill_log_head;
+          if (hpos - fill_log_tail < FILL_LOG_SLOTS) {
+            net_rx::FillEvent& e = fill_log[hpos % FILL_LOG_SLOTS];
+            e.method = (uint8_t)(used_loop ? net_rx::FillMode::kLoop
+                                           : net_rx::FillMode::kHold);
+            e.frames = filled;
+            e.pkts = missing_pkts;
+            e.since0_ms =
+                g_have_zero_ms ? millis() - g_last_zero_ms : UINT32_MAX;
+            fill_log_head = hpos + 1;
+          } else {
+            fill_log_dropped_n++;
+          }
+        }
+      }
+      if (seq_contiguous) st_reanchor_gaps++;  // a re-anchor, nothing lost
       ok = jb.push(samples, ap.frame_count, h.timestamp_us);
     } else if (delta < -1000) {
       // Duplicate / reordered / overlapping packet: already have that time.
       st_rx_dropped++;
       return;
-    } else if (delta > 20000) {
+    } else if (delta > fill_max_us) {
       // Large discontinuity (epoch jump, long outage): rebuffer from here.
       jb.reset();
       st_gap_resets++;
+      if (seq_contiguous) st_reanchor_gaps++;  // a re-anchor, nothing lost
       g_start_lead_ms = lead_ms(h.timestamp_us);
       mode_manager::note_reset((uint32_t)(delta / 1000), g_start_lead_ms);
       ok = jb.push(samples, ap.frame_count, h.timestamp_us);
@@ -232,6 +328,11 @@ void send_status() {
   s->clock_offset_us = (int32_t)off;
   s->local_pattern = (uint8_t)renderer_local::pattern();
   s->lost_packets = st_lost_packets;
+  s->loop_fills = st_loop_fills;
+  s->hold_fills = st_hold_fills;
+  s->gap_resets = st_gap_resets;
+  s->reanchor_gaps = st_reanchor_gaps;
+  for (int i = 0; i < 5; i++) s->gap_hist[i] = st_gap_hist[i];
 
   udp_status.beginPacket(controller_ip, PORT_STATUS);
   udp_status.write(out, sizeof(out));
@@ -442,11 +543,41 @@ Stats stats() {
   s.seq_gaps = st_seq_gaps;
   s.lost_packets = st_lost_packets;
   s.gap_resets = st_gap_resets;
+  s.loop_fills = st_loop_fills;
+  s.hold_fills = st_hold_fills;
+  s.reanchor_gaps = st_reanchor_gaps;
+  for (int i = 0; i < 5; i++) s.gap_hist[i] = st_gap_hist[i];
+  s.fill_mode = g_fill_mode;
+  s.last_loop_frames = g_last_loop_frames;
+  s.droptest_every = g_drop_every;
+  s.droptest_run = g_drop_run;
   s.rssi_dbm = g_rssi;
   s.wifi_up = g_wifi_up;
   s.stream_up = stream_active();
   s.buffer_depth_frames = jb.depth_frames();
   return s;
 }
+
+void set_fill_mode(FillMode m) { g_fill_mode = m; }
+
+void set_droptest(uint32_t every, uint32_t run) {
+  g_drop_every = every;
+  g_drop_run = (every > 0) ? run : 0;
+}
+
+void set_fill_log(bool on) { g_fill_log = on; }
+
+size_t drain_fill_events(FillEvent* out, size_t cap) {
+  size_t n = 0;
+  while (n < cap) {
+    const uint32_t t = fill_log_tail;
+    if (t == fill_log_head) break;
+    out[n++] = fill_log[t % FILL_LOG_SLOTS];
+    fill_log_tail = t + 1;
+  }
+  return n;
+}
+
+uint32_t fill_log_dropped() { return fill_log_dropped_n; }
 
 }  // namespace net_rx

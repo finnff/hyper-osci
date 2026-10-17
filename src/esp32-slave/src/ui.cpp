@@ -167,7 +167,8 @@ void battery_policy() {
 void print_help() {
   Serial.println(
       "commands: help | stat | log <on|off> | mode <local|net|hybrid> | pat | "
-      "gain <0-100> | wifi <on|off> | id <0-255> | reboot");
+      "gain <0-100> | wifi <on|off> | id <0-255> | "
+      "droptest <every> [run] | fill <loop|hold> | reboot");
 }
 
 void print_stat() {
@@ -196,6 +197,16 @@ void print_stat() {
       (unsigned long)s.seq_gaps, (unsigned long)s.lost_packets,
       (unsigned long)s.gap_resets, (unsigned long)s.underruns,
       s.buffer_depth_frames, (unsigned long)mode_manager::last_preroll_ms());
+  Serial.printf(
+      "fill: mode=%s loop=%lu hold=%lu reanchor=%lu loopf=%u "
+      "holes 1:%lu 2:%lu 3-4:%lu 5-30:%lu >30:%lu droptest=%lu/%lu\n",
+      s.fill_mode == net_rx::FillMode::kLoop ? "loop" : "hold",
+      (unsigned long)s.loop_fills, (unsigned long)s.hold_fills,
+      (unsigned long)s.reanchor_gaps, (unsigned)s.last_loop_frames,
+      (unsigned long)s.gap_hist[0], (unsigned long)s.gap_hist[1],
+      (unsigned long)s.gap_hist[2], (unsigned long)s.gap_hist[3],
+      (unsigned long)s.gap_hist[4], (unsigned long)s.droptest_every,
+      (unsigned long)s.droptest_run);
   Serial.printf(
       "sync=%s offset=%lldus vbat=%umV pot=%.2f id=%u heap=%u astk=%u\n",
       timesync::valid() ? "ok" : "stale", (long long)timesync::offset_us(),
@@ -264,6 +275,31 @@ void print_events() {
   }
 }
 
+// One line per small-gap fill (net_rx enqueues only while `log on`):
+// method, size, seq-missing, and where the hole sits relative to the last
+// pattern change (loop_frames == 0 on the wire) — the settle-window check.
+void print_fills() {
+  static uint32_t dropped_seen = 0;
+  net_rx::FillEvent ev[8];
+  const size_t n = net_rx::drain_fill_events(ev, 8);
+  for (size_t i = 0; i < n; i++) {
+    const char* m = (ev[i].method == 0) ? "loop" : "hold";
+    if (ev[i].since0_ms != UINT32_MAX)
+      Serial.printf("[fill] %s %uf %upkt since0=%lums\n", m,
+                    (unsigned)ev[i].frames, (unsigned)ev[i].pkts,
+                    (unsigned long)ev[i].since0_ms);
+    else
+      Serial.printf("[fill] %s %uf %upkt since0=none\n", m,
+                    (unsigned)ev[i].frames, (unsigned)ev[i].pkts);
+  }
+  const uint32_t d = net_rx::fill_log_dropped();
+  if (d != dropped_seen) {
+    Serial.printf("[fill] %lu events dropped\n",
+                  (unsigned long)(d - dropped_seen));
+    dropped_seen = d;
+  }
+}
+
 void handle_line(char* line) {
   char* cmd = strtok(line, " \r\n");
   if (cmd == nullptr) return;
@@ -281,6 +317,7 @@ void handle_line(char* line) {
   } else if (strcmp(cmd, "log") == 0) {
     g_log_periodic = (arg != nullptr) ? (strcmp(arg, "on") == 0)
                                       : !g_log_periodic;
+    net_rx::set_fill_log(g_log_periodic);  // also gates the per-fill lines
     Serial.printf("log=%s\n", g_log_periodic ? "on" : "off");
   } else if (strcmp(cmd, "mode") == 0 && arg != nullptr) {
     if (strcmp(arg, "local") == 0)
@@ -304,6 +341,34 @@ void handle_line(char* line) {
   } else if (strcmp(cmd, "id") == 0 && arg != nullptr) {
     mode_manager::set_slave_id((uint8_t)atoi(arg));
     Serial.printf("id=%u\n", mode_manager::slave_id());
+  } else if (strcmp(cmd, "droptest") == 0 && arg != nullptr) {
+    // Bench: drop `run` (default 1) AUDIO packets every `every`; `droptest 0`
+    // turns it off. The drops land before the seq accounting, so the holes
+    // count as real loss.
+    char* arg2 = strtok(nullptr, " \r\n");
+    const uint32_t every = (uint32_t)strtoul(arg, nullptr, 10);
+    const uint32_t run =
+        (arg2 != nullptr) ? (uint32_t)strtoul(arg2, nullptr, 10) : 1;
+    net_rx::set_droptest(every, run);
+    const net_rx::Stats s = net_rx::stats();
+    Serial.printf("droptest=%lu/%lu\n", (unsigned long)s.droptest_every,
+                  (unsigned long)s.droptest_run);
+  } else if (strcmp(cmd, "fill") == 0) {
+    // Small-gap fill method; no arg prints the current one.
+    if (arg != nullptr) {
+      if (strcmp(arg, "loop") == 0)
+        net_rx::set_fill_mode(net_rx::FillMode::kLoop);
+      else if (strcmp(arg, "hold") == 0)
+        net_rx::set_fill_mode(net_rx::FillMode::kHold);
+      else {
+        print_help();
+        return;
+      }
+    }
+    Serial.printf("fill=%s\n",
+                  net_rx::stats().fill_mode == net_rx::FillMode::kLoop
+                      ? "loop"
+                      : "hold");
   } else if (strcmp(cmd, "reboot") == 0) {
     ESP.restart();
   } else {
@@ -384,6 +449,7 @@ void poll() {
   battery_policy();
   console_poll();
   print_events();
+  print_fills();
 
   if (g_log_periodic && millis() - last_log_ms >= 1000) {
     last_log_ms = millis();

@@ -30,7 +30,7 @@ MCAST_GROUP = "239.0.0.1"
 PORT_AUDIO, PORT_CTRL, PORT_STATUS = 5000, 5001, 5002
 
 HDR = struct.Struct("<IBBHIQ")  # magic, ver, type, flags, seq, timestamp_us
-AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, reserved
+AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, loop_frames (always 0 here: hold)
 STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")
 
 SAMPLE_RATE = 48000

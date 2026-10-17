@@ -1005,3 +1005,88 @@ a 90–180 ms run of packets is lost and the slave rebuffers, all within the
 pre-roll, so the scope shows the mic throughout and the name comes up ~130 ms
 late (first play 575–605 ms after stream-up). No controller re-anchor fired.
 The cause is open (plan §9).
+
+## Phase 2 — loop-fill concealment (2026-10-17)
+
+Plan §4. Controller deployed (md5 `8297831b…`, backup
+`~/hype_controller.py.pre-phase2`); 164 flashed over USB. 100 and 121 still
+run the old firmware: they ignore `loop_frames` and keep the hold, and their
+59 B STATUS leaves the dashboard fill line empty.
+
+- **Controller:** each AUDIO packet carries `loop_frames` (the pattern's
+  repeat length, e.g. 686 at 70 Hz), or 0 with spin on, with too much pulse
+  or rounding drift, and for `L + 150 ms` after any pattern change.
+  `/api/state` has `loop_frames`; each slave carries `loop_fills`,
+  `hold_fills`, `gap_resets`, `reanchor` and `hist`. The Diagnostics panel
+  shows a `fill loop … · hold … · holes …` line per slave.
+- **Slave:** holes up to 20 ms are copied from one loop back instead of
+  parking the beam. New console commands `droptest`, `fill loop|hold`, and
+  `[fill]` lines under `log on`.
+
+Bench, 164 on USB with the cycles off (restored afterwards; `hype_cycles.json`
+and `hype_state.json` byte-identical to before):
+
+| check | setup | result |
+|---|---|---|
+| loop fills | `droptest 20`, `fill loop`, 10 s | 173 loop / 0 hold, 0 resets, 0 underruns |
+| A/B | same, `fill hold` | 0 loop / 168 hold |
+| settle window | `droptest 2`, load Mama Snake → HyperLili → JEANS | 17 hold fills after each change (≈ 170 ms, `L + F` = 167–168 ms), then loop |
+| no-loop patterns | spin 0.5, then pulse 10 Hz / 100 % | field 0; 0 loop / 122 and 110 hold |
+| rig | all eight presets, 8 s each, natural loss | field 686–960; 52–77 loop / 0 hold each, 0 resets; loss 3.2–4.8 % |
+
+`since0` in the `[fill]` lines is wall time since the last 0 packet, and
+packets arrive in bursts, so a first loop fill can read `since0=0ms`; the run
+length of hold fills after a change is the measure.
+
+XIAO capture of 164's RCA X/Y (164 on battery, one USB board at a time),
+looking for a parked beam: both channels flat within 150 codes for ≥ 4 ms
+while streaming.
+- **Before the flash** (`/tmp/p2_before.npz`, 4.5 s of Oracle Bones, hold):
+  13 parked runs of 5.0, 10.0 and 15.0 ms, i.e. 1–3 lost packets held,
+  with the tolerance at 250.
+- **After** (`/tmp/p2_after.npz`, 7.7 s of the artists burst, natural loss):
+  none at 150. At 250 there is one 5.2 ms run near centre that doesn't
+  repeat at any loop lag. Over the whole 10 s burst 164 counted 71 loop
+  fills, 0 hold fills and 1 reset.
+
+Not a controlled A/B: different presets and loss in each window. `fill hold`
+vs `fill loop` on the same burst needs the console and the XIAO together.
+
+### One-hour soak, 164 on battery (2026-10-17, 15:20–16:20 CEST)
+
+`src/bench-capture/soak.py` against the normal show cycles: a logos burst
+(HYPERWAVES → Oracle Bones, 8 s) and an artists burst (Mama Snake →
+HyperLili, 10 s) alternating every minute. 164 alone on the stream (100 and
+121 are switched out of both groups). Every burst was recorded on the XIAO:
+60 captures, 0 sequence gaps. Data in `/tmp/soak1` (`state.jsonl`,
+`summary.json`, `burst_*.npz`).
+
+| | logos (30) | artists (30) | all 60 |
+|---|---|---|---|
+| loss | 6.17 % (3.9–10.6 per burst) | 4.80 % (3.4–7.5) | 5.41 % (5837 of 107 910) |
+| loop fills | 1284 | 1931 | 3215 |
+| hold fills | 92 | 26 | 118 (3.5 %) |
+| resets | 34 | 9 | 43 |
+| underruns | 1 | 0 | 1 |
+| re-anchors | 0 | 0 | 0 |
+
+- **Holes by size** (missing packets): 2523 × 1, 554 × 2, 256 × 3–4,
+  21 × 5–30, 22 × > 30. The 43 resets are exactly the 21 + 22 holes over
+  20 ms.
+- **Parked beam on the capture**: 13 runs of 4.0–5.5 ms in 60 bursts (about
+  510 s of stream), every one in a burst that also counted hold fills. The
+  4.5 s pre-flash capture had 6 at the same threshold.
+- **Where the 118 holds come from** `[INFERENCE]`: fills the slave can't
+  loop. That is the first few packets after a reset (fewer than one loop
+  buffered, about 3–4 packets) and the ~167 ms settle window after the
+  mid-burst name change. Logos has about one reset per burst (the join reset
+  of the Phase 1b entry) against 0.3 for artists, and 3.5× the holds.
+  Telling the two causes apart needs `log on` over USB.
+- **The one underrun (15:51:13, Oracle Bones)**: 168 lost (10.6 %), two
+  holes over 30 packets. Stream 2.35 s, then about 0.45 s on the mic, then
+  the rest of the name. That is a deaf-stall longer than the 450 ms lead.
+  The mic is quiet on the bench, so on the scope it was a near-centre dot,
+  28 short still runs on the capture.
+- **Controller**: no re-anchor or TX-drop lines in the journal; 130
+  `set_mode` for 120 transitions.
+- **Node**: RSSI −23…−26 dBm; battery 3558 → 3536 mV over the hour.
