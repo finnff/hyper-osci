@@ -1407,4 +1407,6 @@ battery, `/tmp/soak6`) against soak5 (before the hold fix):
 - **Reverted** (2026-10-18): `jitter_buffer.h`, host test case 8 and the
   plan/architecture wording are back to `163ee2c`. The host test passes 7/7,
   and the build is 1025021 B, the same as `163ee2c`. The netwatch change
-  stays.
+  stays. Reflashed over USB with the battery switch OFF: 164 at 00:36,
+  121 at 00:57, 100 at 01:31 CEST. Each came back with `fill: mode=loop`
+  and 0 resets.
