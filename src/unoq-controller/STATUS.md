@@ -1379,4 +1379,28 @@ Not fixed, with reasons:
 - **`dark_gaps` X-only:** a false gap needs a figure narrower than ~300
   codes in X; none of the show presets is.
 
-The firmware fix is built (Flash 1025009 B) but **not flashed**.
+Firmware flashed to 100, 121 and 164 over USB, battery switch OFF
+(2026-10-17 23:47 – 2026-10-18 00:08 CEST).
+
+**Verification soak** (00:20–00:32 CEST, 28 s cycles, XIAO on 121, all on
+battery, `/tmp/soak6`) against soak5 (before the hold fix):
+
+| preset pair | bursts | resets (soak5) | resets > 150 ms hole (soak5) | hold fills (soak5) |
+|---|---|---|---|---|
+| HYPERWAVES / Oracle Bones | 75 | 104 (59) | 41 (31) | 417 (240) |
+| Mama Snake / HyperLili | 75 | 24 (17) | 18 (16) | 63 (24) |
+
+- Per node, resets per burst rose to 0.90 / 0.78 / 0.88 (100 / 121 / 164),
+  from 0.55 / 0.34 / 0.65. 121's loss was unchanged (6.42 % vs 6.17 %).
+- The extra resets are almost all holes ≤ 150 ms on the logos, where holds
+  are frequent: 63 vs 28. `[INFERENCE]` After a hold, loop-fill now waits a
+  full loop of real audio, so in that window a 20–150 ms hole resets instead
+  of filling, and a ≤ 20 ms hole holds again, which restarts the wait.
+- Dark time on 121: 4 gaps in 17 bursts, median 0 %, max 5.8 % (soak5: 4 in
+  20, max 4.3 %).
+- 0 underruns, 0 re-anchors, 0 netwatch strikes. The only stream cut was
+  164's at 00:18:59, when it came off USB before the soak.
+- Cycles restored: `cmp` identical to the `v2.bak` backups.
+- **Net: the hold fix costs more than it saves.** It removes a partial dot
+  of ≤ 20 ms per copied loop for ≤ 150 ms. In exchange, about one hole per
+  logos burst becomes a ~0.4 s reset to the mic.
