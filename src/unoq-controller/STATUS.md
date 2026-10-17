@@ -1410,3 +1410,18 @@ battery, `/tmp/soak6`) against soak5 (before the hold fix):
   stays. Reflashed over USB with the battery switch OFF: 164 at 00:36,
   121 at 00:57, 100 at 01:31 CEST. Each came back with `fill: mode=loop`
   and 0 resets.
+
+**Final soak on the reverted firmware** (01:37–01:49 CEST, 28 s cycles,
+XIAO on 121, all on battery, `/tmp/soak7`):
+
+| node | bursts | loss | refused | resets per burst (soak5 / soak6) | loop / hold fills |
+|---|---|---|---|---|---|
+| 100 | 49 | 7.21 % | 4.61 % | 0.57 (0.55 / 0.90) | 1451 / 81 |
+| 121 | 49 | 6.47 % | 4.27 % | 0.27 (0.34 / 0.78) | 1439 / 99 |
+| 164 | 49 | 7.80 % | 4.43 % | 0.43 (0.65 / 0.88) | 2151 / 140 |
+
+- Logo resets from holes ≤ 150 ms: 25 (soak5 28, soak6 63). Artists: 3.
+  This confirms the hold fix caused soak6's extra resets.
+- Dark time on 121: 1 gap (300 ms) in 17 bursts; median 0 %, max 3.9 %.
+- 0 underruns, 0 re-anchors, 0 netwatch log lines, no stream cuts.
+- Cycles restored: `cmp` identical to the `v3.bak` backups.
