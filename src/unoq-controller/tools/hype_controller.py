@@ -910,6 +910,16 @@ MODE_RESEND_US = 200_000
 # slaves a bigger burst overflows the TX queue (AUG_9 report, EAGAIN).
 REANCHOR_US = 100_000
 
+# A slave whose STATUS (1 Hz beacon, plus a reply to every CMD) is older than
+# this gets no audio until it reports again. Sending to a station that has
+# left (switched off, flat battery) is not free: the AP first queues those
+# packets, then refuses them, and the queue and airtime it burns starved the
+# other slaves to 41-90 % loss for the 30 s until deletion (STATUS.md,
+# 2026-10-17 second stress soak). Three beacons in a row: two consecutive
+# losses happen on a healthy node several times a night at ~5 % loss, and a
+# false cut costs it a ~1 s hole. The 5 s `gone` mark stays the dashboard's.
+STREAM_STALE_US = 3_000_000
+
 
 def node_flags(state, sid):
     """Slave id -> its three switches (defaults for a node nobody has set).
@@ -969,7 +979,7 @@ def reconcile_modes(state, cmds):
     return send
 
 
-def stream_targets(state):
+def stream_targets(state, now):
     """-> [ip], the slaves the audio stream goes to right now.
 
     A slave that will play it: NETWORK / HYBRID. A pending set_mode command
@@ -977,10 +987,14 @@ def stream_targets(state):
     node is told to play (not up to a second later, when its STATUS says so)
     and stops the moment it is told to go local — the command and the audio
     share the AP's queue to that node, so nothing is sent after it that the
-    node would have to flush. Caller holds state.lock.
+    node would have to flush. A slave silent for STREAM_STALE_US is left out
+    whatever its mode, and back in with its next STATUS. Caller holds
+    state.lock.
     """
     out = []
     for ip, s in state.slaves.items():
+        if now - s["last_us"] > STREAM_STALE_US:
+            continue
         pending = state.mode_sent.get(ip)
         mode = pending[0] if pending else s["mode"]
         if mode != 0:
@@ -4122,6 +4136,7 @@ def stream_loop(state, iface_ip):
     tx_last = ""      # most recent errno seen, named, for the dashboard
     next_txstat = start + TXSTAT_INTERVAL_US
     tx_warned_us = 0
+    stale = set()     # slaves left out of the stream for STATUS silence
 
     while True:
         now = mono_us()
@@ -4164,7 +4179,16 @@ def stream_loop(state, iface_ip):
             # Only stream to slaves that will actually play it (NETWORK /
             # HYBRID, or about to be). A LOCAL slave discards the stream —
             # sending it 200 pkt/s just burns airtime.
-            targets = stream_targets(state)
+            targets = stream_targets(state, now)
+            stale_now = {ip for ip, s in state.slaves.items()
+                         if now - s["last_us"] > STREAM_STALE_US}
+            back = {ip for ip in stale - stale_now if ip in state.slaves}
+        for ip in stale_now - stale:
+            print(f"[stream] {ip} paused: no STATUS for "
+                  f"{STREAM_STALE_US / 1e6:.0f} s", flush=True)
+        for ip in back:
+            print(f"[stream] {ip} resumed: STATUS again", flush=True)
+        stale = stale_now
 
         if streaming:
             # Send every due packet (catch-up burst after scheduler stalls,

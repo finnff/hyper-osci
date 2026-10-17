@@ -553,8 +553,10 @@ controller deploys first.
 **Fan-out.** One UDP socket for all TX. Per tick, loop `sendto(sock, pkt, 988, 0, slave[i], …)`
 over the roster — same bytes, same `seq`, to each slave's `IP:5000`. (`sendmmsg()` batches the 4
 syscalls if you care.) Non-blocking socket; on `EWOULDBLOCK` drop and move on — never stall the
-tick. The roster comes from STATUS receive (below). Optional multicast mode: single `sendto` to
-`239.0.0.1:5000` with `IP_MULTICAST_TTL=1`; slaves need no change (§1.2).
+tick. The roster comes from STATUS receive (below). Only slaves in NETWORK/HYBRID (or commanded
+there) that have sent STATUS within the last 3 s (`STREAM_STALE_US`) are in the fan-out: a station
+that has left costs the AP queue and airtime the other slaves need. Optional multicast mode: single
+`sendto` to `239.0.0.1:5000` with `IP_MULTICAST_TTL=1`; slaves need no change (§1.2).
 
 **SYNC.** Every 500 ms on the same TX socket to each slave's `IP:5001`: build the 20-byte header,
 write `timestamp_us = now_us()` immediately before `sendto()` (minimize stamp-to-air bias, §4.3),

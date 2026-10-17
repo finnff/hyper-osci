@@ -1213,3 +1213,33 @@ out (23 node-bursts). Captures now alternate groups: 19 logos, 21 artists.
   queued those packets for an absent station and the shared airtime and
   queue starved the other two. One node dying on stage would cost every
   other scope ~30 s of heavy loss.
+
+### Controller stops streaming to a silent slave after 3 s (2026-10-17)
+
+`stream_targets(state, now)` leaves out any slave whose last STATUS is
+older than `STREAM_STALE_US` = 3 s, whatever its mode or a pending command.
+Its next STATUS puts it back. The journal logs `[stream] <ip> paused: no
+STATUS for 3 s` and `resumed`; past the 30 s delete the rejoin shows as
+`[discovered]` instead. Why 3 s and not 2: STATUS is 1 Hz, and at ~5 % loss
+two lost in a row would cut healthy nodes several times a night, each a ~1 s
+hole. `test_policy.py` has 4 new cases. Deployed, md5 `4a55584c…`, backup
+`~/hype_controller.py.pre-stale`.
+
+**Verification** (`/tmp/soak4`, 20:25–20:37 CEST, 28 s cycles, 42 bursts per
+node): 100 was switched off by hand at ~20:28:40 and back on at ~20:29:40.
+
+- `[stream] 192.168.50.202 paused` came 3 s after 100's last STATUS. 2 s
+  later it was marked lost, deleted 20:29:10, rediscovered 20:29:43.
+- **121 and 164 while 100 was off** (5 bursts each): loss 3.8–7.6 %, AP
+  refusals 0.6–1.7 %, 0 underruns. Last time the same event cost them
+  41–90 % for ~30 s. With two nodes the refusals fell below the three-node
+  4.6–7.9 % before and after.
+- **No false cuts**: no `paused` line for 121 or 164 in 12 min. STATUS age
+  sampled at 1 Hz never went over 1.02 s (2088 samples, 0 over 1.5 s).
+- **Netwatch**: 0 strikes, so the quiet-slave rule held live.
+- Whole run, outage bursts out: loss 6.8 / 7.5 / 8.6 %, refusals 4.6–5.0 %
+  (100 / 121 / 164), 0 underruns, 0 re-anchors. Refusals ran about twice the
+  previous run's 2.4–2.8 % (per-burst median 4.7 vs 2.0 %). `[INFERENCE]`
+  This is link variation, not the change: the change adds one set
+  comprehension over three slaves per loop pass, and the two-node stretch
+  in the middle of the same run was at ~1 %. A longer run would settle it.
