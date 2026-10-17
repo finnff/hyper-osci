@@ -58,8 +58,10 @@ ok(check(on(S(rx=9000), S(ip="b", source=0, rx=3000)) | {"net": {"tx": {
    "one slave at 94% refused while another plays -> WEDGE (the 2026-10-17 case)")
 ok(check(local({"a": T(2544, 56)}), P, {"a": [1000, 0]}) is False,
    "3.5% of 1600 refused -> healthy")
-ok(check(local({"a": T(1520, 500)}), P, {"a": [1000, 0]}) is False,
-   "49% of 1020 refused -> under the line, healthy")
+ok(check(local({"a": T(1780, 740)}), P, {"a": [1000, 0]}) is False,
+   "49% of 1520 refused -> under the line, healthy")
+ok(check(local({"a": T(1520, 500)}), P, {"a": [1000, 0]}) is None,
+   "1020 sends since the sample -> under TX_MIN, not judged yet")
 ok(check(local({"a": T(1300, 400)}), P, {"a": [1000, 0]}) is None,
    "only 700 sends since the sample -> not judged yet")
 serve(local({"a": T(1300, 400)}))
@@ -79,17 +81,23 @@ ok(d is None and tx == {"a": [1144, 1456]},
    "91% refused to a slave marked gone -> no verdict, fresh sample")
 serve(gone(age_ms=6000))
 ok(nw.check(P, {"a": [1000, 0]})[0] is None, "silent 6 s, not yet marked -> no verdict")
-serve(gone(age_ms=2500))
+serve(gone(age_ms=3500))
 ok(nw.check(P, {"a": [1000, 0]})[0] is None,
-   "tx: silent 2.5 s, still being sent to (3 s cut) -> no verdict")
-ok(check(on(S(source=0, rx=4300, age_ms=2500)), P) is None,
-   "rx: NETWORK slave silent 2.5 s, frozen on mic -> no evidence, not a wedge")
+   "tx: silent 3.5 s, past the 3 s stream cut -> no verdict")
+serve(gone(age_ms=2500))
+ok(nw.check(P, {"a": [1000, 0]})[0] is True,
+   "tx: 91% refused, two STATUS lost in the wedge (2.5 s) -> still WEDGE")
+serve(gone(age_ms=2900) | {"net": {"tx": {"a": T(1900, 600)}}})
+ok(nw.check(P, {"a": [1000, 0]})[0] is False,
+   "tx: departed 2.9 s ago, 600 refused on top of 900 sent -> 40%, healthy")
+ok(check(on(S(source=0, rx=4300, age_ms=3500)), P) is None,
+   "rx: NETWORK slave silent 3.5 s, frozen on mic -> no evidence, not a wedge")
 ok(check(on(S(source=0, rx=4300, age_ms=20000, gone=True)), P) is None,
    "rx: switched off showing the mic (show end) -> no evidence, not a wedge")
 ok(check(on(S(source=0, rx=4300, age_ms=20000, gone=True),
             S(ip="b", source=0, rx=3000)), {"a": 4300, "b": 2950}) is True,
    "rx: the reporting slave alone still decides -> WEDGE")
-ok(check(local({"a": T(2600, 1456)}), P, {"a": [1144, 1456]}) is False,
+ok(check(local({"a": T(2700, 1456)}), P, {"a": [1144, 1456]}) is False,
    "back and reporting: only the sends since its return are judged -> healthy")
 ok(check(on(S(rx=9000), S(ip="b", source=0, rx=3000)) | {"net": {"tx": {}}},
          {"a": 7000, "b": 2950}, {}) is False,

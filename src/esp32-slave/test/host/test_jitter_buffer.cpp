@@ -16,6 +16,8 @@
 //   7. drained dry, then restarted without reset() (an underrun: the next
 //      packet lands on depth 0 and re-anchors) -> the pre-drain ring content
 //      is not a loop source until a full loop has been pushed again
+//   8. a hold, then a hole -> the held frames are not a loop source: no
+//      loop-fill until a full loop of real audio follows the hold
 // Plain asserts; exit code 0 = pass.
 
 #include <assert.h>
@@ -188,6 +190,24 @@ void test_drain_restart() {
   for (int i = 0; i < 12 * 2; i++) assert(scratch[i] == -7);
 }
 
+// 8. Hold, then another hole: the window one loop back would contain the
+//    held dot, and a loop-fill would repeat it for the whole hole (up to
+//    150 ms). The fill must wait for a full loop of real audio since the hold.
+void test_hold_not_loop_source() {
+  static JitterBuffer jb;
+  jb.reset();
+  push_periodic(jb, 64, 0);          // plenty of real loop history
+  assert(jb.push_hold(6) == 6);      // short hole, no usable loop: hold
+  push_periodic(jb, 4, 70);          // the packet after it
+  assert(jb.push_loop(8, P) == 0);   // last loop is 4 held + 4 real: refuse
+  push_periodic(jb, 4, 74);          // a full loop of real audio since the hold
+  assert(jb.push_loop(8, P) == 8);
+  expect_pattern(jb, 64, 0);
+  static int16_t scratch[6 * 2];
+  assert(jb.pop(scratch, 6));        // the held frames
+  expect_pattern(jb, 16, 70);        // real 70..77, then the fill continues it
+}
+
 }  // namespace
 
 int main() {
@@ -198,6 +218,7 @@ int main() {
   test_loop_count_bound();
   test_last_value_continuity();
   test_drain_restart();
-  printf("push_loop: 7/7 cases passed\n");
+  test_hold_not_loop_source();
+  printf("push_loop: 8/8 cases passed\n");
   return 0;
 }

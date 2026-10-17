@@ -94,13 +94,17 @@ def ap_bounce():
 
 
 RX_FLOOR = 200   # packets in a ~30 s tick; healthy is ~5700, a wedge is ~0
-TX_MIN = 1000    # sends to one slave since the last sample before its share counts
+# Sends to one slave since the last sample before its share counts. A slave
+# that departs is still sent to (and refused) for TX_FRESH_MS at 200 pkt/s:
+# <= 600 of 1500 = 40 %, under TX_DEAD, so a departure never strikes.
+TX_MIN = 1500
 TX_DEAD = 0.5    # share of those sends the AP queue refused (EAGAIN)
-# STATUS age past which a slave's counters are no evidence: under the
-# controller's 3 s stream cut (STREAM_STALE_US), so a slave that just went
-# quiet is out of both checks before its sends stop. Healthy is <= ~1 s at
-# 1 Hz (max 1.02 s over 2088 samples, 2026-10-17).
-TX_FRESH_MS = 2000
+# STATUS age past which a slave's counters are no evidence: the controller's
+# stream cut (STREAM_STALE_US), so a slave drops out of both checks when its
+# sends stop. Healthy is <= ~1 s at 1 Hz (max 1.02 s over 2088 samples,
+# 2026-10-17); 3 s rides out two lost STATUS in a wedge, whose air is lossy
+# too. TX_MIN is sized against this window.
+TX_FRESH_MS = 3000
 
 
 def fresh_ips(st):

@@ -1164,7 +1164,8 @@ on the UNO-Q), `tests/test_netwatch.py` 29 checks:
   no evidence: strikes stand and the last in-burst rx sample is kept.
   Before, it counted as healthy and zeroed both.
 - **Second signal: the controller's per-slave AP-queue refusals**
-  (`/api/state` `net.tx` ok/full). Any slave with ≥ 1000 sends since its
+  (`/api/state` `net.tx` ok/full). Any slave with ≥ 1000 sends (1500 since
+  the second review) since its
   last sample and ≥ 50 % refused strikes, even if another slave is still
   playing and wherever the check lands: the counters only move while
   streaming. Healthy three-node runs: 3.5 % (worst burst ~10 %). The wedge:
@@ -1338,3 +1339,44 @@ XIAO on 121, all on battery, `/tmp/soak5`):
 - Cycles restored: `hype_cycles/nodes/state.json` are byte-identical to the
   `p3.bak` backups.
 - Still open: the phone-video scope checks of Phases 1, 2 and 3.
+
+### Second review of the fixes (2026-10-17)
+
+A code-only recheck of `163ee2c` raised 12 points. Two were fixed:
+
+- **A held dot could become a loop source.** `push_hold` counted its frames
+  in `pushed_since_reset_`, so a later loop-fill could copy them for its
+  whole hole (≤ 150 ms). The packet after a hold is always pushed real, so at
+  least min(loop, 240) frames of each copied loop were real. At a 960-frame
+  loop after a 720-frame hold, ~75 % of the copied loop was dot. The review's
+  fix (leave hold frames out of the count) would not stop the copy, because
+  the frames stay in the ring. `push_hold` now **zeroes** the counter: no fill
+  until a full loop of real audio follows a hold. Host test case 8 fails
+  before the fix and passes after (8/8).
+- **Netwatch 2 s window too tight for a wedge.** A slave outside the window
+  gets a fresh tx sample, so two lost STATUS in a wedge (age 2–3 s) threw its
+  sends away and strikes could not build. `TX_FRESH_MS` is now 3 s, the
+  controller's stream cut. A departed slave is refused for up to 3 s at
+  200 pkt/s, which could reach 600/1000 = 60 % against the old `TX_MIN`, so
+  `TX_MIN` is now 1500 (≤ 40 %). An 8 s burst (~1600 sends) is still judged
+  whole. `test_netwatch.py`: 36 checks pass; the previous script fails.
+  Deployed md5 `bbeecd44…`, backup `~/hyperosci-netwatch.pre-3s`.
+
+Not fixed, with reasons:
+
+- **Clearing loop history on every underrun:** frames left after an underrun
+  keep the timeline. The next packet takes the normal hole check against the
+  old tail, so the ring before it is the same stream. Clearing would block a
+  valid fill.
+- **Non-integer `a`/`b` disabling loop-fill:** can't happen. `clean_preset`
+  (preset load, live load, apply) and `/api/pattern` all make them integers.
+- **The two counter races** (a reset during a pop counts as an underrun; a
+  mode-change flush during a fill counts as a gap reset): they can only add
+  counts, soaks make no mode changes, and soak5 had 0 underruns.
+- **Flushing a 20–150 ms hole with no loop:** 47 of soak5's 76 resets were
+  holes over 150 ms. The rest trade ≤ 150 ms of dot for ~0.4 s of mic, the
+  choice Phase 3 already made. Revisit after logging when `loop_frames` is 0.
+- **`dark_gaps` X-only:** a false gap needs a figure narrower than ~300
+  codes in X; none of the show presets is.
+
+The firmware fix is built (Flash 1025009 B) but **not flashed**.
