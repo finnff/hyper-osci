@@ -20,6 +20,18 @@ pio run -t upload          # flash over USB-C (power switch OFF — see wiring.m
 pio device monitor         # 115200 baud, USB CDC
 ```
 
+## Host test (jitter buffer)
+
+`push_loop` (Phase 2 loop-fill concealment) is tested on the host, no ESP32
+needed. `test/host/test_jitter_buffer.cpp` builds against a small FreeRTOS
+shim (`test/host/shim/`):
+
+```sh
+cd src/esp32-slave
+g++ -std=c++17 -Wall -Wextra -I test/host/shim -I include -I src \
+    test/host/test_jitter_buffer.cpp -o /tmp/test_jb && /tmp/test_jb
+```
+
 ## Module map
 
 | File | Role |
@@ -35,6 +47,7 @@ pio device monitor         # 115200 baud, USB CDC
 | `src/net_rx.*` | WiFi STA, UDP audio/ctrl RX, deadline policy, status TX |
 | `src/mode_manager.*` | LOCAL/NETWORK/HYBRID state machine + auto-fallback, NVS settings, JSON commands |
 | `src/ui.*` | buttons, LED patterns, battery policy, serial console |
+| `test/host/` | host test for `push_loop` (jitter_buffer.h) + FreeRTOS shim |
 
 ## Task layout (single core)
 
@@ -47,13 +60,15 @@ pio device monitor         # 115200 baud, USB CDC
 ## Serial console (USB-C, 115200)
 
 `help` · `stat` · `mode <local|net|hybrid>` · `pat` (cycle test pattern) ·
-`gain <0-100>` · `wifi <on|off>` · `id <0-255>` · `reboot`
+`gain <0-100>` · `wifi <on|off>` · `id <0-255>` · `droptest <every> [run]`
+(bench packet loss) · `fill <loop|hold>` (bench fill method) · `reboot`
 
 ## Status / TODO
 
 - [x] Compiling skeleton with all modules and the full mode state machine
-- [x] Packet-loss concealment (deadline-continuity buffer: ≤20 ms holes
-      hold-filled; hold → ramp-to-center → 1 s mic fallback ladder)
+- [x] Packet-loss concealment (deadline-continuity buffer: holes ≤150 ms
+      loop-filled, ≤20 ms hold-filled without a loop, longer ones flush and
+      pre-roll on the mic; hold → ramp-to-center → 1 s mic fallback ladder)
 - [ ] Bench bring-up: I2S output on a real scope (circle, then `pat` → ramp for
       the DC go/no-go test, square for filter ringing)
 - [ ] Bench bring-up: mic path + pot filter (compare with old sigma-delta unit)

@@ -32,6 +32,35 @@ const char* mode_name();
 uint8_t fill_block(int16_t* frames, size_t frame_count);
 uint8_t active_source();
 
+// Stream join/loss timeline for the serial console (docs/
+// stream-concealment-plan.md §3.5). Recorded from any task, drained and
+// printed by the loop task, so nothing prints from the audio path.
+enum class EventKind : uint8_t {
+  MODE,         // mode changed; arg = new Mode
+  STREAM_UP,    // stream audio started arriving; arg = ms since mode entry,
+                //   arg2 = first packet's lead (deadline - now), ms
+  FIRST_PLAY,   // first block played since the join (stream-up or the
+                //   last underrun); arg = ms since that join
+  UNDERRUN,     // buffer ran dry mid-play; arg = ms since mode entry
+  STREAM_LOST,  // no audio for STREAM_TIMEOUT_MS; arg = ms since mode entry
+  RESET,        // deadline hole too long to conceal flushed the buffer; arg = hole ms,
+                //   arg2 = the restarting packet's lead, ms
+};
+// arg2 when the clock was not synced (no lead to measure).
+constexpr int32_t EV_NO_LEAD = INT32_MIN;
+struct Event {
+  uint32_t ms;  // millis() when recorded
+  uint32_t arg;
+  int32_t arg2;
+  EventKind kind;
+  Mode mode;  // mode at the time
+};
+bool pop_event(Event& out);    // false when empty
+uint32_t events_dropped();     // ring overflowed (console not draining)
+uint32_t last_preroll_ms();    // last FIRST_PLAY arg, 0 = none yet
+// net_rx (async_udp task): a deadline hole reset the jitter buffer.
+void note_reset(uint32_t hole_ms, int32_t lead_ms);
+
 // JSON command entry point (wired as net_rx cmd handler in main.cpp).
 void handle_command(const char* json, size_t len);
 

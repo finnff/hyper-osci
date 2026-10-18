@@ -40,8 +40,8 @@ MCAST_GROUP = "239.0.0.1"
 PORT_AUDIO, PORT_CTRL, PORT_STATUS = 5000, 5001, 5002
 
 HDR = struct.Struct("<IBBHIQ")  # magic, ver, type, flags, seq, timestamp_us
-AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, reserved
-STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")  # + pattern byte + lost uint32
+AUDIO_HDR = struct.Struct("<IHH")  # sample_rate, frame_count, loop_frames
+STATUS_PAYLOAD = struct.Struct("<6sBBBbHHIIIIi")  # + pattern byte + lost uint32 + 9 fill counters
 
 SAMPLE_RATE = 48000
 FRAMES = 240  # 5 ms
@@ -64,6 +64,27 @@ TXSTAT_INTERVAL_US = 1_000_000
 # exactly how a night of EAGAIN got written up as ENOBUFS. Both mean the one
 # thing that matters: the packet died in this box and never reached the air.
 TX_QUEUE_FULL = frozenset((errno.EAGAIN, errno.EWOULDBLOCK, errno.ENOBUFS))
+
+# Phase 2 loop-fill (docs/stream-concealment-plan.md §4.2): every AUDIO
+# packet carries the pattern's repeat length so a slave that loses
+# packets can fill the hole by copying one loop back in its ring instead
+# of holding the last frame. 0 = no usable loop -> the old hold.
+#
+# The ceiling is deliberately longer than any slave's fill limit
+# (HYPE_LOOP_FILL_MAX_MS in its protocol.h): the settle window must
+# assume the longest fill any slave could ever run, and test_loop.py
+# asserts this stays >= the slave's limit.
+LOOP_FILL_CEIL_MS = 150
+LOOP_FILL_CEIL_FRAMES = LOOP_FILL_CEIL_MS * SAMPLE_RATE // 1000
+# Largest loop a slave may copy from: 8192 frames (170 ms) leaves the
+# rest of the 512 ms ring for the fill window and the playhead.
+LOOP_MAX_FRAMES = 8192
+# Rounding the loop to whole frames drifts copy by copy across a fill;
+# 4 frames is invisible at every frequency the show uses.
+LOOP_DRIFT_MAX_FRAMES = 4
+# The pulse LFO must not change the drawing's size by more than this
+# fraction across one loop, or a filled hole lands one size off.
+LOOP_PULSE_MAX = 0.05
 
 MODE_NAMES = {0: "local", 1: "network", 2: "hybrid"}
 PATTERN_NAMES = {0: "mic", 1: "circle", 2: "lissajous", 3: "ramp", 4: "square"}
@@ -874,10 +895,37 @@ def apply_preset(state, p):
 
 
 
-# A commanded mode is only confirmed by the slave's next STATUS beacon, which
-# is 1 Hz. Re-sending inside that window would be three packets per node per
-# second, all saying the same thing, on the one radio the audio needs.
-MODE_RESEND_US = 3_000_000
+# A commanded mode is confirmed by the slave's next STATUS: a reply to the
+# CMD from current firmware, else its 1 Hz beacon. Until then, re-send every
+# policy tick (250 ms): a lost `network` would otherwise cost that node 3 s of
+# a 5 s name, and a lost `local` leaves it draining to the centre dot. A few
+# ~40-byte packets per transition is nothing next to 200 audio packets/s.
+MODE_RESEND_US = 200_000
+
+# Forward pacing drift (a scheduler/GIL stall) at or below this is absorbed
+# by the lead: the backlog goes out late with its original deadlines and
+# still arrives ~LEAD_US - drift early. Above it, jump the epoch and drop the
+# backlog — one discontinuity, which every slave rebuffers from. Kept near
+# 100 ms because the backlog leaves as one unpaced burst per slave, and at 3+
+# slaves a bigger burst overflows the TX queue (AUG_9 report, EAGAIN).
+REANCHOR_US = 100_000
+
+# A slave whose STATUS (1 Hz beacon, plus a reply to every CMD) is older than
+# this gets no audio until it reports again. Sending to a station that has
+# left (switched off, flat battery) is not free: the AP first queues those
+# packets, then refuses them, and the queue and airtime it burns starved the
+# other slaves to 41-90 % loss for the 30 s until deletion (STATUS.md,
+# 2026-10-17 second stress soak). Three beacons in a row: two consecutive
+# losses happen on a healthy node several times a night at ~5 % loss, and a
+# false cut costs it a ~1 s hole. The 5 s `gone` mark stays the dashboard's.
+STREAM_STALE_US = 3_000_000
+
+
+def stream_stale(s, now):
+    """True when slave `s` has been silent too long to be sent audio
+    (STREAM_STALE_US). The one test stream_targets() and the stream loop's
+    paused/resumed log both use."""
+    return now - s["last_us"] > STREAM_STALE_US
 
 
 def node_flags(state, sid):
@@ -936,6 +984,29 @@ def reconcile_modes(state, cmds):
         cmds.send(ip, {"cmd": "set_mode",
                        "mode": "network" if w else "local"})
     return send
+
+
+def stream_targets(state, now):
+    """-> [ip], the slaves the audio stream goes to right now.
+
+    A slave that will play it: NETWORK / HYBRID. A pending set_mode command
+    beats the last 1 Hz beacon, so a burst starts streaming the moment the
+    node is told to play (not up to a second later, when its STATUS says so)
+    and stops the moment it is told to go local — the command and the audio
+    share the AP's queue to that node, so nothing is sent after it that the
+    node would have to flush. A slave silent for STREAM_STALE_US is left out
+    whatever its mode, and back in with its next STATUS. Caller holds
+    state.lock.
+    """
+    out = []
+    for ip, s in state.slaves.items():
+        if stream_stale(s, now):
+            continue
+        pending = state.mode_sent.get(ip)
+        mode = pending[0] if pending else s["mode"]
+        if mode != 0:
+            out.append(ip)
+    return out
 
 
 def _cycle_arm(state, group, now):
@@ -1204,6 +1275,10 @@ class State:
         # snapshot() can read it without taking a lock the audio path would
         # then have to contend for.
         self.net_tx = {}
+        # The loop_frames field stream_loop puts on the wire right now
+        # (0 = hold). Written once per packet outside the lock, read by
+        # snapshot() -- same deal as net_tx.
+        self.loop_frames = 0
         # Per-node switches, and the pair cycles that drive the set. Both are
         # read every policy tick and written by the HTTP threads, so both are
         # under self.lock.
@@ -1266,6 +1341,7 @@ class State:
                 "figures": figures,
                 "presets": [p["name"] for p in self.presets],
                 "stream_on": self.stream_on,
+                "loop_frames": self.loop_frames,
                 "slaves": [dict(s, age_ms=(now - s["last_us"]) // 1000)
                            for s in self.slaves.values()],
                 "net": {"iface": self.net_iface, "egress": self.net_egress,
@@ -1379,6 +1455,86 @@ class PatternGen:
         # Wrap only between blocks: ratios stay integer-coherent within one.
         self.phase = p % two_pi
         return out.tobytes()
+
+
+# ---------------------------------------------------------------------------
+# Loop-fill field (Phase 2, docs/stream-concealment-plan.md §4.2).
+# ---------------------------------------------------------------------------
+
+def loop_frames_for(params):
+    """The loop_frames field for one pattern: the repeat length in whole
+    48 kHz frames, or 0 -> the slave falls back to the last-value hold.
+
+    Every kind repeats exactly at 1/freq (block() advances phase or table
+    position by a freq multiple per sample), so the samples a lost packet
+    carried were already sent one loop earlier -- provided the pattern is
+    periodic enough for that copy to be indistinguishable:
+      * spin moves the figure, so it never repeats;
+      * a non-integer ratio never closes (lissajous/rose);
+      * whole-frame rounding drifts copy by copy, bounded by the longest
+        fill this controller will ever ask for;
+      * the pulse LFO must not move the size more than a sliver per loop.
+    """
+    (kind, freq, amp, a, b, tbl, rmax,
+     pulse_rate, pulse_depth, rot_speed, flip_x, flip_y) = params
+    if freq <= 0 or rot_speed != 0:
+        return 0
+    if a != int(a) or b != int(b):
+        return 0
+    P = SAMPLE_RATE / freq
+    L = round(P)
+    if not 1 <= L <= LOOP_MAX_FRAMES:
+        return 0
+    if math.ceil(LOOP_FILL_CEIL_FRAMES / L) * abs(L - P) > LOOP_DRIFT_MAX_FRAMES:
+        return 0
+    if pulse_depth * math.pi * pulse_rate / freq > LOOP_PULSE_MAX:
+        return 0
+    return L
+
+
+def _params_differ(a, b):
+    """Element-wise compare of two pattern_params() tuples.
+
+    The table (index 5) compares by identity, not ==: it is a big list, so
+    a per-packet deep compare would burn the 5 ms budget -- and a rebuilt
+    table with identical content IS a change (the walk restarts), which is
+    exactly what `is` reports.
+    """
+    for i, (x, y) in enumerate(zip(a, b)):
+        if i == 5:
+            if x is not y:
+                return True
+        elif x != y:
+            return True
+    return False
+
+
+class LoopField:
+    """Decides loop_frames per packet, with the settle window after changes.
+
+    The slave cannot see a pattern change (the controller never sets
+    SYNC_PULSE), so the field must stay 0 for L + F frames after any
+    change: a packet arriving after a hole of up to F frames copies from
+    up to L + F frames back, and that source must post-date the change.
+    Cost per packet: one tuple compare plus a few float ops.
+    """
+
+    def __init__(self):
+        self._last = None
+        self._L = 0
+        self._settle_left = 0  # frames left in the settle window
+
+    def next(self, params):
+        """The field for this packet; call once per stream packet."""
+        if self._last is None or _params_differ(self._last, params):
+            self._last = params
+            self._L = loop_frames_for(params)
+            self._settle_left = (self._L + LOOP_FILL_CEIL_FRAMES
+                                 if self._L else 0)
+        if self._settle_left > 0:
+            self._settle_left -= FRAMES
+            return 0
+        return self._L
 
 
 class CmdSender:
@@ -2741,6 +2897,9 @@ function openSlaveSheet(id) {
           '<div class="stat"><label>tx-drop</label><value>' + txDropPct + '%</value></div>' +
           '<div class="stat"><label>tx full</label><value>' + fmtN(txDropFull) + '</value></div>' +
         '</div>' +
+        (slave.loop_fills != null
+         ? '<p style="color:var(--dim);font-size:11px;margin:4px 0">' + fillLine(slave) + '</p>'
+         : '') +
         '<p style="color:var(--dim);font-size:12px;margin:8px 0 4px">POWER</p>' +
         '<div class="stats-grid">' +
           '<div class="stat"><label>vbat</label><value>' + slave.vbat_mv + ' mV</value></div>' +
@@ -2780,6 +2939,18 @@ function rates(s) {
   }
   rateHistory[s.ip] = {rx: s.rx, drop: s.drop, under: s.under, lost: s.lost, t: now};
   return r;
+}
+
+/* Phase-2 fill counters, one line per slave. Omitted entirely while the
+   slave still runs pre-Phase-2 firmware (the fields are null). */
+function fillLine(s) {
+  var h = s.hist || [0, 0, 0, 0, 0];
+  return 'fill loop ' + s.loop_fills
+    + ' · hold ' + s.hold_fills
+    + ' · resets ' + s.gap_resets
+    + ' · re-anchor ' + s.reanchor
+    + ' · holes 1:' + h[0] + ' 2:' + h[1] + ' 3–4:' + h[2]
+    + ' 5–30:' + h[3] + ' >30:' + h[4];
 }
 
 /* === RENDER === */
@@ -3408,6 +3579,10 @@ function renderDiagnostics() {
     html += '<div class="stat"><label>drop</label><value>' + fmtN(s.drop) + '</value></div>';
     html += '<div class="stat"><label>lost</label><value>' + (s.lost == null ? '—' : fmtN(s.lost)) + '</value></div>';
     html += '<div class="stat"><label>under</label><value>' + fmtN(s.under) + '</value></div>';
+    /* Phase-2 fill counters; null on pre-Phase-2 slaves -> omit the line */
+    if (s.loop_fills != null) {
+      html += '<p style="color:var(--dim);font-size:11px;margin:4px 0 0">' + fillLine(s) + '</p>';
+    }
 
     /* POWER group */
     html += '<div class="stat"><label style="grid-column:1/4;color:var(--dim);border-bottom:1px solid var(--line);margin-top:4px">POWER</label></div>';
@@ -3427,6 +3602,10 @@ function renderDiagnostics() {
   } else {
     html += '<div style="color:var(--ph)">AP is UP — stream can reach slaves</div>';
   }
+  /* What the controller puts in the AUDIO loop_frames field right now;
+     0 means the slaves hold the last value instead of loop-filling. */
+  html += '<div style="color:var(--dim);font-size:12px;margin-top:4px">loop field: '
+    + ((S.loop_frames || 0) > 0 ? S.loop_frames + ' frames' : '0 — hold') + '</div>';
 
   container.innerHTML = html;
 }
@@ -3937,6 +4116,7 @@ def stream_loop(state, iface_ip):
     status.setblocking(False)
 
     gen = PatternGen()
+    loop = LoopField()  # settle window on the loop_frames field (§4.2)
     seq_sync = 0
     seq_audio = 0
     frames_sent = 0
@@ -3963,6 +4143,7 @@ def stream_loop(state, iface_ip):
     tx_last = ""      # most recent errno seen, named, for the dashboard
     next_txstat = start + TXSTAT_INTERVAL_US
     tx_warned_us = 0
+    stale = set()     # slaves left out of the stream for STATUS silence
 
     while True:
         now = mono_us()
@@ -4003,30 +4184,44 @@ def stream_loop(state, iface_ip):
         with state.lock:
             streaming = state.stream_on
             # Only stream to slaves that will actually play it (NETWORK /
-            # HYBRID). A LOCAL slave ignores the stream — sending it 200 pkt/s
-            # just burns airtime and overflows its jitter buffer (which is
-            # what used to inflate the drop counter).
-            targets = [ip for ip, s in state.slaves.items()
-                       if s["mode"] != 0]
+            # HYBRID, or about to be). A LOCAL slave discards the stream —
+            # sending it 200 pkt/s just burns airtime.
+            targets = stream_targets(state, now)
+            stale_now = {ip for ip, s in state.slaves.items()
+                         if stream_stale(s, now)}
+            back = {ip for ip in stale - stale_now if ip in state.slaves}
+        for ip in stale_now - stale:
+            print(f"[stream] {ip} paused: no STATUS for "
+                  f"{STREAM_STALE_US / 1e6:.0f} s", flush=True)
+        for ip in back:
+            print(f"[stream] {ip} resumed: STATUS again", flush=True)
+        stale = stale_now
 
         if streaming:
             # Send every due packet (catch-up burst after scheduler stalls,
             # capped so a long stall can't wedge the loop).
             burst = 0
             while now >= next_audio and burst < 10:
-                # Keep deadlines glued to real time (see hype_sender.py): if
-                # pacing drifted >20 ms, re-anchor the epoch — the slave sees
-                # one discontinuity and cleanly rebuffers.
+                # Invariant: a packet sent on schedule is due LEAD_US after
+                # it leaves, so drift is how far behind schedule we are (≥ 0).
+                # A small stall is caught up with the original deadlines; only
+                # a long one re-anchors, forward, and drops the backlog — so
+                # no catch-up burst can overshoot into a backward jump (each
+                # one was a second reset on every slave, Aug 21-22).
                 ideal = epoch + frames_sent * 1_000_000 // SAMPLE_RATE
                 drift = (now + LEAD_US) - ideal
-                if abs(drift) > 20_000:
+                if drift > REANCHOR_US:
                     epoch += drift
+                    next_audio = now
                     print(f"[re-anchor] drift={drift/1000:.1f}ms", flush=True)
                 deadline = epoch + frames_sent * 1_000_000 // SAMPLE_RATE
-                payload = gen.block(FRAMES, state.pattern_params())
+                params = state.pattern_params()
+                loop_frames = loop.next(params)
+                state.loop_frames = loop_frames
+                payload = gen.block(FRAMES, params)
                 pkt = (HDR.pack(HYPE_MAGIC, HYPE_VERSION, HYPE_AUDIO, 0,
                                 seq_audio, deadline) +
-                       AUDIO_HDR.pack(SAMPLE_RATE, FRAMES, 0) + payload)
+                       AUDIO_HDR.pack(SAMPLE_RATE, FRAMES, loop_frames) + payload)
                 for ip in targets:
                     try:
                         audio.sendto(pkt, (ip, PORT_AUDIO))
@@ -4046,11 +4241,12 @@ def stream_loop(state, iface_ip):
                 next_audio += PACKET_US
                 burst += 1
                 now = mono_us()
-            if now - next_audio > 200_000:  # hopelessly behind: resync pacing
-                next_audio = now
         else:
-            # Paused: keep pacing anchored so resume re-anchors once, cleanly.
-            next_audio = now + PACKET_US
+            # Paused: slide the epoch along with the pacing clock so resume
+            # starts on schedule (the slaves see one gap, and rebuffer).
+            resume = now + PACKET_US
+            epoch += resume - next_audio
+            next_audio = resume
 
         # Publish TX accounting: one atomic store per second, no lock.
         if now >= next_txstat:
@@ -4094,6 +4290,13 @@ def stream_loop(state, iface_ip):
                     # None until the slave runs the new firmware.
                     lost = (struct.unpack_from("<I", data, lp_off + 1)[0]
                             if len(data) >= lp_off + 5 else None)
+                    # Phase-2 fill counters appended after lost_packets
+                    # (stream-concealment-plan.md §4.4): loop_fills,
+                    # hold_fills, gap_resets, reanchor_gaps, then the
+                    # 5-bucket seq-gap histogram. None until the slave
+                    # runs the Phase-2 firmware.
+                    fills = (struct.unpack_from("<9I", data, lp_off + 5)
+                             if len(data) >= lp_off + 5 + 36 else None)
                     with state.lock:
                         if src_ip not in state.slaves:
                             print(f"[discovered] slave id={sid} at {src_ip} "
@@ -4104,6 +4307,11 @@ def stream_loop(state, iface_ip):
                             "vbat_mv": vbat, "depth": depth, "rx": rx,
                             "drop": dropped, "under": underruns,
                             "lost": lost,
+                            "loop_fills": fills[0] if fills else None,
+                            "hold_fills": fills[1] if fills else None,
+                            "gap_resets": fills[2] if fills else None,
+                            "reanchor": fills[3] if fills else None,
+                            "hist": list(fills[4:9]) if fills else None,
                             "uptime": uptime, "offs": offset,
                             "lpat": lpat, "last_us": mono_us(),
                         }

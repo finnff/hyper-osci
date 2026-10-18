@@ -164,8 +164,9 @@ normalised by identical arithmetic, and writes the `.tbl` that ships to
   (`time.monotonic_ns() // 1000`); `HYPE_AUDIO.timestamp_us` is the playback
   deadline of the packet's first frame.
 - Transmission is paced from the audio clock with deadline catch-up bursts,
-  not `sleep()` drift; pacing drift > 20 ms re-anchors the epoch once,
-  cleanly.
+  not `sleep()` drift. A stall up to `REANCHOR_US` (100 ms) is caught up
+  with the original deadlines; a longer one re-anchors the epoch forward
+  once and drops the backlog.
 - The embedded web page (`PAGE`) is a **plain** triple-quoted Python string:
   a `\n` typed into its JavaScript becomes a real newline in the served
   source (this broke the dashboard once). Write `\\n` and syntax-check with

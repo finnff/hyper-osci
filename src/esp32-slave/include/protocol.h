@@ -36,11 +36,20 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
   uint32_t sample_rate;  // 48000 in v1; slaves drop packets with other rates
   uint16_t frame_count;  // stereo frames that follow (240 in v1)
-  uint16_t reserved;
+  uint16_t loop_frames;  // pattern repeat length in whole 48 kHz frames;
+                         // 0 = no usable loop -> last-value hold (Phase 2)
   // int16_t samples[frame_count * 2];  L=X first, then R=Y, interleaved
 } HypeAudioPayload;      // 8 bytes + samples
 
 #define HYPE_AUDIO_FRAMES 240 // 5 ms at 48 kHz -> 20+8+960 = 988 B/packet
+
+// Loop-fill concealment (docs/stream-concealment-plan.md §4-§5): the
+// controller's pattern repeats every loop_frames, so the slave fills holes by
+// copying from one loop back in its ring. Phase 3: up to 150 ms when the
+// loop is usable; without one, last-value hold only up to HOLD_FILL_MAX_MS
+// (config.h) and a reset beyond it.
+#define HYPE_LOOP_FILL_MAX_MS 150    // slave loop-fill limit; controller LOOP_FILL_CEIL_MS must be >= this
+#define HYPE_LOOP_MAX_FRAMES 8192    // largest loop_frames a slave accepts
 
 // --- HYPE_SYNC payload ------------------------------------------------------
 // timestamp_us = controller clock at (approximate) moment of transmission.
@@ -75,7 +84,22 @@ typedef struct __attribute__((packed)) {
   uint32_t lost_packets;   // cumulative missing AUDIO packets inferred from
                            // seq gaps (catches loss below the socket layer,
                            // which rx_dropped cannot see)
-} HypeStatusPayload;     // 39 bytes
+  // --- Phase 2: concealment observability (all cumulative since boot) ---
+  uint32_t loop_fills;     // small-gap fill events, loop-copy
+  uint32_t hold_fills;     // small-gap fill events, last-value hold
+  uint32_t gap_resets;     // holes > the fill limit that reset the buffer
+  uint32_t reanchor_gaps;  // deadline holes with contiguous seq: a controller
+                           // re-anchor, nothing lost
+  uint32_t gap_hist[5];    // seq holes by packets missing: 1, 2, 3-4, 5-30,
+                           // >30
+} HypeStatusPayload;       // 75 bytes (39 + nine u32 Phase-2 counters)
 
+// Size checks in both spellings: this header is shared with C (the
+// controller) and C++ (the firmware, the host test).
+#ifdef __cplusplus
+static_assert(sizeof(HypeHeader) == 20, "header must be 20 bytes");
+static_assert(sizeof(HypeStatusPayload) == 75, "status must be 75 bytes");
+#else
 _Static_assert(sizeof(HypeHeader) == 20, "header must be 20 bytes");
-_Static_assert(sizeof(HypeStatusPayload) == 39, "status must be 39 bytes");
+_Static_assert(sizeof(HypeStatusPayload) == 75, "status must be 75 bytes");
+#endif

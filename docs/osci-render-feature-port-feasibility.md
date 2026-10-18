@@ -822,7 +822,10 @@ neither — it measured how often the 20 ms re-anchor fires, not whether the `ab
 slave was attached to see the artifact. The third now has its metric measured on the board, and
 still wants a scope:
 
-- **Do not change `abs(drift) > 20_000` to `drift > 20_000` at `:1040`** on the strength of this
+- **Superseded 2026-10-14** (`stream-concealment-plan.md` §3.7): the controller now re-anchors
+  forward only, above 100 ms, **and** sets `next_audio = now` so the backlog is dropped — that is
+  what stops the ratchet below. The study's finding stands for the bare `abs()` → `>` swap.
+  Original note: **Do not change `abs(drift) > 20_000` to `drift > 20_000` at `:1040`** on the strength of this
   study. One analysis recommended it; two independent replays of the loop refuted it — positive-only
   ratchets the effective lead (475/500/530/570 ms after 25/50/80/120 ms stalls) and never recovers,
   past the slave's 512 ms ring into permanent buffer-full drops. Both variants produce exactly one

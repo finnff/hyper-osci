@@ -1,5 +1,5 @@
 // Single-producer / single-consumer jitter buffer for stereo audio frames.
-// Producer: network task (push packets / hold-fill). Consumer: audio task.
+// Producer: network task (push packets / hold-fill / loop-fill). Consumer: audio task.
 // Tracks the master-clock playback deadline of the frame at the read head so
 // the consumer can apply the +-DEADLINE_SLACK_US policy, and the deadline of
 // the next frame a push would append (tail) so the producer can detect stream
@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "protocol.h"
 #include "freertos/FreeRTOS.h"
 
 class JitterBuffer {
@@ -23,7 +24,17 @@ class JitterBuffer {
     head_deadline_us_ = 0;
     epoch_++;
     started_ = false;
+    pushed_since_reset_ = 0;
     portEXIT_CRITICAL(&mux_);
+  }
+
+  // Number of reset() calls so far (wraps). Another task compares it with
+  // its last reading to notice a flush it did not cause.
+  uint32_t flushes() const {
+    portENTER_CRITICAL(&mux_);
+    const uint32_t e = epoch_;
+    portEXIT_CRITICAL(&mux_);
+    return e;
   }
 
   // Deadline of the next frame a push would append. Only meaningful while
@@ -44,7 +55,13 @@ class JitterBuffer {
     if (count > free_frames()) return false;
     portENTER_CRITICAL(&mux_);
     const uint32_t epoch = epoch_;
-    if (head_ == tail_) head_deadline_us_ = deadline_us;
+    // Empty: this frame re-anchors the head. If the buffer played dry (an
+    // underrun, no reset()), the ring still holds the stream from before
+    // the stall — count it out as a loop source, as reset() does.
+    if (head_ == tail_) {
+      head_deadline_us_ = deadline_us;
+      pushed_since_reset_ = 0;
+    }
     const uint32_t tail = tail_;
     portEXIT_CRITICAL(&mux_);
     for (uint16_t i = 0; i < count; i++) {
@@ -56,7 +73,10 @@ class JitterBuffer {
     last_r_ = frames[(count - 1) * 2 + 1];
     portENTER_CRITICAL(&mux_);
     const bool ok = (epoch == epoch_);
-    if (ok) tail_ = (tail + count) % JB_CAPACITY_FRAMES;
+    if (ok) {
+      tail_ = (tail + count) % JB_CAPACITY_FRAMES;
+      add_pushed(count);
+    }
     portEXIT_CRITICAL(&mux_);
     return ok;
   }
@@ -80,7 +100,56 @@ class JitterBuffer {
     }
     portENTER_CRITICAL(&mux_);
     const bool ok = (epoch == epoch_);
-    if (ok) tail_ = (tail + count) % JB_CAPACITY_FRAMES;
+    if (ok) {
+      tail_ = (tail + count) % JB_CAPACITY_FRAMES;
+      add_pushed(count);
+    }
+    portEXIT_CRITICAL(&mux_);
+    return ok ? count : 0;
+  }
+
+  // Loop-fill loss concealment (Phase 2): the streamed pattern repeats every
+  // `loop` frames, so a hole of `count` frames is filled by copying from one
+  // loop back in the ring instead of parking on the last value. Frame i is
+  // copied from (tail + CAP - loop + i) % CAP, forward, one frame at a time:
+  // when the hole is longer than a loop the copy reads frames this call
+  // wrote earlier (LZ77-style) — memcpy/memmove would read stale ring
+  // contents. Same commit protocol as push_hold(); returns the number of
+  // frames actually appended (0 when empty, no usable loop, or a concurrent
+  // reset() intervened).
+  uint16_t push_loop(uint16_t count, uint16_t loop) {
+    portENTER_CRITICAL(&mux_);
+    const uint32_t epoch = epoch_;
+    const bool empty = (head_ == tail_);
+    const uint32_t tail = tail_;
+    const uint32_t pushed = pushed_since_reset_;
+    portEXIT_CRITICAL(&mux_);
+    if (empty) return 0;
+    const uint16_t room = free_frames();
+    if (count > room) count = room;
+    if (count == 0) return 0;
+    // The ring must still hold a full loop of post-reset content, and the
+    // fill's write window must not wrap under its own source window (CAP is
+    // not a power of two; the + CAP form keeps the arithmetic uint32-safe).
+    if (loop == 0 || loop > HYPE_LOOP_MAX_FRAMES) return 0;
+    if (pushed < loop) return 0;
+    if ((uint32_t)loop + count > (uint32_t)JB_CAPACITY_FRAMES - 1) return 0;
+    for (uint16_t i = 0; i < count; i++) {
+      const uint32_t src =
+          (tail + JB_CAPACITY_FRAMES - loop + i) % JB_CAPACITY_FRAMES;
+      const uint32_t dst = (tail + i) % JB_CAPACITY_FRAMES;
+      buf_[dst * 2] = buf_[src * 2];
+      buf_[dst * 2 + 1] = buf_[src * 2 + 1];
+    }
+    const uint32_t last = (tail + count - 1) % JB_CAPACITY_FRAMES;
+    last_l_ = buf_[last * 2];
+    last_r_ = buf_[last * 2 + 1];
+    portENTER_CRITICAL(&mux_);
+    const bool ok = (epoch == epoch_);
+    if (ok) {
+      tail_ = (tail + count) % JB_CAPACITY_FRAMES;
+      add_pushed(count);
+    }
     portEXIT_CRITICAL(&mux_);
     return ok ? count : 0;
   }
@@ -143,11 +212,24 @@ class JitterBuffer {
     return (uint16_t)(JB_CAPACITY_FRAMES - 1 - depth_frames());
   }
 
+  // Called with mux_ held: saturating high-water mark of frames committed
+  // since the last reset() or empty re-anchor. push_loop() refuses to fill
+  // while it is below the loop length (older content belongs to another
+  // stream, or to the timeline before an underrun).
+  void add_pushed(uint32_t count) {
+    if (pushed_since_reset_ >= JB_CAPACITY_FRAMES) return;
+    const uint32_t room = (uint32_t)JB_CAPACITY_FRAMES - pushed_since_reset_;
+    pushed_since_reset_ += (count < room) ? count : room;
+  }
+
   int16_t buf_[JB_CAPACITY_FRAMES * 2];
   uint32_t head_ = 0;  // consumer index (frames)
   uint32_t tail_ = 0;  // producer index (frames)
   uint64_t head_deadline_us_ = 0;
   uint32_t epoch_ = 0;  // bumped by reset(); aborts in-flight push/pop commits
+  uint32_t pushed_since_reset_ = 0;  // frames committed since the last
+                                     // reset() / empty re-anchor: the
+                                     // push_loop() source guard
   int16_t last_l_ = 0, last_r_ = 0;  // producer-owned (concealment source)
   volatile bool started_ = false;
   mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;

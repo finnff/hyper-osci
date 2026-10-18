@@ -50,6 +50,10 @@
 #define STREAM_TIMEOUT_MS 1000  // no audio packets -> fallback (v3.1 req)
 #define SYNC_STALE_MS 5000      // no SYNC beacon -> clock considered stale
 #define DEADLINE_SLACK_US 5000  // +-5 ms playback tolerance (v3.1 req)
+// Longest hole a last-value hold may cover (no usable loop): a parked dot
+// longer than this looks worse than a reset. Loop-fill goes further, up to
+// HYPE_LOOP_FILL_MAX_MS (protocol.h).
+#define HOLD_FILL_MAX_MS 20
 
 // ---------------------------------------------------------------------------
 // Network (docs/protocol.md is normative)

@@ -45,6 +45,13 @@ uint32_t audio_stack_hwm() {
 }  // namespace app
 
 void setup() {
+  // Never block on the console. Plugged into a host that isn't reading the
+  // port, each write would wait up to 2 s (20 × 100 ms) once the ring fills,
+  // stalling the loop task's LEDs, MODE button and battery cutout. With no
+  // wait, unread output is dropped instead; the bigger ring keeps a full
+  // `stat` dump (~0.5 KB) intact when the host *is* reading.
+  Serial.setTxBufferSize(1024);
+  Serial.setTxTimeoutMs(0);
   Serial.begin(115200);
 
   ui::init();  // must be first: samples "MODE held at boot"
