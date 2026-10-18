@@ -1181,7 +1181,8 @@ on the UNO-Q), `tests/test_netwatch.py` 29 checks:
   run). Sends to a slave that has gone quiet are refused as well: 164,
   switched off for a minute at 18:04 UTC, drew two strikes, "AP refused
   68 % / 73 % of sends". A slave whose STATUS is ≥ 5 s old (2 s since the
-  review fixes below), or that is marked `gone`, now gets a fresh tx sample
+  review fixes below, 3 s since the second review), or that is marked
+  `gone`, now gets a fresh tx sample
   instead of a verdict. In the wedge nobody was ever marked. Without this, a
   node dying on stage would leave strikes standing.
 
@@ -1372,7 +1373,9 @@ Not fixed, with reasons:
   (preset load, live load, apply) and `/api/pattern` all make them integers.
 - **The two counter races** (a reset during a pop counts as an underrun; a
   mode-change flush during a fill counts as a gap reset): they can only add
-  counts, soaks make no mode changes, and soak5 had 0 underruns.
+  counts, and soak5 had 0 underruns. (Corrected later: the soaks do switch
+  modes, ~294 per soak, and soak7 had 0 underruns as well. The races are
+  real but rare; see "Third review".)
 - **Flushing a 20–150 ms hole with no loop:** 47 of soak5's 76 resets were
   holes over 150 ms. The rest trade ≤ 150 ms of dot for ~0.4 s of mic, the
   choice Phase 3 already made. Revisit after logging when `loop_frames` is 0.
@@ -1425,3 +1428,45 @@ XIAO on 121, all on battery, `/tmp/soak7`):
 - Dark time on 121: 1 gap (300 ms) in 17 bursts; median 0 %, max 3.9 %.
 - 0 underruns, 0 re-anchors, 0 netwatch log lines, no stream cuts.
 - Cycles restored: `cmp` identical to the `v3.bak` backups.
+
+### Third review: netwatch strikes split per signal (2026-10-18)
+
+A recheck of `163ee2c..HEAD` plus a simulation of the show schedule at the
+real check interval (31–35 s), two slaves wedged at 91 % refused and a third
+still playing, as on 2026-10-17. Bursts from wedge start to bounce:
+
+| setup | median | p90 | max |
+|---|---|---|---|
+| `TX_MIN` 1000, one strike count | 3.1 | 4.6 | 5.4 |
+| `TX_MIN` 1500, one strike count | 3.9 | 8.3 | 11.2 |
+| `TX_MIN` 1500, separate tx / rx counts | 3.3 | 4.2 | 4.5 |
+
+- **Cause:** the playing third slave makes `rx_check` read healthy on nearly
+  every check. With one shared count, any check that landed before a burst
+  had `TX_MIN` sends to judge wiped the tx strikes. Raising `TX_MIN` to 1500
+  doubled how often that happened (147 → 302 clears in the simulation).
+  Sends from a short healthy burst carried into a wedged one also dilute the
+  first verdict, but that adds less than one burst.
+- **Fix:** `strikes` is now `{"tx": n, "rx": n}`. Each signal clears only on
+  its own healthy verdict; a tx window that was not judged leaves tx strikes
+  standing. Either count reaching 3 bounces. An old single-int state file
+  loads as 0 / 0. With a check interval locked at exactly 30 s, some show
+  phases never bounced under either `TX_MIN` (78 of 400); with the split,
+  none.
+- `test_netwatch.py`: 39 checks pass on the board. New: the wedge-while-
+  another-plays schedule (fails on the previous script), the matching
+  "a judged healthy window clears it", and rx with a slave silent 2.5 s,
+  which counts inside the 3 s window (a switch-off can draw one stray rx
+  strike, ~10 % of the time; one strike cannot bounce).
+- Comments: a clean departure doesn't strike, but a link degrading while its
+  STATUS still arrives can. The 3 s window rides out one lost STATUS and
+  usually two (two is ~3.02 s, so jitter decides).
+- **Deployed** 2026-10-18 17:26 UTC, md5 `859d7184…`, backup
+  `~/hyperosci-netwatch.pre-split`. A manual run exited cleanly and wrote
+  `"strikes": {"tx": 0, "rx": 0}`. Controller only, no reflash.
+- Firmware points for the next batch (no reflash for these alone): cap a
+  hold or loop-fill so the real packet still fits (needs > ~487 ms depth,
+  0 drops in soak4–7); read depth and tail deadline under one lock; have
+  `pull_block` return IDLE, not UNDERRUN, when `pop` fails because of a
+  reset. Copying from 2 loops back to skip a held dot waits on a counter of
+  fills that copy held frames.

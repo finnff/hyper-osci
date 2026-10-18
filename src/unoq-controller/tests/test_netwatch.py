@@ -14,9 +14,16 @@ def serve(payload):
     def boom(*a, **k): raise OSError("refused")
     nw.urllib.request.urlopen = boom if payload is None else (lambda *a, **k: R())
 
+def merged(v):
+    """One verdict from the two signals, for the single-check cases: any wedge
+    wins, then any health (main() keeps them apart; see the schedules)."""
+    if any(v.values()):
+        return True
+    return False if False in v.values() else None
+
 def check(payload, prev_rx, prev_tx=None):
     serve(payload)
-    return nw.check(prev_rx, prev_tx or {})[0]
+    return merged(nw.check(prev_rx, prev_tx or {})[0])
 
 S = lambda **kw: dict({"mode": 1, "source": 1, "ip": "a", "rx": 10000}, **kw)
 P = {"a": 4300}          # 5700 packets ago == one healthy 30 s tick
@@ -68,30 +75,33 @@ serve(local({"a": T(1300, 400)}))
 ok(nw.check(P, {"a": [1000, 0]})[3] == {"a": [1000, 0]},
    "... and the old sample is kept so the next burst adds up")
 serve(local({"a": T(50, 900)}))
-d, _, _, tx = nw.check(P, {"a": [1000, 0]})
-ok(d is None and tx == {"a": [50, 900]},
+v, _, _, tx = nw.check(P, {"a": [1000, 0]})
+ok(merged(v) is None and tx == {"a": [50, 900]},
    "ok counter went backwards (controller restarted) -> new baseline, no verdict")
 
 print("\n-- a slave that went quiet is not the AP (2026-10-17, 164 switched off)")
 gone = lambda **kw: {"stream_on": True, "net": {"tx": {"a": T(1144, 1456)}},
                      "slaves": [S(mode=0, **kw)]}
 serve(gone(age_ms=26000, gone=True))
-d, _, _, tx = nw.check(P, {"a": [1000, 0]})
-ok(d is None and tx == {"a": [1144, 1456]},
+v, _, _, tx = nw.check(P, {"a": [1000, 0]})
+ok(merged(v) is None and tx == {"a": [1144, 1456]},
    "91% refused to a slave marked gone -> no verdict, fresh sample")
 serve(gone(age_ms=6000))
-ok(nw.check(P, {"a": [1000, 0]})[0] is None, "silent 6 s, not yet marked -> no verdict")
+ok(merged(nw.check(P, {"a": [1000, 0]})[0]) is None, "silent 6 s, not yet marked -> no verdict")
 serve(gone(age_ms=3500))
-ok(nw.check(P, {"a": [1000, 0]})[0] is None,
+ok(merged(nw.check(P, {"a": [1000, 0]})[0]) is None,
    "tx: silent 3.5 s, past the 3 s stream cut -> no verdict")
 serve(gone(age_ms=2500))
-ok(nw.check(P, {"a": [1000, 0]})[0] is True,
+ok(merged(nw.check(P, {"a": [1000, 0]})[0]) is True,
    "tx: 91% refused, two STATUS lost in the wedge (2.5 s) -> still WEDGE")
 serve(gone(age_ms=2900) | {"net": {"tx": {"a": T(1900, 600)}}})
-ok(nw.check(P, {"a": [1000, 0]})[0] is False,
+ok(merged(nw.check(P, {"a": [1000, 0]})[0]) is False,
    "tx: departed 2.9 s ago, 600 refused on top of 900 sent -> 40%, healthy")
 ok(check(on(S(source=0, rx=4300, age_ms=3500)), P) is None,
    "rx: NETWORK slave silent 3.5 s, frozen on mic -> no evidence, not a wedge")
+ok(check(on(S(source=0, rx=4300, age_ms=2500)), P) is True,
+   "rx: silent 2.5 s, inside the 3 s window -> still counts (a switch-off can "
+   "draw one stray strike; known cost of the window)")
 ok(check(on(S(source=0, rx=4300, age_ms=20000, gone=True)), P) is None,
    "rx: switched off showing the mic (show end) -> no evidence, not a wedge")
 ok(check(on(S(source=0, rx=4300, age_ms=20000, gone=True),
@@ -113,8 +123,10 @@ nw.ap_bounce = lambda: bounces.append(clock[0]) or True
 logs = []
 nw.log = logs.append
 
-def schedule(ticks):
-    """ticks: list of (in_burst, ok_per_slave, full_per_slave, rx_step)."""
+def schedule(ticks, player=False):
+    """ticks: list of (in_burst, ok_per_slave, full_per_slave, rx_step).
+    player: add a slave "b" that plays the stream in every burst (the
+    2026-10-17 third node), so rx reads healthy whenever a burst is on."""
     if os.path.exists(nw.STATE):
         os.remove(nw.STATE)
     bounces.clear(); logs.clear()
@@ -122,8 +134,10 @@ def schedule(ticks):
     for burst, d_ok, d_full, d_rx in ticks:
         ok_, full, rx = ok_ + d_ok, full + d_full, rx + d_rx
         clock[0] += 30
-        serve({"stream_on": True,
-               "slaves": [S(mode=1 if burst else 0, source=0, rx=rx)],
+        slaves = [S(mode=1 if burst else 0, source=0, rx=rx)]
+        if player:
+            slaves.append(S(ip="b", mode=1 if burst else 0, rx=clock[0] * 200))
+        serve({"stream_on": True, "slaves": slaves,
                "net": {"tx": {"a": T(ok_, full)}}})
         nw.main()
     return list(bounces)
@@ -137,4 +151,10 @@ ok(schedule([HEALTHY, MIC] + [WEDGED, MIC] * 2 + [HEALTHY, MIC] + [WEDGED, MIC] 
    "two wedged bursts, a healthy one, two more -> strikes reset, no bounce")
 ok(schedule([HEALTHY, MIC] * 20) == [], "a healthy evening -> never bounces")
 ok(schedule([MIC] * 10) == [], "nobody on the stream for 5 min -> never bounces")
+SHORT = (True, 45, 455, 15)             # 500 sends of a 1000-send burst, 91% refused
+ok(schedule([HEALTHY] + [SHORT] * 9, player=True) == [clock[0]],
+   "wedge while another slave plays, checks landing before TX_MIN -> its "
+   "healthy rx doesn't clear the tx strikes -> bounce on the 3rd judged window")
+ok(schedule([HEALTHY] + [SHORT] * 6 + [HEALTHY] + [SHORT] * 6, player=True) == [],
+   "... and a judged healthy tx window between does clear them -> no bounce")
 print(f"\n{N[0]} checks, ALL PASS")
