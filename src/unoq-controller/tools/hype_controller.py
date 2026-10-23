@@ -404,10 +404,10 @@ CYCLE_PAIRS_MAX = 6
 # run time, and the page edits both slots of every pair.
 CYCLE_SEED = {
     "logos": [["HYPERWAVES", "Oracle Bones"]],
-    "artists": [["Nikos", ""],
-                ["trillosta", "JEANS"],
+    "artists": [["S]NE", ""],
+                ["Nikos", ""],
                 ["Mama Snake", "HyperLili"],
-                ["S]NE", ""]],
+                ["JEANS", "trillosta"]],
 }
 CYCLE_DEFAULTS = {"enabled": False, "show_s": 5, "pause_s": 0, "idx": 0,
                   "every_s": 300}
@@ -477,6 +477,33 @@ def save_cycles(cycles):
         os.replace(tmp, CYCLES_FILE)
     except OSError as e:
         print(f"[cycle] save failed: {e}", flush=True)
+
+
+# Global effects switch (2026-10-23). "pulse": false streams every pattern at
+# a steady size whatever its preset says. Applied only where the streamer
+# reads the pattern (pattern_params), so presets, the panel, saves and the
+# cycles never see it, and switching back gives each name its own pulse.
+# Persisted so a restart mid-show does not bring the pulses back.
+FX_FILE = os.environ.get("HYPE_FX", os.path.expanduser("~/hype_fx.json"))
+
+
+def load_fx_pulse():
+    try:
+        with open(FX_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(data, dict) and data.get("pulse") is False)
+
+
+def save_fx_pulse(on):
+    tmp = FX_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"pulse": bool(on)}, f)
+        os.replace(tmp, FX_FILE)
+    except OSError as e:
+        print(f"[fx] save failed: {e}", flush=True)
 
 
 def pattern_group(kind):
@@ -855,6 +882,8 @@ def persist_loop(state, period=3.0):
         # restore lands on the very next tick.
         if state.cycle_run is not None:
             continue
+        if state.qtest is not None:   # same reason: a test name is not "live"
+            continue
         if not state.dirty:
             continue
         state.dirty = False   # a write landing here just re-arms us next tick
@@ -869,7 +898,7 @@ def persist_loop(state, period=3.0):
             print(f"[state] cannot save {STATE_FILE}: {err}", flush=True)
 
 
-def apply_preset(state, p):
+def apply_preset(state, p, only_if=None):
     """Install a preset-shaped dict as the live streamed pattern.
 
     The one place that does the rebuild dance, shared by the dashboard's
@@ -881,6 +910,10 @@ def apply_preset(state, p):
         p = clean_preset(p)   # never install an unknown font (circle!)
         tbl, rmax = build_shape(p["kind"], p["text"], p["font"], p["figure"])
         with state.lock:
+            # only_if runs under the lock: a caller whose run was stopped
+            # while the font parsed must not install over the restore.
+            if only_if is not None and not only_if():
+                return
             state.kind, state.freq, state.amp = p["kind"], p["freq"], p["amp"]
             state.ratio_a, state.ratio_b = p["a"], p["b"]
             state.pulse_rate = p["pulse_rate"]
@@ -942,6 +975,10 @@ def desired_modes(state):
     Caller holds state.lock. Reads only; sending is reconcile_modes' job.
     """
     mic = state.cycle_mic
+    if state.qtest is not None:
+        # debug quick test: a forced broadcast, every node on the stream
+        # whatever its switches say -- the point is to see every scope.
+        return {ip: 1 for ip in state.slaves}
     group = pattern_group(state.kind)
     out = {}
     for ip, s in state.slaves.items():
@@ -1039,6 +1076,91 @@ def end_burst(state, restore_pattern=True):
           + ("" if restore_pattern else " (panel taken over)"), flush=True)
 
 
+# debug quick test (SETUP > Debug): every logo and every name of the two
+# cycles' pairs in turn, QTEST_STEP_S each, looping until switched off, on
+# every node regardless of its switches. For setup and for checking each
+# gateway draws: one glance per scope, no waiting for a burst. Not persisted:
+# a restart always comes back to the normal show.
+QTEST_STEP_S = 2
+
+
+def qtest_names(state):
+    """-> [preset name], the quick test's running order: the logos pairs,
+    then the artists pairs, each name once, slots naming no preset skipped.
+    Read fresh every step, so a pair edited mid-test is followed.
+
+    Caller holds state.lock.
+    """
+    have = {p["name"] for p in state.presets}
+    out = []
+    for g in CYCLE_GROUPS:
+        for pair in state.cycles[g]["pairs"]:
+            for n in pair:
+                if n and n in have and n not in out:
+                    out.append(n)
+    return out
+
+
+def advance_qtest(state):
+    """Step the quick test when its name has had its seconds. Returns the
+    name just put up, or None. A no-op when no test runs."""
+    now = mono_us()
+    with state.lock:
+        q = state.qtest
+        if q is None or now < q["until_us"]:
+            return None
+        names = qtest_names(state)
+        q["until_us"] = now + QTEST_STEP_S * 1_000_000
+        q["n"] = len(names)
+        if not names:
+            q["preset"], q["pos"] = "", 0
+            return None
+        pos = (names.index(q["preset"]) + 1 if q["preset"] in names
+               else 0) % len(names)
+        q["preset"], q["pos"] = names[pos], pos
+        p = next(dict(x) for x in state.presets if x["name"] == names[pos])
+    apply_preset(state, p, only_if=lambda: state.qtest is q)
+    print(f"[qtest] {p['name']!r} ({pos + 1}/{len(names)})", flush=True)
+    return p["name"]
+
+
+def start_qtest(state):
+    """Take the stream for the quick test. A burst on air is cut short; the
+    panel's own pattern is kept to hand back. The feed is switched on: a
+    test nobody can see tests nothing. False if one already runs."""
+    before = state.live_snapshot()
+    with state.lock:
+        if state.qtest is not None:
+            return False
+        run, state.cycle_run = state.cycle_run, None
+        state.cycle_step = None
+        state.cycle_play = None
+        state.stream_on = True
+        state.qtest = {"pattern": (run or {"pattern": before})["pattern"],
+                       "preset": "", "pos": 0, "n": 0, "until_us": 0}
+    print("[qtest] on" + (f" ({run['group']} burst cut short)" if run else ""),
+          flush=True)
+    advance_qtest(state)
+    return True
+
+
+def stop_qtest(state, restore_pattern=True):
+    """End the quick test and give the rig back to the cycles (or the
+    panel). Their grid was held while it ran, as a mute holds it. False if
+    none was running."""
+    with state.lock:
+        q, state.qtest = state.qtest, None
+        if q is None:
+            return False
+        state.cycle_mic = any(c["enabled"] and c["pairs"]
+                              for c in state.cycles.values())
+    if restore_pattern:
+        apply_preset(state, q["pattern"])
+    print("[qtest] off" + ("" if restore_pattern else " (panel taken over)"),
+          flush=True)
+    return True
+
+
 def advance_cycle(state, tick_us):
     """Run the two pair cycles. Returns the step just started, or None.
 
@@ -1064,6 +1186,13 @@ def advance_cycle(state, tick_us):
     # A burst records what the panel had so it can hand it straight back.
     before = state.live_snapshot()
     with state.lock:
+        if state.qtest is not None:
+            # The quick test owns the stream: hold both grids where they
+            # are, as a mute does, and drop a pair pick nobody would see.
+            for g in state.cycle_next:
+                state.cycle_next[g] += tick_us
+            state.cycle_play = None
+            return None
         names = [p["name"] for p in state.presets]
         # What each group's selected pair would play, switched on or not: a
         # pair played on demand runs even when its group has no period.
@@ -1204,6 +1333,7 @@ def policy_loop(state, cmds, tick=0.25):
     while True:
         time.sleep(tick)
         try:
+            advance_qtest(state)
             advance_cycle(state, tick_us)
             reconcile_modes(state, cmds)
         except Exception as e:   # a rig that stops obeying policy is a dark
@@ -1299,6 +1429,12 @@ class State:
         # A group whose selected pair should take the stream on the next
         # policy tick, set by POST /api/cycle {"play": true}. Read-and-clear.
         self.cycle_play = None
+        # The debug quick test on air: {"pattern" to hand back, "preset",
+        # "pos", "n", "until_us"}, or None. See start_qtest.
+        self.qtest = None
+        # Global pulse switch: False streams every pattern at a steady size.
+        # See FX_FILE.
+        self.fx_pulse = load_fx_pulse()
         # ip -> (mode, mono_us) of the last set_mode this box sent, so a
         # command is not repeated every tick while the 1 Hz beacon catches up.
         self.mode_sent = {}
@@ -1308,7 +1444,9 @@ class State:
             return (self.kind, self.freq, self.amp * 32000.0,
                     self.ratio_a, self.ratio_b, self.shape_tbl,
                     self.shape_rmax,
-                    self.pulse_rate, self.pulse_depth, self.rot_speed,
+                    self.pulse_rate,
+                    self.pulse_depth if self.fx_pulse else 0.0,
+                    self.rot_speed,
                     self.flip_x, self.flip_y)
 
     def live_snapshot(self):
@@ -1371,6 +1509,11 @@ class State:
                     "left_s": max(0, (self.cycle_run["until_us"] - now)
                                   // 1000000) if self.cycle_run else 0,
                 },
+                "qtest": None if self.qtest is None else {
+                    "preset": self.qtest["preset"],
+                    "pos": self.qtest["pos"], "n": self.qtest["n"],
+                    "step_s": QTEST_STEP_S},
+                "fx_pulse": self.fx_pulse,
             }
 
 
@@ -1601,6 +1744,20 @@ body.disconnected { filter: saturate(0.3); }
 }
 .ap-banner.active { display: block; }
 .ap-banner code { color: var(--fg); }
+/* debug quick test running: big and red on both screens, so a forgotten
+   test cannot go unnoticed -- it overrides every node's switches. */
+.qtest-banner {
+  display: none; background: var(--bad); color: #fff; padding: 14px 12px;
+  text-align: center; border-radius: 4px; margin-bottom: 8px;
+  font-size: 18px; font-weight: bold; letter-spacing: .05em;
+}
+.qtest-banner.active { display: block; }
+.qtest-banner small { display: block; font-size: 12px; font-weight: normal; margin: 4px 0 8px; }
+.qtest-banner button {
+  background: #fff; color: var(--bad); border: 0; padding: 10px 24px;
+  font: inherit; font-size: 14px; border-radius: 4px; cursor: pointer;
+}
+#qtest-toggle button.on:last-child { background: var(--bad); border-color: var(--bad); color: #fff; }
 
 /* === Mode toggle === */
 #mode-toggle {
@@ -1684,6 +1841,13 @@ canvas#preview { max-width: 100%; height: auto; background: #020402; border: 1px
 .nav-row { display: flex; gap: 8px; margin: 8px 0; }
 .nav-row .thumb-btn { flex: 1; }
 .nav-next { font-size: 12px; color: var(--dim); text-align: center; }
+
+/* === Fast forward (LOGOS NOW / ARTISTS NOW) === */
+.ff-box { margin: 8px 0; padding: 10px; }
+.ff-label { font-size: 11px; color: var(--dim); letter-spacing: .1em; margin-bottom: 6px; }
+.ff-row { display: flex; gap: 8px; }
+.ff-row .thumb-btn { flex: 1; flex-direction: column; line-height: 1.3; }
+.ff-row .thumb-btn small { font-size: 11px; color: var(--dim); }
 
 /* === Live dials === */
 .dial-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
@@ -1868,6 +2032,7 @@ body.show .both-modes, body.setup .both-modes { display: block; }
 <!-- Disconnection banner (F1) -->
 <div id="conn-banner" class="disconnection-banner"></div>
 <div id="ap-banner" class="ap-banner"></div>
+<div id="qtest-banner" class="qtest-banner"></div>
 
 <!-- === HEADER (both modes) === -->
 <header class="both-modes">
@@ -1893,6 +2058,15 @@ body.show .both-modes, body.setup .both-modes { display: block; }
     <div class="on-air-panel" id="on-air-panel"></div>
   </div>
 
+  <!-- Fast forward: play a group's selected pair now; the grid restarts from here -->
+  <div class="panel ff-box">
+    <div class="ff-label">FAST FORWARD</div>
+    <div class="ff-row">
+      <button class="thumb-btn" id="btn-ff-logos" onclick="ffNow('logos')">▶▶ LOGOS NOW<small id="ff-logos-in"></small></button>
+      <button class="thumb-btn" id="btn-ff-artists" onclick="ffNow('artists')">▶▶ ARTISTS NOW<small id="ff-artists-in"></small></button>
+    </div>
+  </div>
+
   <!-- PREV / NEXT -->
   <div class="nav-row">
     <button class="thumb-btn" id="btn-prev" onclick="goPrev()">◀ PREV</button>
@@ -1911,6 +2085,15 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <label>SPEED</label>
       <input type="range" id="freq" min="10" max="2000" step="1" oninput="liveDials()" onchange="setP({freq:+this.value})">
       <span class="val" id="freqv">—</span>
+    </div>
+    <!-- Global pulse switch: AS SET = each preset's own pulse; ALL OFF =
+         every logo and name at a steady size. POST /api/fx. -->
+    <div class="dial-row">
+      <label>PULSE</label>
+      <div class="feed-toggle" id="pulse-toggle">
+        <button id="pulse-on" onclick="setPulse(true)">AS SET</button>
+        <button id="pulse-off" onclick="setPulse(false)">ALL OFF</button>
+      </div>
     </div>
   </div>
 
@@ -2089,6 +2272,18 @@ body.show .both-modes, body.setup .both-modes { display: block; }
       <p>High lost/s with tx-drop ≈ 0 means the WiFi air is bad. High tx-drop means packets died in this controller's send buffer — no antenna fix. This distinction cost a night of debugging.</p>
       <h3>Presets</h3>
       <p>Snapshots of pattern settings saved on the controller. Survive restarts with one generation of undo (.bak file). Max 20 presets. Do NOT update while a burst is on air — it would save the logo, not the artist. The controller refuses that one.</p>
+    </div>
+  </div>
+
+  <!-- Debug -->
+  <div class="collapsible-header" onclick="toggleCollapsible(this)">Debug</div>
+  <div class="collapsible-content panel">
+    <div class="help-content">
+      <p><strong>debug: quick-test</strong> — every logo and every name in the two cycles' pairs, 2 s each, looping. A forced broadcast: every node draws it whatever its S / L / A switches say, and the feed is switched on. For setup and for checking each gateway. The cycles wait while it runs; SILENT, a preset tap or any panel edit also ends it.</p>
+    </div>
+    <div class="feed-toggle" id="qtest-toggle" style="margin-top:8px">
+      <button onclick="setQtest(false)">OFF</button>
+      <button onclick="setQtest(true)">ON</button>
     </div>
   </div>
 
@@ -2292,6 +2487,13 @@ function setStream(on) {
   post("/api/pattern", {stream: on});
 }
 
+/* Global pulse switch, for every logo and name at once. Presets keep their
+   own pulse settings; "AS SET" gives them back. */
+function setPulse(on) {
+  if (!S) return;
+  post("/api/fx", {pulse: on});
+}
+
 /* === TOGGLE COLLAPSIBLE === */
 function toggleCollapsible(header) {
   header.classList.toggle('open');
@@ -2378,6 +2580,18 @@ function stepPair(delta) {
 function goPrev() { stepPair(-1); }
 
 function goNext() { stepPair(1); }
+
+/* Fast forward: the group's SELECTED pair plays now, without changing which
+   pair is selected (that is NEXT/PREV). Same request as a pair tap, so the
+   controller re-lays both grids from this moment: this group's next burst a
+   full period out, the other keeping its offset. */
+function ffNow(g) {
+  if (!S) return;
+  noteSlaveChange('all');
+  post("/api/cycle", {group: g, play: true}).then(function(d) {
+    if (d && d.loaded) setCur(d.loaded);
+  });
+}
 
 function applyPreset(name) {
   if (!S) return;
@@ -2759,6 +2973,13 @@ function renderOnAir() {
         + (air === 'silent' ? 'the feed is back on' : 'the cycles are off');
     }
   }
+  if (S.qtest) {
+    /* The quick test overrides the cycles: say so rather than "MIC". */
+    name = S.qtest.preset ? patternLabel(S.qtest.preset) : '—';
+    detail = '▶ QUICK TEST · ' + (S.qtest.pos + 1) + ' of ' + S.qtest.n;
+    panel = '';
+    air = 'qtest';
+  }
   var nameEl = document.getElementById('on-air-name');
   nameEl.textContent = name;
   nameEl.classList.toggle('mic', air === 'silent' || air === 'mic');
@@ -2776,11 +2997,29 @@ function renderOnAir() {
   document.getElementById('btn-prev').disabled = apairs.length < 2;
   document.getElementById('btn-next').disabled = apairs.length < 2;
 
+  /* Fast-forward buttons: say when each group would come on its own. */
+  ['logos', 'artists'].forEach(function(g) {
+    var c = S.cycles ? S.cycles[g] : null;
+    var t = '';
+    if (c && c.enabled) {
+      t = S.cycle && S.cycle.group === g ? 'on air'
+        : c.next_in != null ? 'due in ' + fmtLeft(c.next_in) : '';
+    } else if (c) {
+      t = 'cycle off';
+    }
+    document.getElementById('ff-' + g + '-in').textContent = t;
+  });
+
   /* Feed toggle */
   var on = S.stream_on;
   document.getElementById('feed-on').classList.toggle('active', on);
   document.getElementById('feed-off').classList.toggle('active', !on);
   document.getElementById('feed-off').classList.toggle('silent', !on);
+
+  /* Global pulse switch */
+  var pulse = S.fx_pulse !== false;
+  document.getElementById('pulse-on').classList.toggle('active', pulse);
+  document.getElementById('pulse-off').classList.toggle('active', !pulse);
 }
 
 /* === SLAVE SHEET === */
@@ -2958,6 +3197,7 @@ function render() {
   if (!S) return;
   renderHeader();
   renderApBanner();
+  renderQtest();
   renderRigStrip();
   renderOnAir();
   renderFeedToggle();
@@ -2984,6 +3224,29 @@ function renderHeader() {
     cs.textContent = '⚠ ' + pollFailures + 's';
     cs.className = 'stale';
   }
+}
+
+/* debug quick test: the red banner (both modes) and the SETUP > Debug
+   toggle. */
+function renderQtest() {
+  var q = S.qtest;
+  var el = document.getElementById('qtest-banner');
+  el.classList.toggle('active', !!q);
+  if (q) {
+    el.innerHTML = '■ DEBUG: QUICK TEST RUNNING'
+      + '<small>' + (q.preset ? esc(q.preset) + ' · ' + (q.pos + 1) + ' of ' + q.n
+                               : 'no names in the cycles\\' pairs')
+      + ' · ' + q.step_s + ' s each · every node, switches ignored</small>'
+      + '<button onclick="setQtest(false)">STOP</button>';
+  }
+  var seg = document.getElementById('qtest-toggle').querySelectorAll('button');
+  seg[0].classList.toggle('on', !q);
+  seg[1].classList.toggle('on', !!q);
+}
+
+function setQtest(on) {
+  noteSlaveChange('all');
+  post("/api/qtest", {on: on});
 }
 
 /* net.egress false: nothing holds the AP address, so no slave can join and
@@ -3761,6 +4024,10 @@ def make_http_handler(state, cmds):
                     self._apply_pattern(state, body, new_tbl)
                 if set(body) - {"stream"}:   # a real pattern edit, not a mute
                     self._takeover(state)
+                if "stream" in body and not body["stream"]:
+                    # SILENT is the kill switch: it ends the quick test too.
+                    if stop_qtest(state):
+                        reconcile_modes(state, cmds)
                 self._json({"ok": True})
             elif self.path == "/api/preset":
                 return self._preset(state, body)
@@ -3768,6 +4035,10 @@ def make_http_handler(state, cmds):
                 return self._node(state, cmds, body)
             elif self.path == "/api/cycle":
                 return self._cycle(state, cmds, body)
+            elif self.path == "/api/qtest":
+                return self._qtest(state, cmds, body)
+            elif self.path == "/api/fx":
+                return self._fx(state, body)
             elif self.path == "/api/cmd":
                 ip, cmd_obj = body.get("ip"), body.get("cmd")
                 if not ip or not isinstance(cmd_obj, dict):
@@ -3829,6 +4100,10 @@ def make_http_handler(state, cmds):
             # that is a stall in the 5 ms stream loop, i.e. an audible gap on
             # every scope at once.
             if op == "save":
+                if state.qtest is not None:
+                    # Same as F0: it would save the test name on air.
+                    return self._json(
+                        {"err": "cannot save — the quick test is on air"}, 409)
                 held = full = False
                 plist = None
                 with state.lock:
@@ -3967,6 +4242,34 @@ def make_http_handler(state, cmds):
             here would miss a burst that starts between the test and the call
             and then revert the operator's pattern a step later."""
             end_burst(state, restore_pattern=False)
+            stop_qtest(state, restore_pattern=False)
+
+        def _qtest(self, state, cmds, body):
+            """Debug quick test on/off. {"on": true} -- see start_qtest."""
+            if "on" not in body:
+                return self._json({"err": "need on"}, 400)
+            if body["on"]:
+                start_qtest(state)
+            else:
+                stop_qtest(state)
+            # Do not wait up to a tick: the operator is looking at the scopes.
+            reconcile_modes(state, cmds)
+            with state.lock:
+                on = state.qtest is not None
+            return self._json({"ok": True, "on": on})
+
+        def _fx(self, state, body):
+            """Global effects switch. {"pulse": false} streams every
+            pattern at a steady size; {"pulse": true} gives each preset its
+            own pulse back. See FX_FILE."""
+            if not isinstance(body.get("pulse"), bool):
+                return self._json({"err": "need pulse true|false"}, 400)
+            with state.lock:
+                state.fx_pulse = body["pulse"]
+            save_fx_pulse(body["pulse"])
+            print(f"[fx] pulse {'on' if body['pulse'] else 'off'}",
+                  flush=True)
+            return self._json({"ok": True, "pulse": body["pulse"]})
 
         def _node(self, state, cmds, body):
             """Flip one node's switches. {"id": 100, "logos": false}
@@ -4009,6 +4312,10 @@ def make_http_handler(state, cmds):
             group = body.get("group")
             if group not in CYCLE_GROUPS:
                 return self._json({"err": "need group logos|artists"}, 400)
+            if body.get("play"):
+                # A pair picked on the show screen is a hand on the panel:
+                # it ends the quick test, then plays as it always would.
+                stop_qtest(state)
             played, load, note = False, None, None
             with state.lock:
                 cur = dict(state.cycles[group])

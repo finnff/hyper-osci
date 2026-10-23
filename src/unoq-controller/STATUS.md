@@ -1470,3 +1470,111 @@ still playing, as on 2026-10-17. Bursts from wedge start to bounce:
   `pull_block` return IDLE, not UNDERRUN, when `pop` fails because of a
   reset. Copying from 2 loops back to skip a held dot waits on a counter of
   fills that copy held frames.
+
+## Artist order follows the poster (2026-10-23)
+
+- **Artists, in order:** S]NE · Nikos · Mama Snake b2b HyperLili · JEANS b2b
+  trillosta (23/02, 02/03, 03/05, 05/07). JEANS now plays before trillosta.
+- Set live through the API: `/api/cycle` pairs with `idx` 0 (S]NE, the pair
+  it was already on), and `/api/preset` `move` to put the panel's preset list
+  in the same order after the two logos. Persisted to `~/hype_cycles.json`
+  and the presets file; timings and switches unchanged.
+- `CYCLE_SEED` and `tools/uipreview.py` follow. Controller md5 `a4b50e22…`
+  copied without a restart (the only change is the seed), backup
+  `~/hype_controller.py.pre-order`. Board at `10.42.0.128` on the tether
+  this time.
+- **Fonts changed:** S]NE duplex → times, Nikos duplex → gothic, Mama Snake
+  simplex → duplex, JEANS simplex → italic, trillosta script → gothic;
+  HyperLili stays italic. Freqs are unchanged. Set live with load → font →
+  save on `/api/preset`, each in a gap between bursts. Backup
+  `~/hype_presets.json.pre-fonts-20261023`. Checked against the August prod
+  presets (`~/pre-lineup-20261014-105048/hype_presets.json`) with the same
+  renderer: Eastern Distributor in gothic at 55 Hz ran fine with ink 20.4,
+  beam step 7.8 % of the line height, 138 pen lifts and a line 15 % of the
+  screen. Every new pick is inside all four (worst: Mama Snake duplex ink
+  18.5, trillosta gothic step 4.5 %, 54 lifts). Inside the Mama Snake →
+  HyperLili pair the brightness drops about 2.3× (ink 18.5 → 8.0).
+
+## Debug quick test (2026-10-23)
+
+SETUP > Debug (last section) has a **debug: quick-test** OFF/ON toggle:
+the logos' and artists' pair names in turn (logos first, each name once,
+empty slots and names with no preset skipped), 2 s each, looping. A forced
+broadcast: `desired_modes` puts every node on the stream whatever its
+S/L/A switches say, and starting it switches the feed on. A red banner with
+STOP sits at the top of both screens while it runs, and ON AIR says
+`QUICK TEST · i of n`. For setup and checking the gateways.
+
+- **Additive only.** New `qtest_names` / `advance_qtest` / `start_qtest` /
+  `stop_qtest`, `State.qtest`, a `qtest` key in `/api/state`, and
+  `POST /api/qtest {"on": bool}`. Existing paths gain early exits only:
+  `advance_cycle` holds both grids (like a mute) and drops a pair pick while
+  it runs, `persist_loop` does not save a test name as the live pattern, and
+  `op=save` is refused with 409. `apply_preset` gains an optional `only_if`
+  guard, so a step whose font is still parsing when STOP lands cannot draw
+  over the restored pattern.
+- **What ends it:** STOP or OFF hands back the panel's own pattern (from
+  before any burst it cut). SILENT ends it too, as the kill switch. A preset
+  tap or a panel edit ends it, keeping what the operator set, the same as for
+  a burst. A pair picked on the show screen ends it, then plays as normal.
+  It is not persisted.
+- **Tests:** 21 new checks in `test_policy.py`. `test_fixes`, `test_policy`,
+  `test_loop`, `test_figure` and `test_persist` pass on the board.
+  `uipreview.py` mocks `/api/qtest` and has a `qtest` scenario.
+- Deployed and restarted. Controller md5 `a8ceba7c…`, backup
+  `~/hype_controller.py.pre-qtest`. Live smoke with no slaves joined: the 8
+  names came round in order every ~2.1 s, with the cycles' countdowns held
+  (logos 168 s, artists 108 s, unchanged through the test). A save during the
+  test got 409. STOP and SILENT both put the panel's Mama Snake / duplex
+  back. Node mode switching was not exercised (no slaves on the AP); the
+  test suite covers it.
+
+## Fast forward buttons (2026-10-23)
+
+The show screen has a **FAST FORWARD** box above PREV/NEXT with **▶▶ LOGOS
+NOW** and **▶▶ ARTISTS NOW**. Each button shows that group's "due in …"
+countdown, or "on air" / "cycle off". It is for when a set ends early and
+the room should see the names now rather than at the next slot.
+
+- **Page only.** It sends the existing `POST /api/cycle {"group": g,
+  "play": true}` without an `idx`, so the **selected pair plays now** and
+  stays selected. NEXT is still the way to move on to the next pair. The
+  controller then re-lays both grids from that moment: the group pressed is
+  next due a full period out, and the other group keeps its offset from it.
+  SILENT refuses with the usual toast.
+- **Tests:** `test_fixes`, `test_policy`, `test_figure`, `test_loop` and
+  `test_persist` pass on the board. Checked in `uipreview.py` (layout, and
+  the request body has no `idx`).
+- Deployed and restarted. Controller md5 `6c30108e…`, backup
+  `~/hype_controller.py.pre-ff`.
+- Live smoke:
+  - Before: logos due in 169 s, artists in 109 s.
+  - ARTISTS NOW: Mama Snake → HyperLili played at once. Logos then due in
+    58 s, artists in 118 s.
+  - LOGOS NOW: HYPERWAVES → Oracle Bones played at once. Logos then due in
+    118 s, artists in 58 s.
+  - Neither press changed the selected pair (artists idx 2, logos idx 0).
+
+## Global pulse switch (2026-10-23)
+
+The show screen has a **PULSE** row under SIZE/SPEED. **AS SET** gives each
+preset its own pulse. **ALL OFF** streams every logo and name at a steady
+size, as JEANS (depth 0) already ran.
+
+- **Where it acts:** only in `State.pattern_params`, which is what the
+  streamer reads each block. It passes `pulse_depth` 0 while `fx_pulse` is
+  False. Presets, the panel, saves, `~/hype_state.json` and the cycles never
+  see it, so AS SET gives each name its own pulse back. Spin is not touched
+  (every preset is at 0 anyway).
+- **Interface:** `POST /api/fx {"pulse": bool}` (400 for anything that is
+  not a bool). `/api/state` gains `fx_pulse`. The switch is persisted in
+  `~/hype_fx.json` (`HYPE_FX`), so a restart mid-show does not bring the
+  pulses back. A missing or bad file means pulse on.
+- **Tests:** 6 new checks in `test_policy.py`, which now isolates `HYPE_FX`.
+  All five suites pass on the board, and none of them wrote the real
+  `~/hype_fx.json`. `uipreview.py` mocks `/api/fx`.
+- Deployed. Controller md5 `770a943a…`, backup
+  `~/hype_controller.py.pre-fx`.
+- **Live:** OFF gave `fx_pulse` false while the panel kept its own
+  pulse_depth (0.15), and the file read `{"pulse": false}`. It was still off
+  after a restart. Switched back on, and left on AS SET.

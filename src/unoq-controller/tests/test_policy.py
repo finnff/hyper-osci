@@ -27,6 +27,7 @@ os.environ["HYPE_PRESETS"] = os.path.join(_TD, "presets.json")
 
 os.environ["HYPE_NODES"] = os.path.join(_TD, "nodes.json")
 os.environ["HYPE_CYCLES"] = os.path.join(_TD, "cycles.json")
+os.environ["HYPE_FX"] = os.path.join(_TD, "fx.json")
 os.environ["HYPE_FIGURES"] = os.path.join(_TD, "figures")
 import hype_controller as hc  # noqa: E402
 
@@ -573,6 +574,57 @@ ok(step and step["preset"] == "Anemi" and "artists" not in st.cycle_next,
 ok(st.cycle_next["logos"] == logo_next,
    "the running group's grid is left alone by a one-off")
 
+print("\n[qtest] the debug quick test: every name, every node, then back")
+st = fresh()
+st.node_flags[121] = {"stream": True, "logos": False, "artists": True}
+st.node_flags[164] = {"stream": False, "logos": True, "artists": True}
+st.cycles["logos"].update(enabled=True, show_s=3, pause_s=0, every_s=60,
+                          pairs=[["HYPERWAVES", "Flux Collective"]])
+st.cycles["artists"].update(pairs=[["Anemi", "HyperLili"], ["Gone", ""],
+                                   ["HyperLili", ""]])
+hc.advance_cycle(st, 250_000)
+st.cycle_next["logos"] = hc.mono_us() - 1
+hc.advance_cycle(st, 250_000)
+ok(st.cycle_run is not None, "(a logo burst is on air)")
+st.stream_on = False
+ok(hc.start_qtest(st) and st.cycle_run is None and st.cycle_step is None,
+   "starting it cuts the burst on air short")
+ok(st.stream_on, "and switches the feed on: a test nobody sees tests nothing")
+ok(not hc.start_qtest(st), "a second start is a no-op")
+seen = [st.qtest["preset"]]
+for _ in range(4):
+    st.qtest["until_us"] = hc.mono_us() - 1
+    hc.advance_qtest(st)
+    seen.append(st.qtest["preset"])
+ok(seen == ["HYPERWAVES", "Flux Collective", "Anemi", "HyperLili",
+            "HYPERWAVES"],
+   "logos, then names, each once, a slot naming no preset skipped, looping",
+   str(seen))
+ok(st.figure == "hyperwaves" and st.qtest["n"] == 4,
+   "and each step installs that preset", f"{st.figure} {st.qtest}")
+ok(hc.advance_qtest(st) is None, "nothing moves before its 2 s are spent")
+ok(set(hc.desired_modes(st).values()) == {1},
+   "a forced broadcast: switches off for logos or streaming do not apply",
+   str(hc.desired_modes(st)))
+armed = st.cycle_next["logos"]
+ok(hc.advance_cycle(st, 250_000) is None and st.cycle_run is None
+   and st.cycle_next["logos"] == armed + 250_000,
+   "the cycles hold their grid while it runs, as a mute holds it")
+st.cycle_play = "artists"
+hc.advance_cycle(st, 250_000)
+ok(st.cycle_play is None and st.cycle_run is None,
+   "and a pair pick queued meanwhile is dropped, not fired later")
+ok(st.snapshot()["qtest"]["preset"] == "HYPERWAVES",
+   "the state feed says what the test shows", json.dumps(st.snapshot()["qtest"]))
+ok(hc.stop_qtest(st) and st.qtest is None and st.kind == "circle",
+   "stopping hands back the panel's own pattern from before the burst",
+   st.kind)
+ok(st.cycle_mic and set(hc.desired_modes(st).values()) == {0},
+   "and the rig is back on the mic, switches obeyed again",
+   str(hc.desired_modes(st)))
+ok(not hc.stop_qtest(st) and st.snapshot()["qtest"] is None,
+   "a second stop is a no-op")
+
 # --------------------------------------------------------------------- HTTP
 print("\n[policy] over HTTP: the switches and the cycle persist")
 import threading                                            # noqa: E402
@@ -664,6 +716,47 @@ code, body = post("/api/cycle", {"group": "artists", "play": True,
                                  "pairs": [["Gone", "Missing"]]})
 ok(code == 200 and not body["played"] and body["note"],
    "a pair naming no preset plays nothing and says so", json.dumps(body))
+
+print("\n[qtest] over HTTP: on, off, and what ends it")
+cmds.sent.clear()
+for s in st.slaves.values():
+    s["mode"] = 0
+code, body = post("/api/qtest", {"on": True})
+ok(code == 200 and body["on"] and st.qtest["preset"] == "HYPERWAVES",
+   "on puts the first logo up", json.dumps(body))
+ok(set(cmds.modes().values()) == {"network"} and len(cmds.modes()) == 3,
+   "and every node is sent to the stream on the tap", str(cmds.sent))
+code, body = post("/api/preset", {"op": "save", "name": "HYPERWAVES"})
+ok(code == 409, "a preset save is refused: it would save the test name")
+code, _ = post("/api/pattern", {"stream": False})
+ok(st.qtest is None and not st.stream_on,
+   "SILENT is the kill switch: it ends the test and stays silent")
+post("/api/qtest", {"on": True})
+code, _ = post("/api/pattern", {"amp": 0.5})
+ok(st.qtest is None and st.figure == "hyperwaves" and st.amp == 0.5,
+   "a hand on the panel ends it and what the operator set stays up")
+code, body = post("/api/qtest", {"on": False})
+ok(code == 200 and body["on"] is False, "off when it is not running is fine")
+code, _ = post("/api/qtest", {})
+ok(code == 400, "a body without on is refused")
+
+print("\n[fx] over HTTP: the global pulse switch")
+st.pulse_depth, st.pulse_rate = 0.3, 1.2
+ok(st.pattern_params()[8] == 0.3 and st.snapshot()["fx_pulse"] is True,
+   "by default each pattern streams with its own pulse")
+code, body = post("/api/fx", {"pulse": False})
+ok(code == 200 and body["pulse"] is False and st.pattern_params()[8] == 0.0,
+   "pulse off streams a steady size", json.dumps(body))
+ok(st.live_snapshot()["pulse_depth"] == 0.3,
+   "without touching the pattern's own pulse — saves keep it")
+ok(fresh().fx_pulse is False and fresh().pattern_params()[8] == 0.0,
+   "it is persisted, so a restart mid-show stays steady")
+code, body = post("/api/fx", {"pulse": True})
+ok(code == 200 and st.pattern_params()[8] == 0.3
+   and hc.load_fx_pulse() is True,
+   "pulse on gives each pattern its own pulse back")
+code, _ = post("/api/fx", {"pulse": "no"})
+ok(code == 400 and st.fx_pulse is True, "a non-bool body is refused")
 _srv.shutdown()
 
 print("\n" + ("ALL PASS" if not FAIL else f"{len(FAIL)} FAILED: {FAIL}"))

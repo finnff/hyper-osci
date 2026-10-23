@@ -106,6 +106,23 @@ One file does everything: [`tools/hype_controller.py`](tools/hype_controller.py)
      plays it now as a burst, and that group's next one comes a full period
      later; with no cycle running there is no burst to play — the rig streams
      the panel — so its first name is loaded there instead.
+   - **FAST FORWARD** (show screen, its own box above PREV/NEXT): **LOGOS
+     NOW** / **ARTISTS NOW** play that group's *selected* pair now — the same
+     `"play": true` without an `idx`, so nothing is re-selected (moving on
+     to the next pair is NEXT). Each button shows when its group would come
+     on its own.
+   - **PULSE** (show screen, under SIZE/SPEED): **AS SET** streams each
+     preset's own pulse; **ALL OFF** streams every logo and name at a steady
+     size. Applied only to what is streamed, so presets and saves keep their
+     pulse settings. Persisted in `~/hype_fx.json` (`HYPE_FX`).
+7. **Debug quick test** (SETUP > Debug, bottom of the page) — every logo,
+   then every name in the two cycles' pairs, 2 s each, looping until switched
+   off: a forced broadcast to every node, whatever its switches say, with the
+   feed switched on. For setup and for checking each gateway draws. A red
+   banner on both screens says it is running (with STOP). The cycles' grid
+   is held while it runs, as a mute holds it; SILENT, a preset tap, a panel
+   edit or a pair pick ends it, and preset saves are refused during it. Never
+   persisted: a restart comes back to the normal show.
 
 HTTP API: `GET /api/state`, `GET /api/shapepreview` (the live point table,
 decimated — text and figure both); `POST /api/pattern`,
@@ -113,7 +130,10 @@ decimated — text and figure both); `POST /api/pattern`,
 `POST /api/node {"id":121,"logos":false}`,
 `POST /api/cycle {"group":"artists","every_s":300,"idx":1,...}` (add
 `"play":true` to put the selected pair on the scopes now; the reply's
-`played` / `loaded` says which way it went).
+`played` / `loaded` says which way it went), `POST /api/qtest {"on":true}`
+(the debug quick test; `GET /api/state` carries `qtest`: `null` or
+`{preset, pos, n, step_s}`), `POST /api/fx {"pulse":false}` (global pulse
+switch; `GET /api/state` carries `fx_pulse`).
 
 Per-node switches and the pair cycles (2026-08-21): every node carries
 `stream` / `logos` / `artists` in `~/hype_nodes.json` (keyed by slave id, so

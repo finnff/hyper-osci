@@ -26,8 +26,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from hype_controller import PAGE, PRESETS_MAX, CYCLE_GROUPS
 
 # The show as it stands, so the seeded pairs below name presets that exist.
-PRESETS = ["HYPERWAVES", "Oracle Bones", "Nikos", "trillosta", "JEANS",
-           "Mama Snake", "HyperLili", "S]NE"]
+PRESETS = ["HYPERWAVES", "Oracle Bones", "S]NE", "Nikos", "Mama Snake",
+           "HyperLili", "JEANS", "trillosta"]
 
 
 def slave(ip, sid, **kw):
@@ -100,15 +100,17 @@ def base_state():
                            pairs=[["HYPERWAVES", "Oracle Bones"]]),
             "artists": cycle("artists", show_s=15, every_s=60, phase=0,
                              next_in=41,
-                             pairs=[["Nikos", ""],
-                                    ["trillosta", "JEANS"],
+                             pairs=[["S]NE", ""],
+                                    ["Nikos", ""],
                                     ["Mama Snake", "HyperLili"],
-                                    ["S]NE", ""]]),
+                                    ["JEANS", "trillosta"]]),
         },
         # The resting state of the rig: every node on its own audio, waiting
         # for the next burst.
         "mic": True,
         "cycle": None,
+        "qtest": None,
+        "fx_pulse": True,
     }
 
 
@@ -120,6 +122,7 @@ SCENARIOS = {
     "apdown": "the AP is down, no interface holds the address",
     "burst": "a logo burst is on air",
     "gone": "slave 124 has stopped answering (the F8 tombstone)",
+    "qtest": "the debug quick test is running (SETUP > Debug)",
     "down": "the controller itself does not answer",
 }
 
@@ -143,6 +146,8 @@ def apply_scenario(st, name):
         st["cycles"]["logos"]["running"] = True
         st["cycle"] = {"group": "logos", "preset": "HYPERWAVES", "left_s": 6}
         st["mic"] = False
+    elif name == "qtest":
+        st["qtest"] = {"preset": "Nikos", "pos": 3, "n": 8, "step_s": 2}
     elif name == "gone":
         # Marked lost at 5 s, still listed until 30 s: the tile has to say so
         # rather than silently vanishing mid-set.
@@ -200,10 +205,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"err": "bad json"}, 400)
         route = {"/api/pattern": self._pattern, "/api/preset": self._preset,
                  "/api/node": self._node, "/api/cycle": self._cycle,
-                 "/api/cmd": self._cmd}.get(self.path)
+                 "/api/cmd": self._cmd, "/api/qtest": self._qtest,
+                 "/api/fx": self._fx}.get(self.path)
         if route is None:
             return self._json({"err": "not found"}, 404)
         return route(st, body)
+
+    def _qtest(self, st, body):
+        # The mock does not step through the names: the first one stands.
+        if "on" not in body:
+            return self._json({"err": "need on"}, 400)
+        st["qtest"] = ({"preset": st["presets"][0], "pos": 0,
+                        "n": len(st["presets"]), "step_s": 2}
+                       if body["on"] else None)
+        return self._json({"ok": True, "on": bool(body["on"])})
+
+    def _fx(self, st, body):
+        if not isinstance(body.get("pulse"), bool):
+            return self._json({"err": "need pulse true|false"}, 400)
+        st["fx_pulse"] = body["pulse"]
+        return self._json({"ok": True, "pulse": body["pulse"]})
 
     def _pattern(self, st, body):
         for k in ("kind", "freq", "amp", "a", "b", "text", "font", "figure",
